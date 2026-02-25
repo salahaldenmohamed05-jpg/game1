@@ -1,0 +1,279 @@
+@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;500;600;700;800;900&family=Tajawal:wght@300;400;500;700;800;900&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ========================
+   Base Styles - RTL Arabic
+   ======================== */
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --primary: #6C63FF;
+  --primary-dark: #5550e0;
+  --secondary: #FF6584;
+  --success: #10B981;
+  --warning: #F59E0B;
+  --danger: #EF4444;
+  --dark: #1A1A2E;
+  --surface: #16213E;
+  --surface-light: #0F3460;
+  --text-primary: #E2E8F0;
+  --text-secondary: #94A3B8;
+  --border: rgba(108, 99, 255, 0.2);
+  --card-bg: rgba(22, 33, 62, 0.8);
+}
+
+html {
+  direction: rtl;
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: 'Cairo', 'Tajawal', system-ui, sans-serif;
+  background: linear-gradient(135deg, #1A1A2E 0%, #16213E 50%, #0F3460 100%);
+  min-height: 100vh;
+  color: var(--text-primary);
+  overflow-x: hidden;
+}
+
+/* ========================
+   Scrollbar Styles
+   ======================== */
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.05); border-radius: 10px; }
+::-webkit-scrollbar-thumb { background: var(--primary); border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: var(--primary-dark); }
+
+/* ========================
+   Glass Card Component
+   ======================== */
+
+.glass-card {
+  background: rgba(22, 33, 62, 0.7);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(108, 99, 255, 0.2);
+  border-radius: 16px;
+  transition: all 0.3s ease;
+}
+
+.glass-card:hover {
+  border-color: rgba(108, 99, 255, 0.4);
+  box-shadow: 0 8px 32px rgba(108, 99, 255, 0.2);
+  transform: translateY(-2px);
+}
+
+/* ========================
+   Gradient Text
+   ======================== */
+
+.gradient-text {
+  background: linear-gradient(135deg, #6C63FF, #FF6584);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ========================
+   Buttons
+   ======================== */
+
+.btn-primary {
+  @apply bg-primary-500 hover:bg-primary-600 text-white font-semibold px-6 py-3 rounded-xl transition-all duration-200 flex items-center gap-2 justify-center;
+  box-shadow: 0 4px 15px rgba(108, 99, 255, 0.3);
+}
+
+.btn-primary:hover {
+  box-shadow: 0 6px 20px rgba(108, 99, 255, 0.5);
+  transform: translateY(-1px);
+}
+
+.btn-secondary {
+  @apply bg-transparent border border-primary-500 text-primary-400 hover:bg-primary-500 hover:text-white font-semibold px-6 py-3 rounded-xl transition-all duration-200;
+}
+
+.btn-ghost {
+  @apply bg-white/5 hover:bg-white/10 text-gray-300 px-4 py-2 rounded-lg transition-all duration-200;
+}
+
+/* ========================
+   Input Styles
+   ======================== */
+
+.input-field {
+  @apply w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20 transition-all duration-200;
+  direction: rtl;
+}
+
+/* ========================
+   Progress Bar
+   ======================== */
+
+.progress-bar {
+  height: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 100px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 100px;
+  background: linear-gradient(90deg, #6C63FF, #FF6584);
+  transition: width 0.5s ease;
+}
+
+/* ========================
+   Mood Slider
+   ======================== */
+
+.mood-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 8px;
+  border-radius: 100px;
+  background: linear-gradient(90deg, #EF4444 0%, #F59E0B 50%, #10B981 100%);
+  outline: none;
+  direction: ltr;
+}
+
+.mood-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: white;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+  border: 3px solid var(--primary);
+}
+
+/* ========================
+   Habit Check Circle
+   ======================== */
+
+.habit-circle {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: 3px solid rgba(108, 99, 255, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  font-size: 24px;
+}
+
+.habit-circle.completed {
+  background: linear-gradient(135deg, #6C63FF, #10B981);
+  border-color: transparent;
+  box-shadow: 0 0 20px rgba(108, 99, 255, 0.5);
+}
+
+.habit-circle:hover {
+  border-color: var(--primary);
+  transform: scale(1.05);
+}
+
+/* ========================
+   Streak Badge
+   ======================== */
+
+.streak-badge {
+  background: linear-gradient(135deg, #FF6584, #F59E0B);
+  color: white;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 100px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+/* ========================
+   Task Priority Indicators
+   ======================== */
+
+.priority-urgent { @apply border-l-4 border-red-500; }
+.priority-high { @apply border-l-4 border-orange-500; }
+.priority-medium { @apply border-l-4 border-yellow-500; }
+.priority-low { @apply border-l-4 border-green-500; }
+
+/* ========================
+   Notification Badge
+   ======================== */
+
+.notification-badge {
+  position: absolute;
+  top: -4px;
+  left: -4px;
+  width: 18px;
+  height: 18px;
+  background: var(--secondary);
+  border-radius: 50%;
+  font-size: 10px;
+  font-weight: 700;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--dark);
+}
+
+/* ========================
+   Animated Gradient Background
+   ======================== */
+
+.animated-bg {
+  background: linear-gradient(-45deg, #1A1A2E, #16213E, #0F3460, #1A1A2E);
+  background-size: 400% 400%;
+  animation: gradientBG 15s ease infinite;
+}
+
+@keyframes gradientBG {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+/* ========================
+   Loading Skeleton
+   ======================== */
+
+.skeleton {
+  background: linear-gradient(90deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.1) 50%, rgba(255,255,255,0.05) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: 8px;
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* ========================
+   Chart Overrides
+   ======================== */
+
+.recharts-text { fill: #94A3B8 !important; }
+.recharts-cartesian-axis-tick-value { fill: #94A3B8 !important; }
+
+/* ========================
+   Mobile Responsive
+   ======================== */
+
+@media (max-width: 768px) {
+  .glass-card { border-radius: 12px; }
+}
