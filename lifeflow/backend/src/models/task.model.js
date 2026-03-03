@@ -50,6 +50,8 @@ const Task = sequelize.define('Task', {
     set(val) { this.setDataValue('reminders', JSON.stringify(val || [])); },
   },
   completion_mood: { type: DataTypes.INTEGER, allowNull: true },
+  reschedule_count: { type: DataTypes.INTEGER, defaultValue: 0 },
+  original_due_date: { type: DataTypes.DATE, allowNull: true },
 }, {
   tableName: 'tasks',
   indexes: [
