@@ -1,132 +1,153 @@
 /**
  * API Client - Axios Configuration
  * ==================================
- * عميل API مع إعداد التوثيق التلقائي
+ * Centralized HTTP client with interceptors and typed API methods
  */
 
 import axios from 'axios';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api/v1';
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api/v1';
 
 // Create axios instance
 const api = axios.create({
-  baseURL: API_URL,
+  baseURL: BASE_URL,
   timeout: 30000,
-  headers: {
-    'Content-Type': 'application/json',
-    'Accept-Language': 'ar',
-  },
+  headers: { 'Content-Type': 'application/json', 'Accept-Language': 'ar' },
 });
 
-// Request interceptor - add JWT token
+// Request interceptor — attach JWT
 api.interceptors.request.use(
   (config) => {
-    if (typeof window !== 'undefined') {
-      const token = localStorage.getItem('lifeflow_token');
-      if (token) {
-        config.headers.Authorization = `Bearer ${token}`;
-      }
-    }
+    const token = typeof window !== 'undefined' ? localStorage.getItem('lifeflow_token') : null;
+    if (token) config.headers.Authorization = `Bearer ${token}`;
     return config;
   },
   (error) => Promise.reject(error)
 );
 
-// Response interceptor - handle token refresh
+// Response interceptor — refresh token on 401
 api.interceptors.response.use(
-  (response) => response.data,
+  (response) => response,
   async (error) => {
-    const originalRequest = error.config;
-
-    if (error.response?.status === 401 && !originalRequest._retry) {
-      originalRequest._retry = true;
+    const original = error.config;
+    if (error.response?.status === 401 && !original._retry) {
+      original._retry = true;
       try {
         const refreshToken = localStorage.getItem('lifeflow_refresh_token');
-        if (!refreshToken) {
-          window.location.href = '/login';
-          return Promise.reject(error);
+        if (!refreshToken) throw new Error('No refresh token');
+        const { data } = await axios.post(`${BASE_URL}/auth/refresh`, { refreshToken });
+        const newToken = data.data?.accessToken || data.accessToken;
+        if (newToken) {
+          localStorage.setItem('lifeflow_token', newToken);
+          original.headers.Authorization = `Bearer ${newToken}`;
+          return api(original);
         }
-
-        const response = await axios.post(`${API_URL}/auth/refresh`, { refreshToken });
-        const { accessToken } = response.data.data;
-        localStorage.setItem('lifeflow_token', accessToken);
-        originalRequest.headers.Authorization = `Bearer ${accessToken}`;
-        return api(originalRequest);
-      } catch (refreshError) {
-        localStorage.clear();
-        window.location.href = '/login';
-        return Promise.reject(refreshError);
+      } catch (_e) {
+        localStorage.removeItem('lifeflow_token');
+        localStorage.removeItem('lifeflow_refresh_token');
+        if (typeof window !== 'undefined') window.location.href = '/login';
       }
     }
-
-    return Promise.reject(error.response?.data || error);
+    const message = error.response?.data?.message || error.message || 'حدث خطأ، يرجى المحاولة مرة أخرى';
+    error.message = message;
+    return Promise.reject(error);
   }
 );
 
-// ===============================
-// API Methods
-// ===============================
+export default api;
 
+// ─── Auth API ─────────────────────────────────────────────────────────────────
 export const authAPI = {
-  register: (data) => api.post('/auth/register', data),
   login: (data) => api.post('/auth/login', data),
+  register: (data) => api.post('/auth/register', data),
   logout: () => api.post('/auth/logout'),
-  getMe: () => api.get('/auth/me'),
+  refresh: (token) => api.post('/auth/refresh', { refreshToken: token }),
+  getProfile: () => api.get('/users/profile'),
+  updateProfile: (data) => api.put('/users/profile', data),
+  changePassword: (data) => api.put('/users/password', data),
 };
 
-export const dashboardAPI = {
-  getDashboard: () => api.get('/dashboard'),
-};
-
+// ─── Task API ─────────────────────────────────────────────────────────────────
 export const taskAPI = {
-  getTasks: (params) => api.get('/tasks', { params }),
-  getTodayTasks: () => api.get('/tasks/today'),
+  getTasks: (params = {}) => api.get('/tasks', { params }),
   createTask: (data) => api.post('/tasks', data),
   updateTask: (id, data) => api.put(`/tasks/${id}`, data),
-  completeTask: (id, data) => api.patch(`/tasks/${id}/complete`, data),
   deleteTask: (id) => api.delete(`/tasks/${id}`),
+  completeTask: (id) => api.patch(`/tasks/${id}/complete`),
   aiBreakdown: (data) => api.post('/tasks/ai-breakdown', data),
+  aiPrioritize: () => api.post('/tasks/ai-prioritize'),
+  reschedule: (id, data) => api.patch(`/tasks/${id}/reschedule`, data),
 };
 
+// ─── Habit API ────────────────────────────────────────────────────────────────
 export const habitAPI = {
-  getHabits: (params) => api.get('/habits', { params }),
-  getTodaySummary: () => api.get('/habits/today-summary'),
+  getHabits: () => api.get('/habits'),
+  getTodaySummary: () => api.get('/habits/today'),
   createHabit: (data) => api.post('/habits', data),
-  checkIn: (id, data) => api.post(`/habits/${id}/check-in`, data),
+  updateHabit: (id, data) => api.put(`/habits/${id}`, data),
+  deleteHabit: (id) => api.delete(`/habits/${id}`),
+  checkIn: (id, data) => api.post(`/habits/${id}/checkin`, data),
   getStats: (id) => api.get(`/habits/${id}/stats`),
 };
 
+// ─── Mood API ─────────────────────────────────────────────────────────────────
 export const moodAPI = {
-  checkIn: (data) => api.post('/mood/check-in', data),
-  getToday: () => api.get('/mood/today'),
-  getHistory: (params) => api.get('/mood/history', { params }),
-  getAnalytics: () => api.get('/mood/analytics'),
+  getTodayMood: () => api.get('/mood/today'),
+  logMood: (data) => api.post('/mood', data),
+  getMoodStats: (days = 30) => api.get(`/mood/stats?days=${days}`),
+  getMoodLog: (days = 14) => api.get(`/mood?days=${days}`),
 };
 
-export const insightAPI = {
-  getInsights: (params) => api.get('/insights', { params }),
-  getDailySummary: () => api.get('/insights/daily'),
-  getWeeklyReport: () => api.get('/insights/weekly'),
-  getBehaviorAnalysis: () => api.get('/insights/behavior'),
-  getProductivityTips: () => api.get('/insights/productivity-tips'),
+// ─── Dashboard API ────────────────────────────────────────────────────────────
+export const dashboardAPI = {
+  getDashboard: () => api.get('/dashboard'),
+  getQuickStats: () => api.get('/dashboard/stats'),
 };
 
+// ─── Performance API (Premium) ────────────────────────────────────────────────
+export const performanceAPI = {
+  getToday: () => api.get('/performance/today'),
+  getDashboard: () => api.get('/performance/dashboard'),
+  getHistory: (days = 30) => api.get(`/performance/history?days=${days}`),
+  getWeeklyAudit: () => api.get('/performance/weekly-audit'),
+  getAuditHistory: () => api.get('/performance/weekly-audit/history'),
+  getProcrastinationFlags: () => api.get('/performance/procrastination-flags'),
+  resolveFlag: (id) => api.patch(`/performance/procrastination-flags/${id}/resolve`),
+  getEnergyProfile: () => api.get('/performance/energy-profile'),
+  getCoaching: () => api.get('/performance/coaching'),
+  computeScore: () => api.post('/performance/compute'),
+};
+
+// ─── Subscription API ─────────────────────────────────────────────────────────
+export const subscriptionAPI = {
+  getStatus: () => api.get('/subscription/status'),
+  getPlans: () => api.get('/subscription/plans'),
+  startTrial: () => api.post('/subscription/trial/start'),
+  checkout: (data) => api.post('/subscription/checkout', data),
+  cancel: () => api.post('/subscription/cancel'),
+  getHistory: () => api.get('/subscription/history'),
+  getFeaturePreview: (feature) => api.get(`/subscription/preview/${feature}`),
+};
+
+// ─── AI / Insights API ────────────────────────────────────────────────────────
+export const aiAPI = {
+  getInsights: () => api.get('/insights'),
+  generateInsight: (data) => api.post('/insights/generate', data),
+  chat: (data) => api.post('/ai/chat', data),
+  getVoiceAnalysis: () => api.get('/voice/analyze'),
+};
+
+// ─── Notification API ─────────────────────────────────────────────────────────
 export const notificationAPI = {
-  getNotifications: (params) => api.get('/notifications', { params }),
+  getAll: (params) => api.get('/notifications', { params }),
   markRead: (id) => api.patch(`/notifications/${id}/read`),
   markAllRead: () => api.patch('/notifications/read-all'),
+  updatePreferences: (data) => api.put('/notifications/preferences', data),
+  registerFCM: (token) => api.post('/notifications/fcm-token', { fcm_token: token }),
 };
 
-export const aiAPI = {
-  chat: (message) => api.post('/ai/chat', { message }),
-  goalBreakdown: (data) => api.post('/ai/goal-breakdown', data),
-  processVoiceCommand: (text) => api.post('/voice/command', { text }),
+// ─── Calendar API ─────────────────────────────────────────────────────────────
+export const calendarAPI = {
+  getEvents: (params) => api.get('/calendar', { params }),
+  createEvent: (data) => api.post('/calendar', data),
 };
-
-export const userAPI = {
-  updateProfile: (data) => api.put('/users/profile', data),
-  changePassword: (data) => api.put('/users/change-password', data),
-  updateFCMToken: (token) => api.patch('/users/fcm-token', { token }),
-};
-
-export default api;

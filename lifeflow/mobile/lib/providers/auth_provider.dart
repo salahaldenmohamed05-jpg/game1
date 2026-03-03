@@ -34,6 +34,31 @@ class AuthProvider extends ChangeNotifier {
   bool get isLoading => _isLoading;
   bool get isAuthenticated => _status == AuthStatus.authenticated;
 
+  // Premium subscription check
+  bool get isPremium {
+    final plan = _user?.subscriptionPlan ?? 'free';
+    return ['premium', 'enterprise', 'trial'].contains(plan);
+  }
+
+  int get trialDaysRemaining {
+    // Approximate: if plan is 'trial', check stored data
+    return _user?.trialDaysRemaining ?? 0;
+  }
+
+  // Refresh user data from API
+  Future<void> refreshUser() async {
+    if (_token == null) return;
+    try {
+      final api = ApiService(token: _token);
+      final result = await api.get('/users/me');
+      if (result['success'] == true) {
+        _user = User.fromJson(result['data']);
+        await _prefs.setString(AppConstants.keyUser, jsonEncode(_user!.toJson()));
+        notifyListeners();
+      }
+    } catch (_) {}
+  }
+
   // Load stored authentication
   Future<void> _loadStoredAuth() async {
     final token = _prefs.getString(AppConstants.keyToken);

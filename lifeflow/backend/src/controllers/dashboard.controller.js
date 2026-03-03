@@ -48,7 +48,7 @@ exports.getDashboard = async (req, res) => {
       // Recent insights
       Insight.findAll({
         where: { user_id: req.user.id },
-        order: [['created_at', 'DESC']],
+        order: [['createdAt', 'DESC']],
         limit: 3,
       }),
       // Unread notifications

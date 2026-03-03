@@ -22,7 +22,7 @@ exports.getHabits = async (req, res) => {
 
     const habits = await Habit.findAll({
       where,
-      order: [['created_at', 'ASC']],
+      order: [['createdAt', 'ASC']],
     });
 
     // Add today's completion status for each habit

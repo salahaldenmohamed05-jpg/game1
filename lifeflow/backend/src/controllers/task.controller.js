@@ -42,7 +42,7 @@ exports.getTasks = async (req, res) => {
       order: [
         ['ai_priority_score', 'DESC'],
         ['due_date', 'ASC'],
-        ['created_at', 'DESC'],
+        ['createdAt', 'DESC'],
       ],
       limit: parseInt(limit),
       offset,

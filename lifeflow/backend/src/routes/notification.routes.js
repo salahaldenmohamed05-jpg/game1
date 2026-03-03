@@ -18,7 +18,7 @@ router.get('/', async (req, res) => {
 
     const { count, rows } = await Notification.findAndCountAll({
       where,
-      order: [['created_at', 'DESC']],
+      order: [['createdAt', 'DESC']],
       limit: parseInt(limit),
       offset: (parseInt(page) - 1) * parseInt(limit),
     });

@@ -19,6 +19,10 @@ import 'providers/notification_provider.dart';
 import 'screens/splash_screen.dart';
 import 'screens/auth/login_screen.dart';
 import 'screens/home/home_screen.dart';
+import 'screens/notifications/notifications_screen.dart';
+import 'screens/calendar/calendar_screen.dart';
+import 'screens/settings/settings_screen.dart';
+import 'screens/subscription/subscription_screen.dart';
 import 'utils/app_theme.dart';
 import 'utils/app_constants.dart';
 import 'services/notification_service.dart';
@@ -121,6 +125,10 @@ class LifeFlowApp extends StatelessWidget {
           SplashScreen.routeName: (_) => const SplashScreen(),
           LoginScreen.routeName: (_) => const LoginScreen(),
           HomeScreen.routeName: (_) => const HomeScreen(),
+          NotificationsScreen.routeName: (_) => const NotificationsScreen(),
+          CalendarScreen.routeName: (_) => const CalendarScreen(),
+          SettingsScreen.routeName: (_) => const SettingsScreen(),
+          SubscriptionScreen.routeName: (_) => const SubscriptionScreen(),
         },
 
         // Handle unknown routes
