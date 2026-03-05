@@ -19,11 +19,15 @@ export default function LoginPage() {
       result = await registerUser(data);
       if (result.success) {
         toast.success('مرحباً! تم إنشاء حسابك بنجاح 🎉');
+        setTimeout(() => { window.location.href = '/'; }, 500);
+        return;
       }
     } else {
       result = await login(data.email, data.password);
       if (result.success) {
         toast.success('أهلاً بك مجدداً! 👋');
+        setTimeout(() => { window.location.href = '/'; }, 500);
+        return;
       }
     }
     if (!result.success) {
@@ -139,6 +143,7 @@ export default function LoginPage() {
                 const result = await login('demo@lifeflow.app', 'demo123456');
                 if (result.success) {
                   toast.success('أهلاً بك في الحساب التجريبي! 🎯');
+                  setTimeout(() => { window.location.href = '/'; }, 500);
                 } else {
                   toast.error(result.message || 'فشل تسجيل الدخول التجريبي');
                 }
