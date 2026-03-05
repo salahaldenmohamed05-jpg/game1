@@ -132,6 +132,9 @@ class User {
   final String timezone;
   final Map<String, dynamic>? preferences;
   final Map<String, dynamic>? stats;
+  final String subscriptionPlan;
+  final String subscriptionStatus;
+  final DateTime? trialEndsAt;
 
   User({
     required this.id,
@@ -140,7 +143,18 @@ class User {
     this.timezone = 'Africa/Cairo',
     this.preferences,
     this.stats,
+    this.subscriptionPlan = 'free',
+    this.subscriptionStatus = 'active',
+    this.trialEndsAt,
   });
+
+  bool get isPremium => ['premium', 'enterprise', 'trial'].contains(subscriptionPlan);
+
+  int get trialDaysRemaining {
+    if (trialEndsAt == null) return 0;
+    final diff = trialEndsAt!.difference(DateTime.now());
+    return diff.isNegative ? 0 : diff.inDays;
+  }
 
   factory User.fromJson(Map<String, dynamic> json) {
     return User(
@@ -150,6 +164,11 @@ class User {
       timezone: json['timezone'] ?? 'Africa/Cairo',
       preferences: json['preferences'] as Map<String, dynamic>?,
       stats: json['stats'] as Map<String, dynamic>?,
+      subscriptionPlan:   json['subscription_plan']   ?? 'free',
+      subscriptionStatus: json['subscription_status'] ?? 'active',
+      trialEndsAt: json['trial_ends_at'] != null
+        ? DateTime.tryParse(json['trial_ends_at'])
+        : null,
     );
   }
 
@@ -159,5 +178,42 @@ class User {
     'email': email,
     'timezone': timezone,
     'preferences': preferences,
+    'subscription_plan':   subscriptionPlan,
+    'subscription_status': subscriptionStatus,
+    'trial_ends_at': trialEndsAt?.toIso8601String(),
   };
+}
+
+// ============================================================
+
+/**
+ * AppNotification Model - نموذج الإشعار
+ */
+class AppNotification {
+  final String id;
+  final String type;
+  final String title;
+  final String body;
+  final bool isRead;
+  final DateTime createdAt;
+
+  AppNotification({
+    required this.id,
+    required this.type,
+    required this.title,
+    required this.body,
+    required this.isRead,
+    required this.createdAt,
+  });
+
+  factory AppNotification.fromJson(Map<String, dynamic> json) {
+    return AppNotification(
+      id: json['id']?.toString() ?? '',
+      type: json['type'] ?? 'system',
+      title: json['title'] ?? '',
+      body: json['body'] ?? '',
+      isRead: json['is_read'] ?? false,
+      createdAt: DateTime.tryParse(json['createdAt'] ?? json['created_at'] ?? '') ?? DateTime.now(),
+    );
+  }
 }

@@ -25,7 +25,7 @@ exports.getDailySummary = async (req, res) => {
     // Check if already generated today
     let insight = await Insight.findOne({
       where: { user_id: req.user.id, type: 'daily_summary',
-        created_at: { [Op.gte]: moment().tz(timezone).startOf('day').toDate() },
+        createdAt: { [Op.gte]: moment().tz(timezone).startOf('day').toDate() },
       },
     });
 
@@ -138,7 +138,7 @@ exports.getBehaviorAnalysis = async (req, res) => {
 
     const [tasks, habitLogs, moodEntries] = await Promise.all([
       Task.findAll({ where: { user_id: req.user.id,
-        created_at: { [Op.gte]: thirtyDaysAgo },
+        createdAt: { [Op.gte]: thirtyDaysAgo },
       }}),
       HabitLog.findAll({ where: { user_id: req.user.id,
         log_date: { [Op.gte]: thirtyDaysAgo },
@@ -192,7 +192,7 @@ exports.getInsights = async (req, res) => {
 
     const { count, rows } = await Insight.findAndCountAll({
       where,
-      order: [['created_at', 'DESC']],
+      order: [['createdAt', 'DESC']],
       limit: parseInt(limit),
       offset: (parseInt(page) - 1) * parseInt(limit),
     });

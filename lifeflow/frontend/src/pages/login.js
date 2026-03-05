@@ -135,7 +135,15 @@ export default function LoginPage() {
           <div className="mt-6 pt-6 border-t border-white/10 text-center">
             <p className="text-xs text-gray-500 mb-3">حساب تجريبي للاختبار</p>
             <button
-              onClick={() => onSubmit({ email: 'demo@lifeflow.app', password: 'demo123' })}
+              onClick={async () => {
+                const result = await login('demo@lifeflow.app', 'demo123456');
+                if (result.success) {
+                  toast.success('أهلاً بك في الحساب التجريبي! 🎯');
+                } else {
+                  toast.error(result.message || 'فشل تسجيل الدخول التجريبي');
+                }
+              }}
+              disabled={isLoading}
               className="btn-ghost text-sm w-full"
             >
               🎯 دخول كمستخدم تجريبي

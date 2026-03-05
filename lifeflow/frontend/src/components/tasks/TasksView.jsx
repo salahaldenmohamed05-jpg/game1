@@ -33,8 +33,8 @@ export default function TasksView() {
   const createMutation = useMutation({
     mutationFn: taskAPI.createTask,
     onSuccess: () => {
-      queryClient.invalidateQueries(['tasks']);
-      queryClient.invalidateQueries(['dashboard']);
+      queryClient.invalidateQueries({ queryKey: ['tasks'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
       toast.success('تم إنشاء المهمة ✅');
       setShowAdd(false);
       setNewTask({ title: '', description: '', category: 'personal', priority: 'medium', due_date: '', estimated_duration: '' });
@@ -45,8 +45,8 @@ export default function TasksView() {
   const completeMutation = useMutation({
     mutationFn: (id) => taskAPI.completeTask(id),
     onSuccess: () => {
-      queryClient.invalidateQueries(['tasks']);
-      queryClient.invalidateQueries(['dashboard']);
+      queryClient.invalidateQueries({ queryKey: ['tasks'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
       toast.success('أحسنت! تم إتمام المهمة 🎉');
     },
   });
@@ -54,7 +54,7 @@ export default function TasksView() {
   const deleteMutation = useMutation({
     mutationFn: taskAPI.deleteTask,
     onSuccess: () => {
-      queryClient.invalidateQueries(['tasks']);
+      queryClient.invalidateQueries({ queryKey: ['tasks'] });
       toast.success('تم حذف المهمة');
     },
   });

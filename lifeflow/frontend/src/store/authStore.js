@@ -22,15 +22,20 @@ const useAuthStore = create(
         set({ isLoading: true });
         try {
           const response = await authAPI.login({ email, password });
-          const { user, accessToken, refreshToken } = response.data;
+          // Backend returns: { success, message, data: { user, accessToken, refreshToken } }
+          // Axios wraps it as: response.data = { success, message, data: {...} }
+          const payload = response.data?.data || response.data;
+          const { user, accessToken, refreshToken } = payload;
+
+          if (!accessToken) throw new Error('لم يتم استلام رمز المصادقة');
 
           localStorage.setItem('lifeflow_token', accessToken);
-          localStorage.setItem('lifeflow_refresh_token', refreshToken);
+          if (refreshToken) localStorage.setItem('lifeflow_refresh_token', refreshToken);
 
           set({
             user,
             token: accessToken,
-            refreshToken,
+            refreshToken: refreshToken || null,
             isAuthenticated: true,
             isLoading: false,
           });
@@ -38,7 +43,8 @@ const useAuthStore = create(
           return { success: true };
         } catch (error) {
           set({ isLoading: false });
-          return { success: false, message: error.message || 'فشل تسجيل الدخول' };
+          const msg = error.response?.data?.message || error.message || 'فشل تسجيل الدخول';
+          return { success: false, message: msg };
         }
       },
 
@@ -47,15 +53,18 @@ const useAuthStore = create(
         set({ isLoading: true });
         try {
           const response = await authAPI.register(data);
-          const { user, accessToken, refreshToken } = response.data;
+          const payload = response.data?.data || response.data;
+          const { user, accessToken, refreshToken } = payload;
+
+          if (!accessToken) throw new Error('لم يتم استلام رمز المصادقة');
 
           localStorage.setItem('lifeflow_token', accessToken);
-          localStorage.setItem('lifeflow_refresh_token', refreshToken);
+          if (refreshToken) localStorage.setItem('lifeflow_refresh_token', refreshToken);
 
           set({
             user,
             token: accessToken,
-            refreshToken,
+            refreshToken: refreshToken || null,
             isAuthenticated: true,
             isLoading: false,
           });
@@ -63,7 +72,8 @@ const useAuthStore = create(
           return { success: true };
         } catch (error) {
           set({ isLoading: false });
-          return { success: false, message: error.message || 'فشل إنشاء الحساب' };
+          const msg = error.response?.data?.message || error.message || 'فشل إنشاء الحساب';
+          return { success: false, message: msg };
         }
       },
 

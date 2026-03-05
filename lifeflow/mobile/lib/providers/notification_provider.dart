@@ -4,14 +4,15 @@
  */
 
 import 'package:flutter/material.dart';
+import '../models/models.dart';
 import '../services/api_service.dart';
 
 class NotificationProvider extends ChangeNotifier {
-  List<Map<String, dynamic>> _notifications = [];
+  List<AppNotification> _notifications = [];
   int _unreadCount = 0;
   bool _isLoading = false;
 
-  List<Map<String, dynamic>> get notifications => _notifications;
+  List<AppNotification> get notifications => _notifications;
   int get unreadCount => _unreadCount;
   bool get isLoading => _isLoading;
 
@@ -21,25 +22,49 @@ class NotificationProvider extends ChangeNotifier {
 
     try {
       final result = await ApiService.getNotifications(limit: 30);
-      if (result['success']) {
-        final data = result['data']['data'];
-        _notifications = (data['notifications'] as List<dynamic>?)
-            ?.map((n) => n as Map<String, dynamic>)
-            .toList() ?? [];
-        _unreadCount = _notifications.where((n) => n['is_read'] == false).length;
+      if (result['success'] == true) {
+        final rawData = result['data'];
+        final data = rawData is Map ? rawData['data'] ?? rawData : rawData;
+        final notifList = (data['notifications'] as List<dynamic>?) ?? [];
+        _notifications = notifList
+            .map((n) => AppNotification.fromJson(n as Map<String, dynamic>))
+            .toList();
+        _unreadCount = _notifications.where((n) => !n.isRead).length;
       }
     } catch (e) {
-      // Ignore
+      debugPrint('Notification load error: $e');
     } finally {
       _isLoading = false;
       notifyListeners();
     }
   }
 
-  Future<void> markAllRead() async {
-    await ApiService.markAllNotificationsRead();
-    _unreadCount = 0;
-    _notifications = _notifications.map((n) => {...n, 'is_read': true}).toList();
-    notifyListeners();
+  Future<void> markAsRead(String id) async {
+    try {
+      await ApiService.markNotificationRead(id);
+      _notifications = _notifications.map((n) {
+        if (n.id == id) {
+          return AppNotification(
+            id: n.id, type: n.type, title: n.title,
+            body: n.body, isRead: true, createdAt: n.createdAt,
+          );
+        }
+        return n;
+      }).toList();
+      _unreadCount = _notifications.where((n) => !n.isRead).length;
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  Future<void> markAllAsRead() async {
+    try {
+      await ApiService.markAllNotificationsRead();
+      _notifications = _notifications.map((n) => AppNotification(
+        id: n.id, type: n.type, title: n.title,
+        body: n.body, isRead: true, createdAt: n.createdAt,
+      )).toList();
+      _unreadCount = 0;
+      notifyListeners();
+    } catch (_) {}
   }
 }

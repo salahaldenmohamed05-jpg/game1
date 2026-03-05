@@ -33,8 +33,8 @@ export default function HabitsView() {
   const checkInMutation = useMutation({
     mutationFn: (habitId) => habitAPI.checkIn(habitId, {}),
     onSuccess: (data, habitId) => {
-      queryClient.invalidateQueries(['habits-today']);
-      queryClient.invalidateQueries(['dashboard']);
+      queryClient.invalidateQueries({ queryKey: ['habits-today'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
       toast.success(data?.message || 'تم تسجيل العادة 🎉');
     },
     onError: () => toast.error('فشل في تسجيل العادة'),
@@ -43,7 +43,7 @@ export default function HabitsView() {
   const createMutation = useMutation({
     mutationFn: habitAPI.createHabit,
     onSuccess: (data) => {
-      queryClient.invalidateQueries(['habits-today']);
+      queryClient.invalidateQueries({ queryKey: ['habits-today'] });
       toast.success(data?.message || 'تمت إضافة العادة 💪');
       setShowAdd(false);
       setNewHabit({ name: '', name_ar: '', category: 'health', icon: '⭐', color: '#6C63FF', frequency: 'daily', target_time: '', duration_minutes: 30, target_value: null, unit: '', description: '' });

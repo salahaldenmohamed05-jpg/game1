@@ -31,6 +31,8 @@ const calendarRoutes = require('./routes/calendar.routes');
 const voiceRoutes = require('./routes/voice.routes');
 const aiRoutes = require('./routes/ai.routes');
 const dashboardRoutes = require('./routes/dashboard.routes');
+const performanceRoutes = require('./routes/performance.routes');
+const subscriptionRoutes = require('./routes/subscription.routes');
 
 // Import scheduler
 const { initScheduler } = require('./services/scheduler.service');
@@ -98,6 +100,8 @@ app.use(`${API}/calendar`, calendarRoutes);
 app.use(`${API}/voice`, voiceRoutes);
 app.use(`${API}/ai`, aiRoutes);
 app.use(`${API}/dashboard`, dashboardRoutes);
+app.use(`${API}/performance`, performanceRoutes);
+app.use(`${API}/subscription`, subscriptionRoutes);
 
 // ============================================
 // Health Check
