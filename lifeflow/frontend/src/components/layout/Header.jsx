@@ -4,7 +4,7 @@
  * Top navigation bar with user info, notifications, plan badge
  */
 
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Bell, Crown, Zap, ChevronDown, LogOut, User, Settings, X, Menu, Sun, Moon } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
@@ -18,6 +18,22 @@ export default function Header({ onViewChange, onMenuToggle }) {
   const { isDark, toggleTheme } = useThemeStore();
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
+  const notifRef = useRef(null);
+  const userRef = useRef(null);
+
+  // Close dropdowns on outside click
+  useEffect(() => {
+    const handleClick = (e) => {
+      if (notifRef.current && !notifRef.current.contains(e.target)) {
+        setShowNotifications(false);
+      }
+      if (userRef.current && !userRef.current.contains(e.target)) {
+        setShowUserMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
 
   const { data: notifData } = useQuery({
     queryKey: ['header-notifications'],
@@ -104,7 +120,7 @@ export default function Header({ onViewChange, onMenuToggle }) {
             </AnimatePresence>
           </motion.button>
           {/* Notifications Bell */}
-          <div className="relative">
+          <div className="relative" ref={notifRef}>
             <button
               onClick={() => setShowNotifications(!showNotifications)}
               className="relative p-2 rounded-xl hover:bg-white/5 transition-colors"
@@ -155,7 +171,7 @@ export default function Header({ onViewChange, onMenuToggle }) {
           </div>
 
           {/* User Menu */}
-          <div className="relative">
+          <div className="relative" ref={userRef}>
             <button
               onClick={() => setShowUserMenu(!showUserMenu)}
               className="flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-white/5 transition-colors"

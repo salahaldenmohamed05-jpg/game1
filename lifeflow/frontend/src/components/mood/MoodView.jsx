@@ -83,11 +83,15 @@ export default function MoodView() {
   } : null;
 
   // statsData.data has average_mood, mood_by_day, mood_trend array
+  // NOTE: backend returns average_mood as a string (e.g. "7.0"), so always parse to float
   const stats = statsData?.data ? {
-    average: statsData.data.average_mood,
-    streak: statsData.data.analytics?.total_entries,
-    total_entries: statsData.data.mood_by_day?.length || 0,
+    average: parseFloat(statsData.data.average_mood) || 0,
+    streak: statsData.data.analytics?.total_entries || statsData.data.streak || 0,
+    total_entries: statsData.data.total_entries || statsData.data.mood_by_day?.length || 0,
     trend: statsData.data.mood_trend || statsData.data.mood_by_day,
+    best_day: statsData.data.best_day_of_week,
+    common_emotion: statsData.data.most_common_emotion,
+    ai_insight: statsData.data.ai_insight,
   } : null;
 
   // Build chart data from mood_by_day or mood_trend
@@ -222,7 +226,9 @@ export default function MoodView() {
       {stats && (
         <div className="grid grid-cols-3 gap-3">
           <div className="glass-card p-4 text-center">
-            <div className="text-2xl font-black gradient-text">{stats.average?.toFixed(1) || '-'}</div>
+            <div className="text-2xl font-black gradient-text">
+              {stats.average > 0 ? stats.average.toFixed(1) : '-'}
+            </div>
             <div className="text-xs text-gray-400 mt-1">متوسط المزاج</div>
           </div>
           <div className="glass-card p-4 text-center">
@@ -233,6 +239,12 @@ export default function MoodView() {
             <div className="text-2xl font-black text-purple-400">{stats.total_entries || 0}</div>
             <div className="text-xs text-gray-400 mt-1">إجمالي السجلات</div>
           </div>
+        </div>
+      )}
+      {/* AI Insight from stats */}
+      {stats?.ai_insight && (
+        <div className="glass-card p-4 border border-primary-500/20">
+          <p className="text-xs text-primary-300 leading-relaxed">💡 {stats.ai_insight}</p>
         </div>
       )}
 

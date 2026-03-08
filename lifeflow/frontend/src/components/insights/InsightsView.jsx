@@ -6,11 +6,11 @@
 
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Brain, TrendingUp, Calendar, ChevronDown, ChevronUp,
   Lightbulb, Star, AlertTriangle, Check, Sparkles, Crown,
-  BookOpen, BarChart2, Download, RefreshCw
+  BookOpen, BarChart2, Download, RefreshCw, Zap
 } from 'lucide-react';
 import {
   RadarChart, Radar, PolarGrid, PolarAngleAxis,
@@ -19,11 +19,13 @@ import {
 } from 'recharts';
 import api from '../../utils/api';
 import UpgradeModal from '../subscription/UpgradeModal';
+import toast from 'react-hot-toast';
 
 export default function InsightsView({ userPlan }) {
   const [showUpgrade, setShowUpgrade] = useState(false);
   const [expandedAudit, setExpandedAudit] = useState(null);
   const isPremium = ['premium', 'enterprise', 'trial'].includes(userPlan);
+  const queryClient = useQueryClient();
 
   // Fetch insights (basic - available to all)
   const insightsQuery = useQuery({
@@ -31,6 +33,14 @@ export default function InsightsView({ userPlan }) {
     queryFn: () => api.get('/insights'),
     retry: 1,
     staleTime: 5 * 60 * 1000,
+  });
+
+  // Fetch daily summary
+  const dailySummaryQuery = useQuery({
+    queryKey: ['insights-daily'],
+    queryFn: () => api.get('/insights/daily'),
+    retry: 1,
+    staleTime: 10 * 60 * 1000,
   });
 
   // Fetch performance history (premium)
@@ -49,9 +59,19 @@ export default function InsightsView({ userPlan }) {
     retry: 1,
   });
 
-  const insights  = insightsQuery.data?.data || [];
-  const history   = performanceQuery.data?.data || [];
-  const audits    = auditQuery.data?.data || [];
+  // Generate productivity tips mutation
+  const generateTipsMutation = useMutation({
+    mutationFn: () => api.get('/insights/productivity-tips'),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['insights'] });
+      toast.success('تم توليد رؤى جديدة! 🧠');
+    },
+    onError: () => toast.error('فشل في توليد الرؤى'),
+  });
+
+  const insights  = insightsQuery.data?.data?.insights || insightsQuery.data?.data || [];
+  const history   = performanceQuery.data?.data?.history || performanceQuery.data?.data || [];
+  const audits    = auditQuery.data?.data?.audits || auditQuery.data?.data || [];
 
   // Build radar chart data from latest scores
   const latestScores = history[history.length - 1];
@@ -75,15 +95,55 @@ export default function InsightsView({ userPlan }) {
           </h1>
           <p className="text-gray-400 text-sm mt-1">تحليل ذكي لأنماطك وسلوكياتك</p>
         </div>
-        {isPremium && (
+        <div className="flex items-center gap-2">
           <button
-            onClick={() => { performanceQuery.refetch(); auditQuery.refetch(); }}
-            className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
+            onClick={() => generateTipsMutation.mutate()}
+            disabled={generateTipsMutation.isPending}
+            className="flex items-center gap-2 px-3 py-2 rounded-xl bg-primary-500/20 text-primary-300 hover:bg-primary-500/30 transition-colors text-sm"
           >
-            <RefreshCw size={18} className={performanceQuery.isFetching ? 'animate-spin' : ''} />
+            <Zap size={16} className={generateTipsMutation.isPending ? 'animate-pulse' : ''} />
+            {generateTipsMutation.isPending ? 'جارٍ التوليد...' : 'توليد رؤى'}
           </button>
-        )}
+          {isPremium && (
+            <button
+              onClick={() => { performanceQuery.refetch(); auditQuery.refetch(); }}
+              className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
+            >
+              <RefreshCw size={18} className={performanceQuery.isFetching ? 'animate-spin' : ''} />
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* Daily Summary Card */}
+      {dailySummaryQuery.data?.data && (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="rounded-2xl p-5"
+          style={{ background: 'linear-gradient(135deg, rgba(108,99,255,0.15), rgba(16,185,129,0.1))', border: '1px solid rgba(108,99,255,0.3)' }}
+        >
+          <div className="flex items-center gap-2 mb-3">
+            <Sparkles size={18} className="text-primary-400" />
+            <h3 className="font-bold text-white text-sm">{dailySummaryQuery.data.data.title}</h3>
+          </div>
+          <p className="text-gray-300 text-sm leading-relaxed">{dailySummaryQuery.data.data.content}</p>
+          {dailySummaryQuery.data.data.data && (
+            <div className="grid grid-cols-3 gap-3 mt-4">
+              {[
+                { label: 'المهام', value: `${dailySummaryQuery.data.data.data.tasks?.completed}/${dailySummaryQuery.data.data.data.tasks?.total}`, color: '#6C63FF' },
+                { label: 'العادات', value: `${dailySummaryQuery.data.data.data.habits?.completed}/${dailySummaryQuery.data.data.data.habits?.total}`, color: '#10B981' },
+                { label: 'المزاج', value: dailySummaryQuery.data.data.data.mood ? `${dailySummaryQuery.data.data.data.mood}/10` : '-', color: '#F59E0B' },
+              ].map(m => (
+                <div key={m.label} className="text-center p-2 rounded-lg bg-white/5">
+                  <div className="font-bold text-sm" style={{ color: m.color }}>{m.value}</div>
+                  <div className="text-gray-500 text-xs">{m.label}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </motion.div>
+      )}
 
       {/* Basic Insights (All Users) */}
       <section>
@@ -101,7 +161,7 @@ export default function InsightsView({ userPlan }) {
               <InsightCard key={insight.id || i} insight={insight} index={i} />
             ))
           ) : (
-            <EmptyInsights />
+            <EmptyInsights onGenerate={() => generateTipsMutation.mutate()} isLoading={generateTipsMutation.isPending} />
           )}
         </div>
       </section>
@@ -436,12 +496,20 @@ function PremiumInsightsBanner({ onUpgrade }) {
 // EMPTY STATE
 // ─────────────────────────────────────────────────────────────────────────────
 
-function EmptyInsights() {
+function EmptyInsights({ onGenerate, isLoading }) {
   return (
     <div className="col-span-2 text-center py-12">
       <div className="text-5xl mb-4">🌱</div>
       <h3 className="text-white font-semibold mb-2">لا توجد رؤى بعد</h3>
-      <p className="text-gray-400 text-sm">أضف بعض المهام والعادات لتوليد رؤى مخصصة لك</p>
+      <p className="text-gray-400 text-sm mb-4">أضف بعض المهام والعادات لتوليد رؤى مخصصة لك</p>
+      <button
+        onClick={onGenerate}
+        disabled={isLoading}
+        className="px-4 py-2 rounded-xl bg-primary-500/20 text-primary-300 hover:bg-primary-500/30 transition-colors text-sm flex items-center gap-2 mx-auto"
+      >
+        <Zap size={16} />
+        {isLoading ? 'جارٍ التوليد...' : 'توليد رؤى الآن'}
+      </button>
     </div>
   );
 }
