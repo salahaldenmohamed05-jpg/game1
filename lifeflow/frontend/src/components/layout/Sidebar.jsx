@@ -46,11 +46,11 @@ export default function Sidebar({ activeView, setActiveView, isOpen, setIsOpen, 
       initial={false}
       animate={{ width: isOpen ? 256 : 64 }}
       transition={{ type: 'spring', stiffness: 300, damping: 35 }}
-      className="fixed right-0 top-0 h-full z-40 flex flex-col overflow-hidden"
+      className="h-full flex flex-col overflow-hidden"
       style={{
-        background: 'rgba(10, 10, 20, 0.95)',
+        background: 'var(--sidebar-bg)',
         backdropFilter: 'blur(20px)',
-        borderLeft: '1px solid rgba(255,255,255,0.06)',
+        borderLeft: '1px solid var(--border)',
       }}
     >
       {/* Toggle Button */}

@@ -51,8 +51,8 @@ export default function DashboardHome({ dashboardData, isLoading }) {
         </motion.div>
       )}
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      {/* Stats Cards - 2 cols on mobile, 4 on desktop */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <StatCard
           icon={<CheckCircle className="text-primary-400" size={20} />}
           label="مهام اليوم"
@@ -83,8 +83,8 @@ export default function DashboardHome({ dashboardData, isLoading }) {
         />
       </div>
 
-      {/* Main Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {/* Main Grid - stack on mobile */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Tasks Column */}
         <div className="lg:col-span-2 space-y-4">
           {/* Today's Tasks */}

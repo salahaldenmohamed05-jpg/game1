@@ -6,20 +6,22 @@
 
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Bell, Crown, Zap, ChevronDown, LogOut, User, Settings, X } from 'lucide-react';
+import { Bell, Crown, Zap, ChevronDown, LogOut, User, Settings, X, Menu, Sun, Moon } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import useAuthStore from '../../store/authStore';
+import useThemeStore from '../../store/themeStore';
 import api from '../../utils/api';
 import toast from 'react-hot-toast';
 
-export default function Header({ onViewChange }) {
+export default function Header({ onViewChange, onMenuToggle }) {
   const { user, logout } = useAuthStore();
+  const { isDark, toggleTheme } = useThemeStore();
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
 
   const { data: notifData } = useQuery({
     queryKey: ['header-notifications'],
-    queryFn: () => api.get('/notifications?limit=5&unread=true'),
+    queryFn: () => api.get('/notifications?limit=5&unread_only=true'),  // fixed: was unread=true
     refetchInterval: 60000,
     retry: 1,
   });
@@ -32,7 +34,7 @@ export default function Header({ onViewChange }) {
   });
 
   const notifications = notifData?.data?.notifications || [];
-  const unreadCount = notifData?.data?.unread_count || 0;
+  const unreadCount = notifData?.data?.unread || notifData?.data?.unread_count || 0;  // backend uses 'unread'
   const plan = subData?.data?.plan || user?.subscription_plan || 'free';
   const isPremium = ['premium', 'enterprise', 'trial'].includes(plan);
   const trialDays = subData?.data?.trial_days_remaining;
@@ -54,24 +56,53 @@ export default function Header({ onViewChange }) {
   return (
     <header className="sticky top-0 z-40 glass-card border-b border-white/5 px-4 py-3">
       <div className="flex items-center justify-between max-w-7xl mx-auto">
-        {/* Left: Plan Badge & Score */}
-        <div className="flex items-center gap-3">
-          <div className={`flex items-center gap-1 px-3 py-1 rounded-full text-xs font-semibold ${planInfo.color}`}>
-            {planInfo.icon}
-            {planInfo.label}
+        {/* Mobile hamburger menu */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onMenuToggle}
+            className="p-2 rounded-xl hover:bg-white/5 text-gray-400 hover:text-white transition-colors md:hidden"
+          >
+            <Menu size={20} />
+          </button>
+
+          {/* Left: Plan Badge */}
+          <div className="flex items-center gap-2">
+            <div className={`flex items-center gap-1 px-3 py-1 rounded-full text-xs font-semibold ${planInfo.color}`}>
+              {planInfo.icon}
+              {planInfo.label}
+            </div>
+            {!isPremium && (
+              <button
+                onClick={() => onViewChange?.('subscription')}
+                className="text-xs text-primary-400 hover:text-primary-300 transition-colors hidden sm:block"
+              >
+                ترقية ←
+              </button>
+            )}
           </div>
-          {!isPremium && (
-            <button
-              onClick={() => onViewChange?.('subscription')}
-              className="text-xs text-primary-400 hover:text-primary-300 transition-colors"
-            >
-              ترقية ←
-            </button>
-          )}
         </div>
 
-        {/* Right: Notifications + User */}
+        {/* Right: Notifications + Theme Toggle + User */}
         <div className="flex items-center gap-3">
+          {/* Theme Toggle */}
+          <motion.button
+            whileTap={{ scale: 0.85 }}
+            onClick={toggleTheme}
+            className="relative p-2 rounded-xl hover:bg-white/5 transition-colors"
+            title={isDark ? 'تبديل للثيم النهاري' : 'تبديل للثيم الليلي'}
+          >
+            <AnimatePresence mode="wait">
+              {isDark ? (
+                <motion.div key="sun" initial={{ opacity: 0, rotate: -90 }} animate={{ opacity: 1, rotate: 0 }} exit={{ opacity: 0, rotate: 90 }} transition={{ duration: 0.2 }}>
+                  <Sun size={20} className="text-yellow-400" />
+                </motion.div>
+              ) : (
+                <motion.div key="moon" initial={{ opacity: 0, rotate: 90 }} animate={{ opacity: 1, rotate: 0 }} exit={{ opacity: 0, rotate: -90 }} transition={{ duration: 0.2 }}>
+                  <Moon size={20} className="text-primary-400" />
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </motion.button>
           {/* Notifications Bell */}
           <div className="relative">
             <button

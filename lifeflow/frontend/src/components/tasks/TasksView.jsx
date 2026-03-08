@@ -191,10 +191,10 @@ export default function TasksView() {
       <AnimatePresence>
         {showAdd && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
             onClick={(e) => e.target === e.currentTarget && setShowAdd(false)}>
             <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.9, y: 20 }}
-              className="glass-card p-6 w-full max-w-lg">
+              className="glass-card p-5 w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl overflow-y-auto max-h-screen sm:max-h-[90vh]">
               <div className="flex items-center justify-between mb-5">
                 <h3 className="text-lg font-bold text-white">مهمة جديدة ✨</h3>
                 <button onClick={() => setShowAdd(false)} className="p-1 text-gray-400 hover:text-white"><X size={20} /></button>
@@ -262,10 +262,10 @@ export default function TasksView() {
       <AnimatePresence>
         {showBreakdown && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
             onClick={(e) => e.target === e.currentTarget && setShowBreakdown(false)}>
             <motion.div initial={{ scale: 0.9 }} animate={{ scale: 1 }} exit={{ scale: 0.9 }}
-              className="glass-card p-6 w-full max-w-lg">
+              className="glass-card p-5 w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl">
               <div className="flex items-center justify-between mb-5">
                 <h3 className="text-lg font-bold text-white flex items-center gap-2"><Brain size={18} className="text-primary-400" /> تقسيم ذكي للمهمة</h3>
                 <button onClick={() => setShowBreakdown(false)} className="p-1 text-gray-400 hover:text-white"><X size={20} /></button>

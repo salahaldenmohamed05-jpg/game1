@@ -38,19 +38,19 @@ export default function MoodView() {
   const [showHistory, setShowHistory] = useState(false);
   const queryClient = useQueryClient();
 
-  // Today's mood
+  // Today's mood - backend returns { success, data: entry|null, has_checked_in }
   const { data: todayData } = useQuery({
     queryKey: ['mood-today'],
     queryFn: () => moodAPI.getTodayMood(),
   });
 
-  // Mood history/stats
+  // Mood analytics - backend returns { success, data: { average_mood, mood_trend, ... } }
   const { data: statsData } = useQuery({
     queryKey: ['mood-stats'],
     queryFn: () => moodAPI.getMoodStats(30),
   });
 
-  // Mood log
+  // Mood log history - backend returns { success, data: { entries, analytics } }
   const { data: logData } = useQuery({
     queryKey: ['mood-log'],
     queryFn: () => moodAPI.getMoodLog(14),
@@ -74,12 +74,27 @@ export default function MoodView() {
     onError: () => toast.error('فشل في تسجيل المزاج'),
   });
 
-  const todayMood = todayData?.data;
-  const stats = statsData?.data;
-  const chartData = stats?.trend?.map(d => ({
+  // todayData.data is the entry or null; has_checked_in is top-level
+  const todayMood = todayData ? {
+    logged_today: todayData.has_checked_in,
+    mood_score: todayData.data?.mood_score,
+    note: todayData.data?.journal_entry || todayData.data?.note,
+    ai_insight: todayData.data?.ai_recommendation || todayData.data?.ai_analysis,
+  } : null;
+
+  // statsData.data has average_mood, mood_by_day, mood_trend array
+  const stats = statsData?.data ? {
+    average: statsData.data.average_mood,
+    streak: statsData.data.analytics?.total_entries,
+    total_entries: statsData.data.mood_by_day?.length || 0,
+    trend: statsData.data.mood_trend || statsData.data.mood_by_day,
+  } : null;
+
+  // Build chart data from mood_by_day or mood_trend
+  const chartData = (statsData?.data?.mood_by_day || statsData?.data?.mood_trend || []).map(d => ({
     date: d.date,
-    score: d.mood_score,
-  })) || [];
+    score: d.score || d.mood_score,
+  }));
 
   const toggleEmotion = (emotion) => {
     setSelectedEmotions(prev =>
@@ -265,14 +280,14 @@ export default function MoodView() {
       </button>
 
       <AnimatePresence>
-        {showHistory && logData?.data?.entries && (
+        {showHistory && (logData?.data?.entries || logData?.data?.analytics) && (
           <motion.div
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: 'auto' }}
             exit={{ opacity: 0, height: 0 }}
             className="space-y-2"
           >
-            {logData.data.entries.map((entry, i) => {
+            {(logData?.data?.entries || []).map((entry, i) => {
               const moodInfo = MOOD_EMOJIS.find(m => m.score === entry.mood_score);
               return (
                 <motion.div
@@ -297,7 +312,7 @@ export default function MoodView() {
                         ))}
                       </div>
                     )}
-                    {entry.note && <p className="text-xs text-gray-400 mt-1">{entry.note}</p>}
+                    {(entry.note || entry.journal_entry) && <p className="text-xs text-gray-400 mt-1">{entry.note || entry.journal_entry}</p>}
                   </div>
                   <div className="text-right">
                     <div className="text-lg font-black" style={{ color: moodInfo?.color }}>{entry.mood_score}</div>

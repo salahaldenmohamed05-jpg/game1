@@ -25,9 +25,9 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
-// Response interceptor — refresh token on 401
+// Response interceptor — unwrap response.data + refresh token on 401
 api.interceptors.response.use(
-  (response) => response,
+  (response) => response.data,  // unwrap: components receive { success, data, message } directly
   async (error) => {
     const original = error.config;
     if (error.response?.status === 401 && !original._retry) {
@@ -82,20 +82,20 @@ export const taskAPI = {
 // ─── Habit API ────────────────────────────────────────────────────────────────
 export const habitAPI = {
   getHabits: () => api.get('/habits'),
-  getTodaySummary: () => api.get('/habits/today'),
+  getTodaySummary: () => api.get('/habits/today-summary'),  // fixed: was /habits/today
   createHabit: (data) => api.post('/habits', data),
   updateHabit: (id, data) => api.put(`/habits/${id}`, data),
   deleteHabit: (id) => api.delete(`/habits/${id}`),
-  checkIn: (id, data) => api.post(`/habits/${id}/checkin`, data),
+  checkIn: (id, data) => api.post(`/habits/${id}/check-in`, data),  // fixed: was /checkin
   getStats: (id) => api.get(`/habits/${id}/stats`),
 };
 
 // ─── Mood API ─────────────────────────────────────────────────────────────────
 export const moodAPI = {
   getTodayMood: () => api.get('/mood/today'),
-  logMood: (data) => api.post('/mood', data),
-  getMoodStats: (days = 30) => api.get(`/mood/stats?days=${days}`),
-  getMoodLog: (days = 14) => api.get(`/mood?days=${days}`),
+  logMood: (data) => api.post('/mood/check-in', data),  // fixed: was POST /mood
+  getMoodStats: (days = 30) => api.get(`/mood/analytics`),  // fixed: was /mood/stats
+  getMoodLog: (days = 14) => api.get(`/mood/history?days=${days}`),  // fixed: was GET /mood
 };
 
 // ─── Dashboard API ────────────────────────────────────────────────────────────

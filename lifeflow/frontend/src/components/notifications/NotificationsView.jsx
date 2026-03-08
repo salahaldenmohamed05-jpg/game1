@@ -39,7 +39,7 @@ export default function NotificationsView() {
 
   const { data, isLoading } = useQuery({
     queryKey: ['notifications', filter],
-    queryFn: () => api.get(`/notifications?limit=50${filter === 'unread' ? '&unread=true' : ''}`),
+    queryFn: () => api.get(`/notifications?limit=50${filter === 'unread' ? '&unread_only=true' : ''}`),  // fixed: was unread=true
   });
 
   const markReadMutation = useMutation({
@@ -60,7 +60,7 @@ export default function NotificationsView() {
   });
 
   const notifications = data?.data?.notifications || [];
-  const unreadCount = data?.data?.unread_count || 0;
+  const unreadCount = data?.data?.unread || data?.data?.unread_count || 0;  // backend uses 'unread'
 
   const filtered = filter === 'unread'
     ? notifications.filter(n => !n.is_read)

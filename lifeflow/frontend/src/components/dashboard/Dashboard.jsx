@@ -78,28 +78,32 @@ export default function Dashboard() {
         <div className="absolute top-1/2 left-1/2 w-64 h-64 bg-primary-500/3 rounded-full blur-3xl transform -translate-x-1/2 -translate-y-1/2" />
       </div>
 
-      {/* Mobile sidebar overlay */}
+      {/* Mobile sidebar overlay - tap to close */}
       {sidebarOpen && (
         <div
-          className="fixed inset-0 bg-black/50 z-30 md:hidden"
+          className="fixed inset-0 bg-black/60 z-30 md:hidden"
           onClick={() => setSidebarOpen(false)}
         />
       )}
 
-      {/* Sidebar */}
-      <Sidebar
-        activeView={activeView}
-        setActiveView={(view) => {
-          setActiveView(view);
-          if (window.innerWidth < 768) setSidebarOpen(false);
-        }}
-        isOpen={sidebarOpen}
-        setIsOpen={setSidebarOpen}
-        dashboardData={dashboardData?.data}
-        userPlan={userPlan}
-      />
+      {/* Sidebar - hidden on mobile unless open */}
+      <div className={`fixed right-0 top-0 h-full z-40 transition-transform duration-300 ${
+        sidebarOpen ? 'translate-x-0' : 'translate-x-full md:translate-x-0'
+      }`}>
+        <Sidebar
+          activeView={activeView}
+          setActiveView={(view) => {
+            setActiveView(view);
+            if (window.innerWidth < 768) setSidebarOpen(false);
+          }}
+          isOpen={sidebarOpen}
+          setIsOpen={setSidebarOpen}
+          dashboardData={dashboardData?.data}
+          userPlan={userPlan}
+        />
+      </div>
 
-      {/* Main Content */}
+      {/* Main Content - full width on mobile, shift on desktop */}
       <div
         className={`flex-1 flex flex-col overflow-hidden transition-all duration-300 ${
           sidebarOpen ? 'md:mr-64' : 'md:mr-16'
@@ -108,6 +112,7 @@ export default function Dashboard() {
         <Header
           onViewChange={setActiveView}
           activeView={activeView}
+          onMenuToggle={() => setSidebarOpen(!sidebarOpen)}
         />
 
         {/* Page Content */}
