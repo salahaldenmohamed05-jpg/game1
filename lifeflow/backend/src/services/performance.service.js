@@ -71,7 +71,8 @@ async function computeDailyScore(userId, dateStr = null, timezone = 'Africa/Cair
     const [tasks, habitLogs, moodEntries, user] = await Promise.all([
       Task.findAll({ where: { user_id: userId } }),
       fetchHabitLogs(userId, dayStart, dayEnd),
-      MoodEntry.findAll({ where: { user_id: userId, createdAt: { [Op.between]: [dayStart, dayEnd] } } }),
+      // Fix: use entry_date (DATEONLY) not createdAt for mood lookup
+      MoodEntry.findAll({ where: { user_id: userId, entry_date: today } }),
       User.findByPk(userId),
     ]);
 

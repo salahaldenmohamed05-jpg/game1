@@ -27,7 +27,7 @@ exports.getTasks = async (req, res) => {
     if (status) where.status = status;
     if (category) where.category = category;
     if (priority) where.priority = priority;
-    if (search) where.title = { [Op.iLike]: `%${search}%` };
+    if (search) where.title = { [Op.like]: `%${search}%` };  // SQLite-compatible (was iLike)
 
     // Filter tasks due today
     if (due_today === 'true') {

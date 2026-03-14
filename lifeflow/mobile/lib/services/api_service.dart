@@ -316,4 +316,66 @@ class ApiService {
       return {'success': false, 'error': 'تعذر تحميل الملف الشخصي'};
     }
   }
+
+  // ─── Intelligence (Life Score, Timeline, Predictions) ────────────────────
+
+  Future<Map<String, dynamic>> getLifeScore({int days = 7, String? token}) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/intelligence/life-score?days=$days'),
+        headers: _headers(token),
+      ).timeout(const Duration(seconds: 15));
+      return _handleResponse(response);
+    } catch (e) {
+      return {'success': false, 'error': 'تعذر تحميل نقاط الحياة'};
+    }
+  }
+
+  Future<Map<String, dynamic>> getTimeline({int days = 30, String? token}) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/intelligence/timeline?days=$days'),
+        headers: _headers(token),
+      ).timeout(const Duration(seconds: 20));
+      return _handleResponse(response);
+    } catch (e) {
+      return {'success': false, 'error': 'تعذر تحميل الجدول الزمني'};
+    }
+  }
+
+  Future<Map<String, dynamic>> getBurnoutRisk([String? token]) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/intelligence/burnout-risk'),
+        headers: _headers(token),
+      ).timeout(const Duration(seconds: 15));
+      return _handleResponse(response);
+    } catch (e) {
+      return {'success': false, 'error': 'تعذر تقييم الإجهاد'};
+    }
+  }
+
+  Future<Map<String, dynamic>> getMoodForecast({int days = 7, String? token}) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/intelligence/predict/mood?days=$days'),
+        headers: _headers(token),
+      ).timeout(const Duration(seconds: 15));
+      return _handleResponse(response);
+    } catch (e) {
+      return {'success': false, 'error': 'تعذر تنبؤ المزاج'};
+    }
+  }
+
+  Future<Map<String, dynamic>> getLifeTrajectory([String? token]) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/intelligence/trajectory'),
+        headers: _headers(token),
+      ).timeout(const Duration(seconds: 15));
+      return _handleResponse(response);
+    } catch (e) {
+      return {'success': false, 'error': 'تعذر تحميل مسار الأداء'};
+    }
+  }
 }

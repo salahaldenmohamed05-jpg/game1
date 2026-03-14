@@ -57,7 +57,22 @@ async function connectDB() {
     await sequelize.authenticate();
     const dialect = sequelize.getDialect();
     logger.info(`📦 Database connected (${dialect})`);
-    await sequelize.sync({ alter: true });
+
+    if (dialect === 'sqlite') {
+      // SQLite: use sync without alter to avoid FK constraint errors
+      // New columns added via migrations or alter:false handles gracefully
+      try {
+        await sequelize.sync({ alter: false });
+      } catch (syncErr) {
+        // If sync fails, try force: false (safest option - only creates missing tables)
+        logger.warn('⚠️  Standard sync failed, using safe sync:', syncErr.message);
+        await sequelize.sync({ force: false });
+      }
+    } else {
+      // PostgreSQL: safe to use alter:true
+      await sequelize.sync({ alter: true });
+    }
+
     logger.info('📊 Database tables synchronized');
     return sequelize;
   } catch (error) {

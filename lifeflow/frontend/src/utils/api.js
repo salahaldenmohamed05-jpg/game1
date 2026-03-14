@@ -162,3 +162,16 @@ export const calendarAPI = {
   getEvents: (params) => api.get('/calendar', { params }),
   createEvent: (data) => api.post('/calendar', data),
 };
+
+// ─── Intelligence API (Life Score, Timeline, Predictions) ─────────────────────
+export const intelligenceAPI = {
+  getLifeScore: (days = 7) => api.get(`/intelligence/life-score?days=${days}`),
+  getLifeScoreHistory: (days = 30) => api.get(`/intelligence/life-score/history?days=${days}`),
+  getTimeline: (days = 30, types = null) =>
+    api.get(`/intelligence/timeline?days=${days}${types ? '&types=' + types : ''}`),
+  predictTask: (taskId) => api.get(`/intelligence/predict/task/${taskId}`),
+  predictHabit: (habitId, days = 7) => api.get(`/intelligence/predict/habit/${habitId}?days=${days}`),
+  forecastMood: (days = 7) => api.get(`/intelligence/predict/mood?days=${days}`),
+  getBurnoutRisk: () => api.get('/intelligence/burnout-risk'),
+  getTrajectory: () => api.get('/intelligence/trajectory'),
+};

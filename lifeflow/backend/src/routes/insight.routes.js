@@ -14,4 +14,8 @@ router.get('/weekly', insightController.getWeeklyReport);
 router.get('/behavior', insightController.getBehaviorAnalysis);
 router.get('/productivity-tips', insightController.getProductivityTips);
 
+// POST /insights/generate — used by frontend aiAPI.generateInsight
+// Delegates to daily summary generator (idempotent)
+router.post('/generate', insightController.getDailySummary);
+
 module.exports = router;

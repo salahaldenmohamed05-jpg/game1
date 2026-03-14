@@ -10,8 +10,16 @@ router.use(protect);
 
 router.get('/', habitController.getHabits);
 router.get('/today-summary', habitController.getTodaySummary);
+
+// GET /habits/today — Flutter mobile alias for today-summary
+router.get('/today', habitController.getTodaySummary);
+
 router.post('/', habitController.createHabit);
 router.post('/:id/check-in', habitController.checkIn);
+
+// POST /habits/:id/checkin — Flutter mobile alias (without hyphen)
+router.post('/:id/checkin', habitController.checkIn);
+
 router.get('/:id/stats', habitController.getHabitStats);
 
 module.exports = router;
