@@ -84,16 +84,33 @@ export default function TasksView() {
     mutationFn: (data) => taskAPI.createTask(data),
     onSuccess: () => { invalidate(); toast.success('تم إضافة المهمة الفرعية'); setAddingSubtaskFor(null); setNewSubtask({ title: '', estimated_duration: '' }); },
     onError: (e) => toast.error(e.message || 'فشل في إضافة المهمة الفرعية'),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tasks'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      toast.success('تم إنشاء المهمة ✅');
+      setShowAdd(false);
+      setNewTask({ title: '', description: '', category: 'personal', priority: 'medium', due_date: '', estimated_duration: '' });
+    },
+    onError: (err) => toast.error(err.message || 'فشل في إنشاء المهمة'),
   });
 
   const completeMutation = useMutation({
     mutationFn: (id) => taskAPI.completeTask(id),
     onSuccess: () => { invalidate(); toast.success('أحسنت! 🎉'); },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tasks'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      toast.success('أحسنت! تم إتمام المهمة 🎉');
+    },
   });
 
   const deleteMutation = useMutation({
     mutationFn: taskAPI.deleteTask,
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['tasks'] }); toast.success('تم الحذف'); },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tasks'] });
+      toast.success('تم حذف المهمة');
+    },
   });
 
   const breakdownMutation = useMutation({

@@ -38,6 +38,22 @@ export default function Header({ onViewChange, onMenuToggle }) {
   const { data: notifData } = useQuery({
     queryKey: ['header-notifications'],
     queryFn: () => api.get('/notifications?limit=5&unread_only=true'),  // fixed: was unread=true
+import { useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Bell, Crown, Zap, ChevronDown, LogOut, User, Settings, X } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
+import useAuthStore from '../../store/authStore';
+import api from '../../utils/api';
+import toast from 'react-hot-toast';
+
+export default function Header({ onViewChange }) {
+  const { user, logout } = useAuthStore();
+  const [showUserMenu, setShowUserMenu] = useState(false);
+  const [showNotifications, setShowNotifications] = useState(false);
+
+  const { data: notifData } = useQuery({
+    queryKey: ['header-notifications'],
+    queryFn: () => api.get('/notifications?limit=5&unread=true'),
     refetchInterval: 60000,
     retry: 1,
   });
@@ -51,6 +67,7 @@ export default function Header({ onViewChange, onMenuToggle }) {
 
   const notifications = notifData?.data?.notifications || [];
   const unreadCount = notifData?.data?.unread || notifData?.data?.unread_count || 0;  // backend uses 'unread'
+  const unreadCount = notifData?.data?.unread_count || 0;
   const plan = subData?.data?.plan || user?.subscription_plan || 'free';
   const isPremium = ['premium', 'enterprise', 'trial'].includes(plan);
   const trialDays = subData?.data?.trial_days_remaining;
@@ -172,6 +189,92 @@ export default function Header({ onViewChange, onMenuToggle }) {
 
           {/* User Menu */}
           <div className="relative" ref={userRef}>
+            <button
+              onClick={() => setShowUserMenu(!showUserMenu)}
+              className="flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-white/5 transition-colors"
+            >
+              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary-500 to-purple-600 flex items-center justify-center text-white text-sm font-bold">
+                {user?.name?.[0] || 'م'}
+              </div>
+              <span className="text-sm text-gray-300 hidden md:block">{user?.name || 'المستخدم'}</span>
+              <ChevronDown size={14} className="text-gray-400" />
+            </button>
+
+
+  return (
+    <header className="sticky top-0 z-40 glass-card border-b border-white/5 px-4 py-3">
+      <div className="flex items-center justify-between max-w-7xl mx-auto">
+        {/* Left: Plan Badge & Score */}
+        <div className="flex items-center gap-3">
+          <div className={`flex items-center gap-1 px-3 py-1 rounded-full text-xs font-semibold ${planInfo.color}`}>
+            {planInfo.icon}
+            {planInfo.label}
+          </div>
+          {!isPremium && (
+            <button
+              onClick={() => onViewChange?.('subscription')}
+              className="text-xs text-primary-400 hover:text-primary-300 transition-colors"
+            >
+              ترقية ←
+            </button>
+          )}
+        </div>
+
+        {/* Right: Notifications + User */}
+        <div className="flex items-center gap-3">
+          {/* Notifications Bell */}
+          <div className="relative">
+            <button
+              onClick={() => setShowNotifications(!showNotifications)}
+              className="relative p-2 rounded-xl hover:bg-white/5 transition-colors"
+            >
+              <Bell size={20} className="text-gray-300" />
+              {unreadCount > 0 && (
+                <span className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 rounded-full text-xs text-white flex items-center justify-center font-bold">
+                  {unreadCount > 9 ? '9+' : unreadCount}
+                </span>
+              )}
+            </button>
+
+            <AnimatePresence>
+              {showNotifications && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                  className="absolute left-0 top-full mt-2 w-80 glass-card p-4 shadow-2xl z-50"
+                >
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="font-semibold text-white text-sm">الإشعارات</h3>
+                    <button onClick={() => setShowNotifications(false)}>
+                      <X size={16} className="text-gray-400" />
+                    </button>
+                  </div>
+                  {notifications.length === 0 ? (
+                    <p className="text-gray-400 text-sm text-center py-4">لا توجد إشعارات جديدة</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {notifications.map(n => (
+                        <div key={n.id} className={`p-3 rounded-xl text-sm ${n.is_read ? 'bg-white/3' : 'bg-primary-500/10 border border-primary-500/20'}`}>
+                          <p className="text-white font-medium">{n.title}</p>
+                          <p className="text-gray-400 text-xs mt-1">{n.body}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <button
+                    onClick={() => { onViewChange?.('notifications'); setShowNotifications(false); }}
+                    className="w-full mt-3 text-xs text-primary-400 hover:text-primary-300 text-center"
+                  >
+                    عرض كل الإشعارات
+                  </button>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          {/* User Menu */}
+          <div className="relative">
             <button
               onClick={() => setShowUserMenu(!showUserMenu)}
               className="flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-white/5 transition-colors"

@@ -51,6 +51,11 @@ export default function Sidebar({ activeView, setActiveView, isOpen, setIsOpen, 
         background: 'var(--sidebar-bg)',
         backdropFilter: 'blur(20px)',
         borderLeft: '1px solid var(--border)',
+      className="fixed right-0 top-0 h-full z-40 flex flex-col overflow-hidden"
+      style={{
+        background: 'rgba(10, 10, 20, 0.95)',
+        backdropFilter: 'blur(20px)',
+        borderLeft: '1px solid rgba(255,255,255,0.06)',
       }}
     >
       {/* Toggle Button */}

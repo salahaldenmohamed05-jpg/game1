@@ -113,6 +113,36 @@ export default function Dashboard() {
           onViewChange={setActiveView}
           activeView={activeView}
           onMenuToggle={() => setSidebarOpen(!sidebarOpen)}
+      {/* Mobile sidebar overlay */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 z-30 md:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
+      {/* Sidebar */}
+      <Sidebar
+        activeView={activeView}
+        setActiveView={(view) => {
+          setActiveView(view);
+          if (window.innerWidth < 768) setSidebarOpen(false);
+        }}
+        isOpen={sidebarOpen}
+        setIsOpen={setSidebarOpen}
+        dashboardData={dashboardData?.data}
+        userPlan={userPlan}
+      />
+
+      {/* Main Content */}
+      <div
+        className={`flex-1 flex flex-col overflow-hidden transition-all duration-300 ${
+          sidebarOpen ? 'md:mr-64' : 'md:mr-16'
+        }`}
+      >
+        <Header
+          onViewChange={setActiveView}
+          activeView={activeView}
         />
 
         {/* Page Content */}
