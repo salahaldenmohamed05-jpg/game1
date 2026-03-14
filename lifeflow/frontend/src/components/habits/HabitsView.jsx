@@ -101,11 +101,11 @@ export default function HabitsView() {
 
       {/* Habits Grid */}
       {isLoading ? (
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           {[...Array(6)].map((_, i) => <div key={i} className="skeleton h-36 rounded-2xl" />)}
         </div>
       ) : (
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           <AnimatePresence>
             {habits.map((habit, idx) => (
               <motion.div
@@ -183,10 +183,10 @@ export default function HabitsView() {
       <AnimatePresence>
         {showAdd && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
             onClick={(e) => e.target === e.currentTarget && setShowAdd(false)}>
             <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.9, y: 20 }}
-              className="glass-card p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto">
+              className="glass-card p-5 w-full sm:max-w-lg max-h-screen sm:max-h-[90vh] overflow-y-auto rounded-t-2xl sm:rounded-2xl">
               <div className="flex items-center justify-between mb-5">
                 <h3 className="text-lg font-bold text-white">عادة جديدة 💪</h3>
                 <button onClick={() => setShowAdd(false)} className="p-1 text-gray-400 hover:text-white"><X size={20} /></button>

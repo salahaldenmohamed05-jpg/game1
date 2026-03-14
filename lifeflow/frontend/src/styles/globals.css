@@ -14,7 +14,11 @@
   padding: 0;
 }
 
-:root {
+/* ========================
+   Dark Theme (default)
+   ======================== */
+:root,
+html.dark {
   --primary: #6C63FF;
   --primary-dark: #5550e0;
   --secondary: #FF6584;
@@ -28,6 +32,43 @@
   --text-secondary: #94A3B8;
   --border: rgba(108, 99, 255, 0.2);
   --card-bg: rgba(22, 33, 62, 0.8);
+  --bg-gradient: linear-gradient(135deg, #1A1A2E 0%, #16213E 50%, #0F3460 100%);
+  --input-bg: rgba(255,255,255,0.05);
+  --input-border: rgba(255,255,255,0.1);
+  --input-text: #E2E8F0;
+  --input-placeholder: rgba(255,255,255,0.3);
+  --skeleton-from: rgba(255,255,255,0.05);
+  --skeleton-via: rgba(255,255,255,0.1);
+  --sidebar-bg: rgba(16, 13, 38, 0.95);
+  color-scheme: dark;
+}
+
+/* ========================
+   Light Theme
+   ======================== */
+html.light {
+  --primary: #6C63FF;
+  --primary-dark: #5550e0;
+  --secondary: #FF6584;
+  --success: #10B981;
+  --warning: #F59E0B;
+  --danger: #EF4444;
+  --dark: #F1F5F9;
+  --surface: #FFFFFF;
+  --surface-light: #EEF2FF;
+  --text-primary: #1E293B;
+  --text-secondary: #64748B;
+  --border: rgba(108, 99, 255, 0.25);
+  --card-bg: rgba(255, 255, 255, 0.9);
+  --bg-gradient: linear-gradient(135deg, #EEF2FF 0%, #F1F5F9 50%, #E0E7FF 100%);
+  --input-bg: rgba(108, 99, 255, 0.05);
+  --input-border: rgba(108, 99, 255, 0.2);
+  --input-text: #1E293B;
+  --input-placeholder: #94A3B8;
+  --skeleton-from: rgba(0,0,0,0.04);
+  --skeleton-via: rgba(0,0,0,0.08);
+  --sidebar-bg: rgba(255, 255, 255, 0.97);
+  color-scheme: light;
 }
 
 html {
@@ -37,10 +78,11 @@ html {
 
 body {
   font-family: 'Cairo', 'Tajawal', system-ui, sans-serif;
-  background: linear-gradient(135deg, #1A1A2E 0%, #16213E 50%, #0F3460 100%);
+  background: var(--bg-gradient);
   min-height: 100vh;
   color: var(--text-primary);
   overflow-x: hidden;
+  transition: background 0.3s ease, color 0.3s ease;
 }
 
 /* ========================
@@ -57,18 +99,28 @@ body {
    ======================== */
 
 .glass-card {
-  background: rgba(22, 33, 62, 0.7);
+  background: var(--card-bg);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(108, 99, 255, 0.2);
+  border: 1px solid var(--border);
   border-radius: 16px;
   transition: all 0.3s ease;
 }
 
 .glass-card:hover {
-  border-color: rgba(108, 99, 255, 0.4);
-  box-shadow: 0 8px 32px rgba(108, 99, 255, 0.2);
+  border-color: rgba(108, 99, 255, 0.5);
+  box-shadow: 0 8px 32px rgba(108, 99, 255, 0.15);
   transform: translateY(-2px);
+}
+
+/* Light theme glass card overrides */
+html.light .glass-card {
+  background: rgba(255, 255, 255, 0.9);
+  border-color: rgba(108, 99, 255, 0.2);
+  box-shadow: 0 2px 16px rgba(0, 0, 0, 0.06);
+}
+html.light .glass-card:hover {
+  box-shadow: 0 8px 32px rgba(108, 99, 255, 0.15);
 }
 
 /* ========================
@@ -109,9 +161,14 @@ body {
    ======================== */
 
 .input-field {
-  @apply w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20 transition-all duration-200;
+  @apply w-full rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-primary-500/20 transition-all duration-200;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  color: var(--input-text);
   direction: rtl;
 }
+.input-field::placeholder { color: var(--input-placeholder); }
+.input-field:focus { border-color: var(--primary); }
 
 /* ========================
    Progress Bar
@@ -202,13 +259,13 @@ body {
 }
 
 /* ========================
-   Task Priority Indicators
+   Task Priority Indicators (RTL: use border-right)
    ======================== */
 
-.priority-urgent { @apply border-l-4 border-red-500; }
-.priority-high { @apply border-l-4 border-orange-500; }
-.priority-medium { @apply border-l-4 border-yellow-500; }
-.priority-low { @apply border-l-4 border-green-500; }
+.priority-urgent { border-right: 4px solid #EF4444; }
+.priority-high { border-right: 4px solid #F97316; }
+.priority-medium { border-right: 4px solid #EAB308; }
+.priority-low { border-right: 4px solid #22C55E; }
 
 /* ========================
    Notification Badge
@@ -236,7 +293,7 @@ body {
    ======================== */
 
 .animated-bg {
-  background: linear-gradient(-45deg, #1A1A2E, #16213E, #0F3460, #1A1A2E);
+  background: var(--bg-gradient);
   background-size: 400% 400%;
   animation: gradientBG 15s ease infinite;
 }
@@ -252,7 +309,7 @@ body {
    ======================== */
 
 .skeleton {
-  background: linear-gradient(90deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.1) 50%, rgba(255,255,255,0.05) 100%);
+  background: linear-gradient(90deg, var(--skeleton-from) 0%, var(--skeleton-via) 50%, var(--skeleton-from) 100%);
   background-size: 200% 100%;
   animation: shimmer 1.5s infinite;
   border-radius: 8px;
@@ -276,4 +333,234 @@ body {
 
 @media (max-width: 768px) {
   .glass-card { border-radius: 12px; }
+
+  /* Prevent horizontal scroll */
+  .overflow-x-auto { -webkit-overflow-scrolling: touch; }
+
+  /* Make input fields larger for touch */
+  .input-field { padding: 14px 16px; font-size: 16px; /* prevents zoom on iOS */ }
+
+  /* Smaller grid gaps on mobile */
+  .grid { gap: 12px; }
+
+  /* Reduce padding in main content area */
+  main { padding: 12px !important; }
+
+  /* Make modals full-screen on mobile */
+  .fixed.inset-0 > .glass-card {
+    max-height: 95vh;
+    overflow-y: auto;
+  }
+
+  /* Habit grid: 2 columns on mobile */
+  .habits-grid { grid-template-columns: repeat(2, 1fr) !important; }
+
+  /* Stats grid: 2 columns on mobile */
+  .stats-grid { grid-template-columns: repeat(2, 1fr) !important; }
+}
+
+/* ========================
+   Loading Spinner
+   ======================== */
+
+.loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid rgba(108, 99, 255, 0.2);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Ensure safe area on iOS */
+@supports (padding: max(0px)) {
+  body {
+    padding-left: max(0px, env(safe-area-inset-left));
+    padding-right: max(0px, env(safe-area-inset-right));
+  }
+}
+
+/* ========================
+   Light Theme Text & Color Overrides
+   ======================== */
+
+html.light body {
+  background: var(--bg-gradient);
+  color: var(--text-primary);
+}
+
+/* White text → dark in light mode */
+html.light .text-white { color: #1E293B !important; }
+html.light .text-gray-100 { color: #1E293B !important; }
+html.light .text-gray-200 { color: #334155 !important; }
+html.light .text-gray-300 { color: #475569 !important; }
+html.light .text-gray-400 { color: #64748B !important; }
+html.light .text-gray-500 { color: #94A3B8 !important; }
+html.light .text-gray-600 { color: #CBD5E1 !important; }
+
+/* Fix dark backgrounds in light mode */
+html.light .bg-dark { background: var(--bg-gradient) !important; }
+html.light [class*="bg-white/3"],
+html.light [class*="bg-white/5"],
+html.light [class*="bg-white/10"] {
+  background: rgba(108, 99, 255, 0.06) !important;
+}
+html.light [class*="bg-white/20"] { background: rgba(108, 99, 255, 0.1) !important; }
+
+/* Sidebar in light mode */
+html.light .sidebar-bg, html.light nav {
+  background: var(--sidebar-bg) !important;
+}
+
+/* Header in light mode */
+html.light header.glass-card,
+html.light .sticky.top-0.glass-card {
+  background: rgba(255,255,255,0.95) !important;
+  border-bottom-color: rgba(108,99,255,0.15) !important;
+}
+
+/* Fix gradient text in light mode */
+html.light .gradient-text {
+  background: linear-gradient(135deg, #6C63FF, #FF6584);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Theme transition */
+* { transition: background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease; }
+/* Exclude elements where transition causes issues */
+svg, path, circle, rect, line, polyline, polygon { transition: none !important; }
+button, a { transition: all 0.2s ease !important; }
+
+
+/* ========================
+   Enhanced UI Components
+   ======================== */
+
+/* Scrollbar hide utility */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar { display: none; }
+
+/* Glow effects */
+.shadow-glow {
+  box-shadow: 0 0 30px rgba(108, 99, 255, 0.4);
+}
+.shadow-glow-sm {
+  box-shadow: 0 0 15px rgba(108, 99, 255, 0.3);
+}
+.shadow-glow-green {
+  box-shadow: 0 0 20px rgba(16, 185, 129, 0.4);
+}
+
+/* Text shadow for emphasis */
+.text-glow {
+  text-shadow: 0 0 20px rgba(108, 99, 255, 0.6);
+}
+
+/* Better focus states */
+*:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* Card variants */
+.glass-card-sm {
+  background: var(--card-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+/* Gradient borders */
+.gradient-border {
+  border: 1px solid transparent;
+  background: linear-gradient(var(--card-bg), var(--card-bg)) padding-box,
+              linear-gradient(135deg, #6C63FF, #FF6584) border-box;
+}
+
+/* Life area cards */
+.area-card-university { border-left: 3px solid #6C63FF; }
+.area-card-work { border-left: 3px solid #10B981; }
+.area-card-health { border-left: 3px solid #EF4444; }
+.area-card-fitness { border-left: 3px solid #F59E0B; }
+.area-card-finance { border-left: 3px solid #84CC16; }
+.area-card-personal { border-left: 3px solid #EC4899; }
+.area-card-social { border-left: 3px solid #06B6D4; }
+.area-card-learning { border-left: 3px solid #8B5CF6; }
+
+/* Pulsing notification dot */
+.pulse-dot {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(0.85); }
+}
+
+/* Line clamp utility */
+.line-clamp-1 { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; }
+.line-clamp-2 { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.line-clamp-3 { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+
+/* Custom range input */
+input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  outline: none;
+  cursor: pointer;
+}
+input[type='range']::-webkit-slider-track {
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(255,255,255,0.1);
+}
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--primary);
+  border: 2px solid white;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(108,99,255,0.4);
+}
+
+/* Stagger animation helper */
+.stagger-child:nth-child(1) { animation-delay: 0.05s; }
+.stagger-child:nth-child(2) { animation-delay: 0.1s; }
+.stagger-child:nth-child(3) { animation-delay: 0.15s; }
+.stagger-child:nth-child(4) { animation-delay: 0.2s; }
+.stagger-child:nth-child(5) { animation-delay: 0.25s; }
+
+/* Hover lift effect for cards */
+.hover-lift {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.hover-lift:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 12px 40px rgba(108, 99, 255, 0.2);
+}
+
+/* Task completion checkmark */
+@keyframes checkmark {
+  0% { stroke-dashoffset: 20; }
+  100% { stroke-dashoffset: 0; }
+}
+
+/* Page transition */
+.page-enter {
+  animation: pageIn 0.3s ease forwards;
+}
+@keyframes pageIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
 }

@@ -6,6 +6,11 @@
 
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import {
+  Brain, TrendingUp, Calendar, ChevronDown, ChevronUp,
+  Lightbulb, Star, AlertTriangle, Check, Sparkles, Crown,
+  BookOpen, BarChart2, Download, RefreshCw, Zap
 import { useQuery } from '@tanstack/react-query';
 import {
   Brain, TrendingUp, Calendar, ChevronDown, ChevronUp,
@@ -19,11 +24,13 @@ import {
 } from 'recharts';
 import api from '../../utils/api';
 import UpgradeModal from '../subscription/UpgradeModal';
+import toast from 'react-hot-toast';
 
 export default function InsightsView({ userPlan }) {
   const [showUpgrade, setShowUpgrade] = useState(false);
   const [expandedAudit, setExpandedAudit] = useState(null);
   const isPremium = ['premium', 'enterprise', 'trial'].includes(userPlan);
+  const queryClient = useQueryClient();
 
   // Fetch insights (basic - available to all)
   const insightsQuery = useQuery({
@@ -33,6 +40,18 @@ export default function InsightsView({ userPlan }) {
     staleTime: 5 * 60 * 1000,
   });
 
+  // Fetch daily summary
+  const dailySummaryQuery = useQuery({
+    queryKey: ['insights-daily'],
+    queryFn: () => api.get('/insights/daily'),
+    retry: 1,
+    staleTime: 10 * 60 * 1000,
+  });
+
+  // Fetch performance history (premium)
+  const performanceQuery = useQuery({
+    queryKey: ['performance-history'],
+    queryFn: () => api.get('/performance/history?days=30'),
   // Fetch performance history (premium)
   const performanceQuery = useQuery({
     queryKey: ['performance-history'],
@@ -48,6 +67,39 @@ export default function InsightsView({ userPlan }) {
     enabled: isPremium,
     retry: 1,
   });
+
+  // Fetch weekly audit history (premium)
+  const auditQuery = useQuery({
+    queryKey: ['audit-history'],
+    queryFn: () => api.get('/performance/weekly-audit/history'),
+    enabled: isPremium,
+    retry: 1,
+  });
+
+  // Generate productivity tips mutation
+  const generateTipsMutation = useMutation({
+    mutationFn: () => api.get('/insights/productivity-tips'),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['insights'] });
+      toast.success('تم توليد رؤى جديدة! 🧠');
+    },
+    onError: () => toast.error('فشل في توليد الرؤى'),
+  });
+
+  const insights  = insightsQuery.data?.data?.insights || insightsQuery.data?.data || [];
+  const history   = performanceQuery.data?.data?.history || performanceQuery.data?.data || [];
+  const audits    = auditQuery.data?.data?.audits || auditQuery.data?.data || [];
+
+  // Build radar chart data from latest scores
+  const latestScores = history[history.length - 1];
+  const radarData = latestScores ? [
+    { subject: 'الإنتاجية', A: latestScores.productivity_score, fullMark: 100 },
+    { subject: 'التركيز',   A: latestScores.focus_score,        fullMark: 100 },
+    { subject: 'الاتساق',  A: latestScores.consistency_score,   fullMark: 100 },
+    { subject: 'المهام',    A: latestScores.task_completion_rate, fullMark: 100 },
+    { subject: 'العادات',  A: latestScores.habit_completion_rate, fullMark: 100 },
+    { subject: 'المزاج',   A: (latestScores.mood_average || 0) * 10, fullMark: 100 },
+  ] : [];
 
   const insights  = insightsQuery.data?.data || [];
   const history   = performanceQuery.data?.data || [];
@@ -75,6 +127,191 @@ export default function InsightsView({ userPlan }) {
           </h1>
           <p className="text-gray-400 text-sm mt-1">تحليل ذكي لأنماطك وسلوكياتك</p>
         </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => generateTipsMutation.mutate()}
+            disabled={generateTipsMutation.isPending}
+            className="flex items-center gap-2 px-3 py-2 rounded-xl bg-primary-500/20 text-primary-300 hover:bg-primary-500/30 transition-colors text-sm"
+          >
+            <Zap size={16} className={generateTipsMutation.isPending ? 'animate-pulse' : ''} />
+            {generateTipsMutation.isPending ? 'جارٍ التوليد...' : 'توليد رؤى'}
+          </button>
+          {isPremium && (
+            <button
+              onClick={() => { performanceQuery.refetch(); auditQuery.refetch(); }}
+              className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
+            >
+              <RefreshCw size={18} className={performanceQuery.isFetching ? 'animate-spin' : ''} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Daily Summary Card */}
+      {dailySummaryQuery.data?.data && (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="rounded-2xl p-5"
+          style={{ background: 'linear-gradient(135deg, rgba(108,99,255,0.15), rgba(16,185,129,0.1))', border: '1px solid rgba(108,99,255,0.3)' }}
+        >
+          <div className="flex items-center gap-2 mb-3">
+            <Sparkles size={18} className="text-primary-400" />
+            <h3 className="font-bold text-white text-sm">{dailySummaryQuery.data.data.title}</h3>
+          </div>
+          <p className="text-gray-300 text-sm leading-relaxed">{dailySummaryQuery.data.data.content}</p>
+          {dailySummaryQuery.data.data.data && (
+            <div className="grid grid-cols-3 gap-3 mt-4">
+              {[
+                { label: 'المهام', value: `${dailySummaryQuery.data.data.data.tasks?.completed}/${dailySummaryQuery.data.data.data.tasks?.total}`, color: '#6C63FF' },
+                { label: 'العادات', value: `${dailySummaryQuery.data.data.data.habits?.completed}/${dailySummaryQuery.data.data.data.habits?.total}`, color: '#10B981' },
+                { label: 'المزاج', value: dailySummaryQuery.data.data.data.mood ? `${dailySummaryQuery.data.data.data.mood}/10` : '-', color: '#F59E0B' },
+              ].map(m => (
+                <div key={m.label} className="text-center p-2 rounded-lg bg-white/5">
+                  <div className="font-bold text-sm" style={{ color: m.color }}>{m.value}</div>
+                  <div className="text-gray-500 text-xs">{m.label}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </motion.div>
+      )}
+
+      {/* Basic Insights (All Users) */}
+      <section>
+        <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+          <Lightbulb size={18} className="text-yellow-400" />
+          رؤى اليوم
+        </h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {insightsQuery.isLoading ? (
+            [...Array(4)].map((_, i) => (
+              <div key={i} className="h-28 rounded-xl bg-white/5 animate-pulse" />
+            ))
+          ) : insights.length > 0 ? (
+            insights.slice(0, 6).map((insight, i) => (
+              <InsightCard key={insight.id || i} insight={insight} index={i} />
+            ))
+          ) : (
+            <EmptyInsights onGenerate={() => generateTipsMutation.mutate()} isLoading={generateTipsMutation.isPending} />
+          )}
+        </div>
+      </section>
+
+      {/* Premium Section */}
+      {isPremium ? (
+        <>
+          {/* 30-Day Performance Chart */}
+          {history.length > 0 && (
+            <section>
+              <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+                <TrendingUp size={18} className="text-green-400" />
+                منحنى الأداء (30 يوم)
+              </h2>
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="rounded-2xl p-5"
+                style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)' }}
+              >
+                <ResponsiveContainer width="100%" height={220}>
+                  <LineChart data={history.map(h => ({
+                    date:         h.score_date?.slice(5),
+                    overall:      h.overall_score,
+                    productivity: h.productivity_score,
+                    focus:        h.focus_score,
+                  }))}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                    <XAxis dataKey="date" stroke="#6b7280" tick={{ fontSize: 10 }} interval={4} />
+                    <YAxis domain={[0, 100]} stroke="#6b7280" tick={{ fontSize: 10 }} />
+                    <Tooltip
+                      contentStyle={{ background: '#1a1a2e', border: '1px solid #6C63FF', borderRadius: 8, direction: 'rtl', fontFamily: 'Cairo' }}
+                    />
+                    <Line type="monotone" dataKey="overall"      stroke="#6C63FF" strokeWidth={2} dot={false} name="الإجمالي" />
+                    <Line type="monotone" dataKey="productivity" stroke="#10B981" strokeWidth={1.5} dot={false} name="الإنتاجية" />
+                    <Line type="monotone" dataKey="focus"        stroke="#F59E0B" strokeWidth={1.5} dot={false} name="التركيز" />
+                  </LineChart>
+                </ResponsiveContainer>
+              </motion.div>
+            </section>
+          )}
+
+          {/* Radar Chart */}
+          {radarData.length > 0 && (
+            <section>
+              <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+                <BarChart2 size={18} className="text-blue-400" />
+                مقارنة الأبعاد
+              </h2>
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="rounded-2xl p-5 flex justify-center"
+                style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)' }}
+              >
+                <ResponsiveContainer width="100%" height={280}>
+                  <RadarChart cx="50%" cy="50%" outerRadius="70%" data={radarData}>
+                    <PolarGrid stroke="rgba(255,255,255,0.1)" />
+                    <PolarAngleAxis dataKey="subject" tick={{ fill: '#9ca3af', fontSize: 12, fontFamily: 'Cairo' }} />
+                    <Radar
+                      name="الأداء" dataKey="A"
+                      stroke="#6C63FF" fill="#6C63FF" fillOpacity={0.2}
+                    />
+                  </RadarChart>
+                </ResponsiveContainer>
+              </motion.div>
+            </section>
+          )}
+
+          {/* Weekly Audit History */}
+          {audits.length > 0 && (
+            <section>
+              <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+                <Calendar size={18} className="text-yellow-400" />
+                <Crown size={15} className="text-yellow-400" />
+                التدقيقات الأسبوعية
+              </h2>
+              <div className="space-y-4">
+                {audits.map((audit, i) => (
+                  <AuditAccordion
+                    key={audit.id}
+                    audit={audit}
+                    isExpanded={expandedAudit === audit.id}
+                    onToggle={() => setExpandedAudit(expandedAudit === audit.id ? null : audit.id)}
+                    index={i}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
+        </>
+      ) : (
+        /* Premium Lock Banner */
+        <PremiumInsightsBanner onUpgrade={() => setShowUpgrade(true)} />
+      )}
+
+      <UpgradeModal
+        isOpen={showUpgrade}
+        onClose={() => setShowUpgrade(false)}
+        feature="advanced_insights"
+        onTrialStart={() => window.location.reload()}
+      />
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INSIGHT CARD
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TYPE_CONFIG = {
+  suggestion:   { color: '#6C63FF', icon: Lightbulb, bg: 'rgba(108,99,255,0.1)' },
+  achievement:  { color: '#10B981', icon: Star,      bg: 'rgba(16,185,129,0.1)'  },
+  warning:      { color: '#F59E0B', icon: AlertTriangle, bg: 'rgba(245,158,11,0.1)' },
+  celebration:  { color: '#EC4899', icon: Sparkles,  bg: 'rgba(236,72,153,0.1)'  },
+  analysis:     { color: '#3B82F6', icon: Brain,     bg: 'rgba(59,130,246,0.1)'  },
+};
+
         {isPremium && (
           <button
             onClick={() => { performanceQuery.refetch(); auditQuery.refetch(); }}
@@ -436,11 +673,21 @@ function PremiumInsightsBanner({ onUpgrade }) {
 // EMPTY STATE
 // ─────────────────────────────────────────────────────────────────────────────
 
+function EmptyInsights({ onGenerate, isLoading }) {
 function EmptyInsights() {
   return (
     <div className="col-span-2 text-center py-12">
       <div className="text-5xl mb-4">🌱</div>
       <h3 className="text-white font-semibold mb-2">لا توجد رؤى بعد</h3>
+      <p className="text-gray-400 text-sm mb-4">أضف بعض المهام والعادات لتوليد رؤى مخصصة لك</p>
+      <button
+        onClick={onGenerate}
+        disabled={isLoading}
+        className="px-4 py-2 rounded-xl bg-primary-500/20 text-primary-300 hover:bg-primary-500/30 transition-colors text-sm flex items-center gap-2 mx-auto"
+      >
+        <Zap size={16} />
+        {isLoading ? 'جارٍ التوليد...' : 'توليد رؤى الآن'}
+      </button>
       <p className="text-gray-400 text-sm">أضف بعض المهام والعادات لتوليد رؤى مخصصة لك</p>
     </div>
   );

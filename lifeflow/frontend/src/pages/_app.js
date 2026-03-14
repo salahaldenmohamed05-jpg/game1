@@ -10,6 +10,7 @@ import { Toaster } from 'react-hot-toast';
 import { useEffect } from 'react';
 import { io } from 'socket.io-client';
 import useAuthStore from '../store/authStore';
+import useThemeStore from '../store/themeStore';
 import Head from 'next/head';
 
 const queryClient = new QueryClient({
@@ -24,6 +25,22 @@ const queryClient = new QueryClient({
 
 export default function LifeFlowApp({ Component, pageProps }) {
   const { user, isAuthenticated } = useAuthStore();
+  const { isDark, setTheme } = useThemeStore();
+
+  // Initialize theme on mount (hydrate from persisted store)
+  useEffect(() => {
+    const stored = localStorage.getItem('lifeflow-theme');
+    if (stored) {
+      try {
+        const { state } = JSON.parse(stored);
+        setTheme(state?.isDark !== false); // default dark
+      } catch (_) {
+        setTheme(true);
+      }
+    } else {
+      setTheme(true); // default dark
+    }
+  }, []);
 
   // Connect to Socket.IO for real-time notifications
   useEffect(() => {

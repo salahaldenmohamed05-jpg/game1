@@ -38,18 +38,21 @@ export default function MoodView() {
   const [showHistory, setShowHistory] = useState(false);
   const queryClient = useQueryClient();
 
+  // Today's mood - backend returns { success, data: entry|null, has_checked_in }
   // Today's mood
   const { data: todayData } = useQuery({
     queryKey: ['mood-today'],
     queryFn: () => moodAPI.getTodayMood(),
   });
 
+  // Mood analytics - backend returns { success, data: { average_mood, mood_trend, ... } }
   // Mood history/stats
   const { data: statsData } = useQuery({
     queryKey: ['mood-stats'],
     queryFn: () => moodAPI.getMoodStats(30),
   });
 
+  // Mood log history - backend returns { success, data: { entries, analytics } }
   // Mood log
   const { data: logData } = useQuery({
     queryKey: ['mood-log'],
@@ -74,12 +77,47 @@ export default function MoodView() {
     onError: () => toast.error('فشل في تسجيل المزاج'),
   });
 
+  // todayData.data is the entry or null; has_checked_in is top-level
+  const todayMood = todayData ? {
+    logged_today: todayData.has_checked_in,
+    mood_score: todayData.data?.mood_score,
+    note: todayData.data?.journal_entry || todayData.data?.note,
+    ai_insight: todayData.data?.ai_recommendation || todayData.data?.ai_analysis,
+  } : null;
+
+  // statsData.data has average_mood, mood_by_day, mood_trend array
+  // NOTE: backend returns average_mood as a string (e.g. "7.0"), so always parse to float
+  const stats = statsData?.data ? {
+    average: parseFloat(statsData.data.average_mood) || 0,
+    streak: statsData.data.analytics?.total_entries || statsData.data.streak || 0,
+    total_entries: statsData.data.total_entries || statsData.data.mood_by_day?.length || 0,
+    trend: statsData.data.mood_trend || statsData.data.mood_by_day,
+    best_day: statsData.data.best_day_of_week,
+    common_emotion: statsData.data.most_common_emotion,
+    ai_insight: statsData.data.ai_insight,
+  } : null;
+
+  // Build chart data from mood_by_day or mood_trend
+  const chartData = (statsData?.data?.mood_by_day || statsData?.data?.mood_trend || []).map(d => ({
+    date: d.date,
+    score: d.score || d.mood_score,
+  }));
   const todayMood = todayData?.data;
   const stats = statsData?.data;
   const chartData = stats?.trend?.map(d => ({
     date: d.date,
     score: d.mood_score,
   })) || [];
+
+  const toggleEmotion = (emotion) => {
+    setSelectedEmotions(prev =>
+      prev.includes(emotion)
+        ? prev.filter(e => e !== emotion)
+        : [...prev, emotion]
+    );
+  };
+
+  const currentEmoji = MOOD_EMOJIS.find(m => m.score === selectedScore);
 
   const toggleEmotion = (emotion) => {
     setSelectedEmotions(prev =>
@@ -134,6 +172,156 @@ export default function MoodView() {
             <p className="text-white font-bold text-lg">{currentEmoji?.label}</p>
           </div>
 
+          {/* Slider */}
+          <div className="space-y-2">
+            <div className="flex justify-between text-xs text-gray-500">
+              <span>😭 سيء</span>
+              <span className="font-bold" style={{ color: currentEmoji?.color }}>{selectedScore}/10</span>
+              <span>🤩 رائع</span>
+            </div>
+            <input
+              type="range"
+              min="1"
+              max="10"
+              value={selectedScore}
+              onChange={(e) => setSelectedScore(Number(e.target.value))}
+              className="w-full h-3 rounded-full appearance-none cursor-pointer"
+              style={{ accentColor: currentEmoji?.color }}
+            />
+            <div className="flex justify-between">
+              {MOOD_EMOJIS.map(m => (
+                <button
+                  key={m.score}
+                  onClick={() => setSelectedScore(m.score)}
+                  className={`text-lg transition-all ${selectedScore === m.score ? 'scale-150' : 'opacity-40 hover:opacity-70'}`}
+                >
+                  {m.emoji}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Emotion Tags */}
+          <div>
+            <p className="text-sm text-gray-400 mb-2">ما الذي تشعر به؟</p>
+            <div className="flex flex-wrap gap-2">
+              {EMOTION_TAGS.map(emotion => (
+                <button
+                  key={emotion}
+                  onClick={() => toggleEmotion(emotion)}
+                  className={`text-xs px-3 py-1.5 rounded-full border transition-all ${
+                    selectedEmotions.includes(emotion)
+                      ? 'border-primary-500 bg-primary-500/20 text-primary-300'
+                      : 'border-white/10 text-gray-400 hover:border-white/20'
+                  }`}
+                >
+                  {emotion}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Note */}
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="ملاحظة اختيارية... ما الذي يؤثر في مزاجك اليوم؟"
+            className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-sm text-gray-300 placeholder-gray-600 resize-none focus:outline-none focus:border-primary-500/50"
+            rows={3}
+          />
+
+          <button
+            onClick={() => logMoodMutation.mutate()}
+            disabled={logMoodMutation.isPending}
+            className="w-full btn-primary py-3 flex items-center justify-center gap-2"
+          >
+            <Heart size={18} />
+            {logMoodMutation.isPending ? 'جاري الحفظ...' : 'تسجيل المزاج'}
+          </button>
+        </motion.div>
+      ) : (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="glass-card p-6 space-y-5"
+        >
+          {/* Score Selector */}
+          <div className="text-center">
+            <div className="text-7xl mb-2 transition-all duration-300">{currentEmoji?.emoji}</div>
+            <p className="text-white font-bold text-lg">{currentEmoji?.label}</p>
+          </div>
+
+      {/* Stats Cards */}
+      {stats && (
+        <div className="grid grid-cols-3 gap-3">
+          <div className="glass-card p-4 text-center">
+            <div className="text-2xl font-black gradient-text">
+              {stats.average > 0 ? stats.average.toFixed(1) : '-'}
+            </div>
+            <div className="text-xs text-gray-400 mt-1">متوسط المزاج</div>
+          </div>
+          <div className="glass-card p-4 text-center">
+            <div className="text-2xl font-black text-green-400">{stats.streak || 0}</div>
+            <div className="text-xs text-gray-400 mt-1">أيام متتالية 🔥</div>
+          </div>
+          <div className="glass-card p-4 text-center">
+            <div className="text-2xl font-black text-purple-400">{stats.total_entries || 0}</div>
+            <div className="text-xs text-gray-400 mt-1">إجمالي السجلات</div>
+          </div>
+        </div>
+      )}
+      {/* AI Insight from stats */}
+      {stats?.ai_insight && (
+        <div className="glass-card p-4 border border-primary-500/20">
+          <p className="text-xs text-primary-300 leading-relaxed">💡 {stats.ai_insight}</p>
+        </div>
+      )}
+
+      {/* Mood Trend Chart */}
+      {chartData.length > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="glass-card p-5"
+        >
+          <div className="flex items-center gap-2 mb-4">
+            <TrendingUp size={18} className="text-primary-400" />
+            <h3 className="font-bold text-white text-sm">اتجاه المزاج - 30 يوم</h3>
+          </div>
+          <ResponsiveContainer width="100%" height={160}>
+            <AreaChart data={chartData}>
+              <defs>
+                <linearGradient id="moodGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#6C63FF" stopOpacity={0.3} />
+                  <stop offset="100%" stopColor="#6C63FF" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+              <XAxis dataKey="date" tick={{ fill: '#9CA3AF', fontSize: 10 }} tickFormatter={d => d?.slice(5)} />
+              <YAxis domain={[1, 10]} tick={{ fill: '#9CA3AF', fontSize: 10 }} width={20} />
+              <Tooltip
+                contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(108,99,255,0.3)', borderRadius: 8 }}
+                labelStyle={{ color: '#9CA3AF' }}
+                formatter={(v) => [v, 'المزاج']}
+              />
+              <Area type="monotone" dataKey="score" stroke="#6C63FF" fill="url(#moodGrad)" strokeWidth={2} dot={{ fill: '#6C63FF', r: 3 }} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </motion.div>
+      )}
+
+      {/* History Toggle */}
+      <button
+        onClick={() => setShowHistory(!showHistory)}
+        className="w-full glass-card p-3 text-gray-400 text-sm flex items-center justify-center gap-2 hover:text-white transition-colors"
+      >
+        <Calendar size={16} />
+        {showHistory ? 'إخفاء السجل' : 'عرض سجل المزاج'}
+        {showHistory ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+      </button>
+
+      <AnimatePresence>
+        {showHistory && (logData?.data?.entries || logData?.data?.analytics) && (
           {/* Slider */}
           <div className="space-y-2">
             <div className="flex justify-between text-xs text-gray-500">
@@ -272,6 +460,7 @@ export default function MoodView() {
             exit={{ opacity: 0, height: 0 }}
             className="space-y-2"
           >
+            {(logData?.data?.entries || []).map((entry, i) => {
             {logData.data.entries.map((entry, i) => {
               const moodInfo = MOOD_EMOJIS.find(m => m.score === entry.mood_score);
               return (
@@ -297,6 +486,7 @@ export default function MoodView() {
                         ))}
                       </div>
                     )}
+                    {(entry.note || entry.journal_entry) && <p className="text-xs text-gray-400 mt-1">{entry.note || entry.journal_entry}</p>}
                     {entry.note && <p className="text-xs text-gray-400 mt-1">{entry.note}</p>}
                   </div>
                   <div className="text-right">
