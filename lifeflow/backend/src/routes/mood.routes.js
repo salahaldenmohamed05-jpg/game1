@@ -9,6 +9,10 @@ const { protect } = require('../middleware/auth.middleware');
 router.use(protect);
 
 router.post('/check-in', moodController.checkIn);
+
+// POST /mood — Flutter mobile alias (without /check-in)
+router.post('/', moodController.checkIn);
+
 router.get('/today', moodController.getTodayMood);
 router.get('/history', moodController.getMoodHistory);
 router.get('/analytics', moodController.getMoodAnalytics);

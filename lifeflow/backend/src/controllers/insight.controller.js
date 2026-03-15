@@ -138,7 +138,11 @@ exports.getBehaviorAnalysis = async (req, res) => {
 
     const [tasks, habitLogs, moodEntries] = await Promise.all([
       Task.findAll({ where: { user_id: req.user.id,
-        createdAt: { [Op.gte]: thirtyDaysAgo },
+        // Fix: use due_date for task range queries (createdAt is unreliable for behavior analysis)
+        [Op.or]: [
+          { due_date: { [Op.gte]: thirtyDaysAgo } },
+          { createdAt: { [Op.gte]: thirtyDaysAgo } },
+        ],
       }}),
       HabitLog.findAll({ where: { user_id: req.user.id,
         log_date: { [Op.gte]: thirtyDaysAgo },

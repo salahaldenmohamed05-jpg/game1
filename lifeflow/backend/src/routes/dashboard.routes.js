@@ -9,4 +9,7 @@ const { protect } = require('../middleware/auth.middleware');
 router.use(protect);
 router.get('/', dashboardController.getDashboard);
 
+// GET /dashboard/stats — alias used by frontend dashboardAPI.getQuickStats
+router.get('/stats', dashboardController.getDashboard);
+
 module.exports = router;

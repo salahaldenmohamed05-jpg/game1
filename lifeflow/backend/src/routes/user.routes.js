@@ -8,6 +8,15 @@ const User = require('../models/user.model');
 
 router.use(protect);
 
+// Get profile (GET /users/profile)
+router.get('/profile', async (req, res) => {
+  try {
+    res.json({ success: true, data: req.user.toSafeObject() });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'فشل في جلب الملف الشخصي' });
+  }
+});
+
 // Update profile
 router.put('/profile', async (req, res) => {
   try {
@@ -26,6 +35,21 @@ router.patch('/fcm-token', async (req, res) => {
     res.json({ success: true, message: 'تم تحديث رمز الإشعارات' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'فشل' });
+  }
+});
+
+// Change password (also support /password alias for frontend compatibility)
+router.put('/password', async (req, res) => {
+  try {
+    const { current_password, new_password } = req.body;
+    const user = await User.findByPk(req.user.id);
+    if (!(await user.comparePassword(current_password))) {
+      return res.status(400).json({ success: false, message: 'كلمة المرور الحالية غير صحيحة' });
+    }
+    await user.update({ password: new_password });
+    res.json({ success: true, message: 'تم تغيير كلمة المرور بنجاح' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'فشل في تغيير كلمة المرور' });
   }
 });
 
