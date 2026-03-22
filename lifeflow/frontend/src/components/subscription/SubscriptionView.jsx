@@ -66,8 +66,10 @@ export default function SubscriptionView() {
     staleTime: 60 * 60 * 1000,
   });
 
-  const subscription = subData?.data;
-  const plans = plansData?.data || {};
+  // subData = Axios response: { data: { success, data: { plan, is_premium, ... } } }
+  const subscription = subData?.data?.data || subData?.data;
+  // plansData = Axios response: { data: { success, data: { monthly: {...}, yearly: {...} } } }
+  const plans = plansData?.data?.data || plansData?.data || {};
   const currentPlan = subscription?.plan || 'free';
   const isPremium = subscription?.is_premium;
   const trialDaysLeft = subscription?.trial_days_remaining;
@@ -76,12 +78,13 @@ export default function SubscriptionView() {
   const checkoutMutation = useMutation({
     mutationFn: async (planData) => {
       const response = await api.post('/subscription/checkout', planData);
-      return response.data;
+      // response.data = { success, data: { checkout_url, subscription } }
+      return response.data?.data || response.data;
     },
     onSuccess: (data) => {
-      if (data.checkout_url) {
+      if (data?.checkout_url) {
         window.location.href = data.checkout_url;
-      } else if (data.subscription) {
+      } else if (data?.subscription) {
         refetchSub();
         toast.success('تم تفعيل الاشتراك بنجاح! 🎉');
       }

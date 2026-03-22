@@ -5,7 +5,7 @@
  * يشغّل Express server مع كل الـ middleware والـ routes
  */
 
-require('dotenv').config();
+require('dotenv').config({ override: true }); // override any sandbox env vars with .env values
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
@@ -34,9 +34,14 @@ const dashboardRoutes = require('./routes/dashboard.routes');
 const performanceRoutes = require('./routes/performance.routes');
 const subscriptionRoutes = require('./routes/subscription.routes');
 const intelligenceRoutes = require('./routes/intelligence.routes');
+const adaptiveRoutes     = require('./routes/adaptive.routes');
+const aiCentralRoutes    = require('./routes/ai.central.routes');
+const assistantRoutes    = require('./routes/assistant.routes');
+const { router: logsRoutes } = require('./routes/logs.routes');
 
 // Import scheduler
 const { initScheduler } = require('./services/scheduler.service');
+const { initProactiveMonitor } = require('./services/proactive.monitor.service');
 
 const app = express();
 const server = http.createServer(app);
@@ -46,8 +51,9 @@ const server = http.createServer(app);
 // ============================================
 const io = new Server(server, {
   cors: {
-    origin: process.env.CLIENT_URL || 'http://localhost:3000',
+    origin: true, // Allow all origins in demo mode
     methods: ['GET', 'POST'],
+    credentials: true,
   },
 });
 
@@ -99,16 +105,20 @@ app.use(`${API}/insights`, insightRoutes);
 app.use(`${API}/notifications`, notificationRoutes);
 app.use(`${API}/calendar`, calendarRoutes);
 app.use(`${API}/voice`, voiceRoutes);
+app.use(`${API}/ai/v2`,        aiCentralRoutes);  // Centralized AI layer (Gemini/Groq) — registered BEFORE old ai routes
 app.use(`${API}/ai`, aiRoutes);
 app.use(`${API}/dashboard`, dashboardRoutes);
 app.use(`${API}/performance`, performanceRoutes);
 app.use(`${API}/subscription`, subscriptionRoutes);
 app.use(`${API}/intelligence`, intelligenceRoutes);
+app.use(`${API}/adaptive`,     adaptiveRoutes);
+app.use(`${API}/assistant`,    assistantRoutes);  // New: AI Personal Assistant
+app.use(`${API}/logs`,         logsRoutes);       // Error & activity logging
 
 // ============================================
 // Health Check
 // ============================================
-app.get('/health', (req, res) => {
+const healthHandler = (req, res) => {
   res.json({
     status: 'ok',
     app: 'LifeFlow API',
@@ -116,7 +126,9 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     timezone: process.env.DEFAULT_TIMEZONE,
   });
-});
+};
+app.get('/health', healthHandler);
+app.get('/api/v1/health', healthHandler);
 
 // Root
 app.get('/', (req, res) => {
@@ -169,6 +181,9 @@ async function startServer() {
     // Initialize cron job scheduler
     initScheduler(io);
     logger.info('✅ Scheduler initialized');
+    // Start AI proactive monitoring
+    initProactiveMonitor(io);
+    logger.info('✅ Proactive AI monitor started');
 
     // Start HTTP server
     server.listen(PORT, () => {

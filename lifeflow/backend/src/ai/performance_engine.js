@@ -93,9 +93,9 @@ async function calculateDailyScores(userId, date = new Date()) {
   const moodEntry = await MoodEntry.findOne({
     where: {
       user_id: userId,
-      date: { [Op.between]: [startOfDay, endOfDay] },
+      entry_date: dateStr,
     },
-    order: [['created_at', 'DESC']],
+    order: [['entry_date', 'DESC']],
   });
   const moodScore    = moodEntry ? moodEntry.mood_score : null;
   const moodFactor   = moodScore ? (moodScore / 10) * 100 : 50; // neutral default

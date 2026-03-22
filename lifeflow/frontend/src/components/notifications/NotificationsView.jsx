@@ -39,8 +39,7 @@ export default function NotificationsView() {
 
   const { data, isLoading } = useQuery({
     queryKey: ['notifications', filter],
-    queryFn: () => api.get(`/notifications?limit=50${filter === 'unread' ? '&unread_only=true' : ''}`),  // fixed: was unread=true
-    queryFn: () => api.get(`/notifications?limit=50${filter === 'unread' ? '&unread=true' : ''}`),
+    queryFn: () => api.get(`/notifications?limit=50${filter === 'unread' ? '&unread_only=true' : ''}`),
   });
 
   const markReadMutation = useMutation({
@@ -60,9 +59,9 @@ export default function NotificationsView() {
     },
   });
 
-  const notifications = data?.data?.notifications || [];
-  const unreadCount = data?.data?.unread || data?.data?.unread_count || 0;  // backend uses 'unread'
-  const unreadCount = data?.data?.unread_count || 0;
+  // data = Axios response: { data: { success, data: { notifications, unread_count } } }
+  const notifications = data?.data?.data?.notifications || [];
+  const unreadCount = data?.data?.data?.unread || data?.data?.data?.unread_count || 0;
 
   const filtered = filter === 'unread'
     ? notifications.filter(n => !n.is_read)

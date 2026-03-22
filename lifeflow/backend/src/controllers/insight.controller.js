@@ -25,7 +25,7 @@ exports.getDailySummary = async (req, res) => {
     // Check if already generated today
     let insight = await Insight.findOne({
       where: { user_id: req.user.id, type: 'daily_summary',
-        createdAt: { [Op.gte]: moment().tz(timezone).startOf('day').toDate() },
+        period_start: { [Op.gte]: moment().tz(timezone).startOf('day').format('YYYY-MM-DD') },
       },
     });
 
@@ -141,7 +141,7 @@ exports.getBehaviorAnalysis = async (req, res) => {
         // Fix: use due_date for task range queries (createdAt is unreliable for behavior analysis)
         [Op.or]: [
           { due_date: { [Op.gte]: thirtyDaysAgo } },
-          { createdAt: { [Op.gte]: thirtyDaysAgo } },
+          { due_date: { [Op.gte]: thirtyDaysAgo } },
         ],
       }}),
       HabitLog.findAll({ where: { user_id: req.user.id,

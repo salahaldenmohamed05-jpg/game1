@@ -19,30 +19,32 @@ import CalendarView from '../calendar/CalendarView';
 import NotificationsView from '../notifications/NotificationsView';
 import PerformanceView from '../performance/PerformanceView';
 import SubscriptionView from '../subscription/SubscriptionView';
+import GlobalIntelligenceView from '../global/GlobalIntelligenceView';
+import IntegrationsView from '../integrations/IntegrationsView';
+import AssistantView from '../assistant/AssistantView';
+import LogsView from '../logs/LogsView';
 import useAuthStore from '../../store/authStore';
-
-// Lazy-load heavy components
-const AIChat = ({ userPlan }) => {
-  const [loaded, setLoaded] = useState(false);
-  const [Component, setComponent] = useState(null);
-  useEffect(() => {
-    import('../voice/AIChat').then(m => { setComponent(() => m.default); setLoaded(true); });
-  }, []);
-  if (!loaded) return <div className="flex items-center justify-center h-64"><div className="loading-spinner" /></div>;
-  return <Component userPlan={userPlan} />;
-};
+import ErrorBoundary from '../common/ErrorBoundary';
 
 const VIEWS = {
-  dashboard: DashboardHome,
-  tasks: TasksView,
-  habits: HabitsView,
-  mood: MoodView,
-  insights: InsightsView,
-  ai_chat: AIChat,
-  calendar: CalendarView,
+  dashboard:     DashboardHome,
+  tasks:         TasksView,
+  habits:        HabitsView,
+  mood:          MoodView,
+  insights:      InsightsView,
+  assistant:     AssistantView,        // Unified: ai_chat + copilot + adaptive + optimizer
+  calendar:      CalendarView,
   notifications: NotificationsView,
-  performance: PerformanceView,
-  subscription: SubscriptionView,
+  performance:   PerformanceView,
+  subscription:  SubscriptionView,
+  intelligence:  GlobalIntelligenceView,
+  integrations:  IntegrationsView,
+  // Legacy redirects (keep for backwards compat)
+  ai_chat:       AssistantView,
+  copilot:       AssistantView,
+  adaptive:      AssistantView,
+  optimizer:     AssistantView,
+  logs:          LogsView,
 };
 
 export default function Dashboard() {
@@ -78,7 +80,7 @@ export default function Dashboard() {
         <div className="absolute top-1/2 left-1/2 w-64 h-64 bg-primary-500/3 rounded-full blur-3xl transform -translate-x-1/2 -translate-y-1/2" />
       </div>
 
-      {/* Mobile sidebar overlay - tap to close */}
+      {/* Mobile sidebar overlay */}
       {sidebarOpen && (
         <div
           className="fixed inset-0 bg-black/60 z-30 md:hidden"
@@ -86,7 +88,7 @@ export default function Dashboard() {
         />
       )}
 
-      {/* Sidebar - hidden on mobile unless open */}
+      {/* Sidebar */}
       <div className={`fixed right-0 top-0 h-full z-40 transition-transform duration-300 ${
         sidebarOpen ? 'translate-x-0' : 'translate-x-full md:translate-x-0'
       }`}>
@@ -103,37 +105,6 @@ export default function Dashboard() {
         />
       </div>
 
-      {/* Main Content - full width on mobile, shift on desktop */}
-      <div
-        className={`flex-1 flex flex-col overflow-hidden transition-all duration-300 ${
-          sidebarOpen ? 'md:mr-64' : 'md:mr-16'
-        }`}
-      >
-        <Header
-          onViewChange={setActiveView}
-          activeView={activeView}
-          onMenuToggle={() => setSidebarOpen(!sidebarOpen)}
-      {/* Mobile sidebar overlay */}
-      {sidebarOpen && (
-        <div
-          className="fixed inset-0 bg-black/50 z-30 md:hidden"
-          onClick={() => setSidebarOpen(false)}
-        />
-      )}
-
-      {/* Sidebar */}
-      <Sidebar
-        activeView={activeView}
-        setActiveView={(view) => {
-          setActiveView(view);
-          if (window.innerWidth < 768) setSidebarOpen(false);
-        }}
-        isOpen={sidebarOpen}
-        setIsOpen={setSidebarOpen}
-        dashboardData={dashboardData?.data}
-        userPlan={userPlan}
-      />
-
       {/* Main Content */}
       <div
         className={`flex-1 flex flex-col overflow-hidden transition-all duration-300 ${
@@ -143,6 +114,7 @@ export default function Dashboard() {
         <Header
           onViewChange={setActiveView}
           activeView={activeView}
+          onMenuToggle={() => setSidebarOpen(!sidebarOpen)}
         />
 
         {/* Page Content */}
@@ -153,13 +125,15 @@ export default function Dashboard() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.25 }}
           >
-            <ActiveView
-              dashboardData={dashboardData?.data}
-              isLoading={isLoading}
-              refetch={refetch}
-              userPlan={userPlan}
-              onViewChange={setActiveView}
-            />
+            <ErrorBoundary>
+              <ActiveView
+                dashboardData={dashboardData?.data?.data}
+                isLoading={isLoading}
+                refetch={refetch}
+                userPlan={userPlan}
+                onViewChange={setActiveView}
+              />
+            </ErrorBoundary>
           </motion.div>
         </main>
       </div>

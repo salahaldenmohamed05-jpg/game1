@@ -42,8 +42,13 @@ const Habit = sequelize.define('Habit', {
     get() { try { return JSON.parse(this.getDataValue('ai_insights') || '{}'); } catch { return {}; } },
     set(val) { this.setDataValue('ai_insights', JSON.stringify(val || {})); },
   },
+  // habit_type: 'boolean' (done/not done) | 'count' (reach a target count)
+  habit_type: { type: DataTypes.STRING(20), defaultValue: 'boolean' },
+  // count_label: unit label for count habits, e.g. "كأس", "ركعة"
+  count_label: { type: DataTypes.STRING(30), allowNull: true },
 }, {
   tableName: 'habits',
+  underscored: false,
   indexes: [{ fields: ['user_id'] }, { fields: ['is_active'] }],
 });
 

@@ -56,17 +56,47 @@ export default function LifeFlowApp({ Component, pageProps }) {
     socket.on('notification', (notification) => {
       // Show toast notification
       import('react-hot-toast').then(({ default: toast }) => {
-        toast(notification.body, {
+        toast(notification.body || notification.title, {
           icon: notification.type === 'habit_reminder' ? '🏃' :
-                notification.type === 'mood_check' ? '🌙' :
+                notification.type === 'mood_prompt' ? '💭' :
+                notification.type === 'overdue_reminder' ? '⏰' :
+                notification.type === 'burnout_alert' ? '🌿' :
+                notification.type === 'morning_briefing' ? '☀️' :
+                notification.type === 'evening_review' ? '🌙' :
+                notification.type === 'daily_question' ? '🤔' :
+                notification.type === 'energy_alert' ? '⚡' :
                 notification.type === 'task_reminder' ? '📋' : '💡',
-          duration: 5000,
+          duration: 6000,
           style: {
             background: '#16213E',
             color: '#E2E8F0',
             border: '1px solid rgba(108, 99, 255, 0.3)',
             direction: 'rtl',
             fontFamily: 'Cairo, sans-serif',
+            maxWidth: '380px',
+          },
+        });
+      });
+      // Refresh notifications list
+      queryClient.invalidateQueries({ queryKey: ['notifications'] });
+    });
+
+    // Proactive AI messages - shown with special styling
+    socket.on('proactive_message', (msg) => {
+      import('react-hot-toast').then(({ default: toast }) => {
+        toast.custom((t) => `🤖 ${msg.title}: ${msg.body}`, {
+          duration: 8000,
+        });
+        toast(`🤖 ${msg.body}`, {
+          icon: '🤖',
+          duration: 8000,
+          style: {
+            background: '#0A0F2C',
+            color: '#A78BFA',
+            border: '1px solid rgba(167, 139, 250, 0.4)',
+            direction: 'rtl',
+            fontFamily: 'Cairo, sans-serif',
+            maxWidth: '400px',
           },
         });
       });

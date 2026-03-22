@@ -40,6 +40,7 @@ const MoodEntry = sequelize.define('MoodEntry', {
   period: { type: DataTypes.STRING(10), allowNull: true },
 }, {
   tableName: 'mood_entries',
+  underscored: false,
   indexes: [{ fields: ['user_id', 'entry_date'], unique: true }, { fields: ['entry_date'] }],
 });
 

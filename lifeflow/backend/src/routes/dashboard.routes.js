@@ -12,4 +12,7 @@ router.get('/', dashboardController.getDashboard);
 // GET /dashboard/stats — alias used by frontend dashboardAPI.getQuickStats
 router.get('/stats', dashboardController.getDashboard);
 
+// GET /dashboard/overview — alias
+router.get('/overview', dashboardController.getDashboard);
+
 module.exports = router;

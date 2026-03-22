@@ -52,10 +52,11 @@ async function buildEnergyProfile(userId, timezone = 'Africa/Cairo', daysBack = 
     });
 
     // ── Fetch mood entries for energy correlation ─────────────────────────────
+    const sinceDate = moment.tz(tz).subtract(daysBack, 'days').format('YYYY-MM-DD');
     const moods = await MoodEntry.findAll({
       where: {
         user_id:    userId,
-        createdAt: { [Op.gte]: since },
+        entry_date: { [Op.gte]: sinceDate },
       },
     });
 
@@ -277,7 +278,7 @@ function computeMoodEnergyCorrelation(tasks, moods, peakHours, tz) {
   });
 
   moods.forEach(m => {
-    const day = moment(m.createdAt).tz(tz).format('YYYY-MM-DD');
+    const day = m.entry_date || moment(m.createdAt).tz(tz).format('YYYY-MM-DD');
     dayData[day] = dayData[day] || { tasks: 0, moods: [] };
     dayData[day].moods.push(m.mood_score || 5);
   });
@@ -325,4 +326,159 @@ function buildMoodEnergyInsight(correlation) {
 module.exports = {
   buildEnergyProfile,
   getEnergyInsights,
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DAILY ENERGY SCORE  (Phase 9 addition)
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * Compute a daily energy score (0-100) based on:
+ *   - Sleep hours (from user schedule)
+ *   - Today's mood score
+ *   - Habit completion rate
+ *   - Task load (number of pending high-priority tasks)
+ *   - Stress signals (behavioral flags)
+ *
+ * @returns { energy_score, level, focus_windows, low_energy_periods, tips }
+ */
+async function computeDailyEnergyScore(userId, timezone = 'Africa/Cairo') {
+  const { Task, MoodEntry, EnergyProfile } = getModels();
+  const BehavioralFlag = require('../models/behavioral_flag.model');
+  const HabitLog       = require('../models/habit.model').HabitLog;
+  const Habit          = require('../models/habit.model').Habit;
+  const User           = require('../models/user.model');
+  const { Op }         = require('sequelize');
+
+  const tz    = timezone || 'Africa/Cairo';
+  const today = moment.tz(tz).format('YYYY-MM-DD');
+
+  const user = await User.findByPk(userId);
+
+  // ── 1. Sleep Score (20 pts) ───────────────────────────────────────────────
+  const wakeHour  = parseTimeHour(user?.locale?.wake_up_time  || '06:00', 6);
+  const sleepHour = parseTimeHour(user?.locale?.sleep_time    || '23:00', 23);
+  const sleepHours = 24 - sleepHour + wakeHour;           // approximate
+  const sleepScore = Math.min(20, Math.round((sleepHours / 8) * 20));
+
+  // ── 2. Mood Score (25 pts) ────────────────────────────────────────────────
+  const todayMood = await MoodEntry.findOne({
+    where: { user_id: userId, entry_date: today },
+    order: [['entry_date', 'DESC']],
+  });
+  const moodRaw   = todayMood?.mood_score || 5;
+  const moodScore = Math.round((moodRaw / 10) * 25);
+
+  // ── 3. Habit Completion Rate (20 pts) ────────────────────────────────────
+  const [habits, habitLogs] = await Promise.all([
+    Habit.findAll({ where: { user_id: userId, is_active: true } }),
+    HabitLog.findAll({ where: { user_id: userId, log_date: today } }),
+  ]);
+  const habitTotal     = habits.length || 1;
+  const habitDone      = habitLogs.filter(l => l.completed).length;
+  const habitRate      = habitDone / habitTotal;
+  const habitScore     = Math.round(habitRate * 20);
+
+  // ── 4. Task Load Score (20 pts) — fewer urgent pending = more energy ──────
+  const pendingUrgent = await Task.count({
+    where: {
+      user_id: userId,
+      status: { [Op.in]: ['pending', 'in_progress'] },
+      priority: { [Op.in]: ['urgent', 'high'] },
+    },
+  });
+  // 0 urgent = 20pts, 5+ urgent = 0pts
+  const taskLoadScore = Math.max(0, 20 - pendingUrgent * 4);
+
+  // ── 5. Stress / Burnout Signal (15 pts) ──────────────────────────────────
+  const criticalFlags = await BehavioralFlag.count({
+    where: {
+      user_id: userId,
+      is_resolved: false,
+      is_dismissed: false,
+      severity: { [Op.in]: ['high', 'critical'] },
+    },
+  });
+  const stressScore = Math.max(0, 15 - criticalFlags * 5);
+
+  // ── Total ─────────────────────────────────────────────────────────────────
+  const rawScore    = sleepScore + moodScore + habitScore + taskLoadScore + stressScore;
+  const energyScore = Math.min(100, Math.max(0, rawScore));
+
+  // ── Energy Level Label ────────────────────────────────────────────────────
+  const level = energyScore >= 80 ? 'high'
+    : energyScore >= 55 ? 'medium'
+    : energyScore >= 30 ? 'low'
+    : 'critical';
+
+  // ── Focus Windows from EnergyProfile ─────────────────────────────────────
+  const profile     = await EnergyProfile.findOne({ where: { user_id: userId } });
+  const peakHours   = profile?.peak_hours || [9, 10, 11];
+  const focusWindows = buildFocusWindowsFromPeaks(peakHours);
+
+  // ── Low Energy Periods ────────────────────────────────────────────────────
+  const hourly        = profile?.hourly_task_completions || new Array(24).fill(0);
+  const maxH          = Math.max(...hourly, 1);
+  const lowEnergyPeriods = hourly
+    .map((v, h) => ({ hour: h, ratio: v / maxH }))
+    .filter(x => x.ratio < 0.25 && x.hour >= wakeHour && x.hour <= sleepHour)
+    .map(x => ({ hour: x.hour, label: `${String(x.hour).padStart(2,'0')}:00`, reason: 'نشاط منخفض تاريخياً' }));
+
+  // ── Tips ──────────────────────────────────────────────────────────────────
+  const tips = buildEnergyTips(energyScore, moodRaw, habitRate, pendingUrgent, criticalFlags);
+
+  return {
+    energy_score:      energyScore,
+    level,
+    level_label:       { high:'طاقة عالية', medium:'طاقة متوسطة', low:'طاقة منخفضة', critical:'إرهاق شديد' }[level],
+    breakdown: {
+      sleep_score:    sleepScore,    sleep_hours: sleepHours,
+      mood_score:     moodScore,     mood_raw: moodRaw,
+      habit_score:    habitScore,    habit_rate: Math.round(habitRate * 100),
+      task_load_score: taskLoadScore, pending_urgent: pendingUrgent,
+      stress_score:   stressScore,   active_flags: criticalFlags,
+    },
+    focus_windows:     focusWindows,
+    low_energy_periods: lowEnergyPeriods.slice(0, 5),
+    tips,
+    computed_at:       new Date().toISOString(),
+  };
+}
+
+function buildFocusWindowsFromPeaks(peakHours) {
+  if (!peakHours || peakHours.length === 0) return [];
+  // Group consecutive peak hours into windows
+  const sorted  = [...peakHours].sort((a, b) => a - b);
+  const windows = [];
+  let start = sorted[0], end = sorted[0];
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i] - end <= 1) { end = sorted[i]; }
+    else {
+      windows.push({ start, end: end + 1, label: `${String(start).padStart(2,'0')}:00 - ${String(end+1).padStart(2,'0')}:00` });
+      start = sorted[i]; end = sorted[i];
+    }
+  }
+  windows.push({ start, end: end + 1, label: `${String(start).padStart(2,'0')}:00 - ${String(end+1).padStart(2,'0')}:00` });
+  return windows;
+}
+
+function buildEnergyTips(score, mood, habitRate, urgentTasks, flags) {
+  const tips = [];
+  if (score < 40)  tips.push({ type: 'warning', text: 'طاقتك منخفضة جداً — ركّز على مهمة واحدة مهمة فقط اليوم' });
+  if (mood < 5)    tips.push({ type: 'mood',    text: 'مزاجك يؤثر على طاقتك — خذ استراحة وتحدث مع شخص تثق به' });
+  if (habitRate < 0.5) tips.push({ type: 'habit', text: 'أتمام عاداتك يرفع طاقتك — ابدأ بالعادة الأسهل' });
+  if (urgentTasks > 5) tips.push({ type: 'overload', text: 'لديك مهام عاجلة كثيرة — قسّمها أو فوّض بعضها' });
+  if (flags > 0)   tips.push({ type: 'stress',  text: 'كشفنا إشارات إجهاد — خذ يوم راحة جزئي إذا أمكن' });
+  if (score >= 75) tips.push({ type: 'boost',   text: 'طاقتك عالية اليوم! الآن هو أفضل وقت للمهام الصعبة' });
+  return tips;
+}
+
+function parseTimeHour(str, fallback) {
+  if (!str) return fallback;
+  return parseInt((str || '').split(':')[0], 10) || fallback;
+}
+
+module.exports = {
+  buildEnergyProfile,
+  getEnergyInsights,
+  computeDailyEnergyScore,
 };

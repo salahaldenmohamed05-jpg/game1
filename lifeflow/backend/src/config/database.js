@@ -49,6 +49,19 @@ function registerModels() {
   require('../models/energy_profile.model');
   require('../models/behavioral_flag.model');
   require('../models/subscription.model');
+  // Phase 10 — intelligence models
+  require('../models/day_plan.model');
+  require('../models/energy_log.model');
+  require('../models/coach_session.model');
+  // Phase 10 — adaptive life model
+  require('../models/behavior_profile.model');
+  require('../models/behavior_pattern.model');
+  require('../models/life_prediction.model');
+  // Phase 12 — goal engine
+  require('../models/goal.model');
+  // Phase 14 — life OS
+  require('../models/connected_integration.model');
+  require('../models/external_event.model');
 }
 
 async function connectDB() {
@@ -59,21 +72,19 @@ async function connectDB() {
     logger.info(`📦 Database connected (${dialect})`);
 
     if (dialect === 'sqlite') {
-      // SQLite: use sync without alter to avoid FK constraint errors
-      // New columns added via migrations or alter:false handles gracefully
+      // SQLite: sync without alter to avoid constraint issues on existing data
       try {
         await sequelize.sync({ alter: false });
+        logger.info('📊 Database tables synchronized (SQLite)');
       } catch (syncErr) {
-        // If sync fails, try force: false (safest option - only creates missing tables)
-        logger.warn('⚠️  Standard sync failed, using safe sync:', syncErr.message);
+        // If sync fails, try force: false (non-destructive)
+        logger.warn('⚠️  SQLite sync warning, using safe fallback');
         await sequelize.sync({ force: false });
       }
     } else {
-      // PostgreSQL: safe to use alter:true
       await sequelize.sync({ alter: true });
+      logger.info('📊 Database tables synchronized');
     }
-
-    logger.info('📊 Database tables synchronized');
     return sequelize;
   } catch (error) {
     logger.error('❌ Database connection failed:', error.message);

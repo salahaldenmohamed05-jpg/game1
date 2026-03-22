@@ -1,82 +1,116 @@
 /**
  * Voice Routes - Speech to Text & Text to Speech
+ * Uses Groq for AI processing (OpenAI references removed)
  */
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/auth.middleware');
-const { aiService } = require('../ai/ai.service');
+const { chat } = require('../ai/ai.service');
+const { processCommand } = require('../services/ai.command.engine');
 const logger = require('../utils/logger');
 
 router.use(protect);
 
 /**
  * @route   POST /api/v1/voice/command
- * @desc    Process voice command text | معالجة أمر صوتي
+ * @desc    Process voice command text via the AI command engine
  */
 router.post('/command', async (req, res) => {
   try {
-    const { text } = req.body;
+    const { text, timezone = 'Africa/Cairo' } = req.body;
     if (!text) return res.status(400).json({ success: false, message: 'النص مطلوب' });
 
-    const result = await aiService.processVoiceCommand(text, req.user);
+    // Use the unified AI command engine
+    const result = await processCommand(req.user.id, text, timezone, null);
     res.json({ success: true, data: result });
   } catch (error) {
-    logger.error('Voice command error:', error);
+    logger.error('Voice command error: ' + error.message);
     res.status(500).json({ success: false, message: 'فشل في معالجة الأمر الصوتي' });
   }
 });
 
 /**
  * @route   POST /api/v1/voice/transcribe
- * @desc    Transcribe audio to text (uses OpenAI Whisper)
+ * @desc    Transcribe audio to text
+ * Note: Browser Web Speech API handles transcription client-side.
+ * This endpoint accepts already-transcribed text for processing.
  */
 router.post('/transcribe', async (req, res) => {
   try {
-    const { audio_base64, language = 'ar' } = req.body;
+    const { text, language = 'ar' } = req.body;
 
-    // In production: use OpenAI Whisper API
-    // const OpenAI = require('openai');
-    // const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    // const transcription = await openai.audio.transcriptions.create({
-    //   file: audioFile,
-    //   model: 'whisper-1',
-    //   language: language,
-    // });
-
-    res.json({
-      success: true,
-      data: {
-        text: 'سيتم تحويل الصوت إلى نص باستخدام OpenAI Whisper',
-        language,
-        note: 'يحتاج مفتاح OpenAI API',
-      },
-    });
+    if (text) {
+      // If text already provided (from Web Speech API), just return it
+      res.json({
+        success: true,
+        data: { text, language, source: 'client' },
+      });
+    } else {
+      res.json({
+        success: true,
+        data: {
+          text: '',
+          language,
+          note: 'استخدام Web Speech API في المتصفح للتحويل الصوتي',
+          source: 'browser_api',
+        },
+      });
+    }
   } catch (error) {
-    res.status(500).json({ success: false, message: 'فشل في تحويل الصوت إلى نص' });
+    res.status(500).json({ success: false, message: 'فشل في معالجة الطلب' });
   }
 });
 
 /**
  * @route   POST /api/v1/voice/speak
- * @desc    Convert text to speech
+ * @desc    Convert text to speech (client-side Web Speech Synthesis)
  */
 router.post('/speak', async (req, res) => {
   try {
-    const { text, voice = 'alloy', speed = 1.0 } = req.body;
+    const { text, voice = 'ar-SA', speed = 1.0 } = req.body;
     if (!text) return res.status(400).json({ success: false, message: 'النص مطلوب' });
 
-    // In production: use OpenAI TTS API
+    // Use browser SpeechSynthesis API on the client side
     res.json({
       success: true,
       data: {
         text,
         voice,
-        note: 'يحتاج مفتاح OpenAI API لإنشاء الصوت',
-        voices_available: ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'],
+        speed,
+        method: 'browser_speech_synthesis',
+        note: 'استخدام Speech Synthesis API في المتصفح',
       },
     });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'فشل في تحويل النص إلى صوت' });
+    res.status(500).json({ success: false, message: 'فشل في معالجة الطلب' });
+  }
+});
+
+/**
+ * @route   GET /api/v1/voice/analyze
+ * @desc    Voice session analysis
+ */
+router.get('/analyze', async (req, res) => {
+  try {
+    res.json({
+      success: true,
+      data: {
+        sessions_count: 0,
+        avg_session_length: 0,
+        most_used_commands: [],
+        supported_commands: [
+          'اضف مهمة ...',
+          'مزاجي اليوم ...',
+          'اعطني خطة اليوم',
+          'ما مهامي المتأخرة؟',
+          'خلّص مهمة ...',
+          'أجّل مهمة ...',
+        ],
+        note: 'المساعد الصوتي يعمل عبر Web Speech API في المتصفح',
+      }
+    });
+  } catch(e) {
+    res.status(500).json({ success: false, message: e.message });
   }
 });
 

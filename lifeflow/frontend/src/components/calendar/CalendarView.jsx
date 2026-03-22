@@ -34,7 +34,8 @@ export default function CalendarView() {
     queryFn: () => api.get(`/tasks?month=${year}-${String(month+1).padStart(2,'0')}&limit=100`),
   });
 
-  const tasks = tasksData?.data?.tasks || [];
+  // tasksData = Axios response: { data: { success, data: { tasks: [...] } } }
+  const tasks = tasksData?.data?.data?.tasks || tasksData?.data?.tasks || [];
 
   // Group tasks by date
   const tasksByDate = {};

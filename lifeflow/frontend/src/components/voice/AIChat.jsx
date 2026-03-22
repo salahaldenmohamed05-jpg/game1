@@ -50,10 +50,12 @@ export default function AIChat() {
 
     try {
       const response = await aiAPI.chat(msg);
+      // Backend returns { success, data: { reply, ... } } — Axios wraps in response.data
+      const payload = response?.data?.data || response?.data;
       const aiMessage = {
         id: Date.now() + 1,
         role: 'assistant',
-        content: response?.data?.response || 'عذراً، لم أستطع معالجة طلبك. حاول مجدداً.',
+        content: payload?.reply || payload?.response || payload?.message || 'عذراً، لم أستطع معالجة طلبك. حاول مجدداً.',
         timestamp: new Date(),
       };
       setMessages(prev => [...prev, aiMessage]);

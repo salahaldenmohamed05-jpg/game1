@@ -1,368 +1,216 @@
 /**
- * AI Service - Core Intelligence Layer
+ * AI Service — Core Intelligence Layer
  * ======================================
- * طبقة الذكاء الاصطناعي الأساسية
- * تستخدم OpenAI GPT لتوليد رؤى وتوصيات ذكية
+ * Uses Groq (OpenAI-compatible API) as the primary LLM backend.
+ * Falls back to static Arabic responses if the key is missing.
+ *
+ * Provider: Groq → https://api.groq.com/openai/v1
+ * Model:    llama3-70b-8192  (or from OPENAI_MODEL env)
  */
 
-const OpenAI = require('openai');
+'use strict';
+
+const https  = require('https');
 const logger = require('../utils/logger');
 
-// Initialize OpenAI client
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY || 'demo-key',
-});
+// Read at call time so dotenv override works properly
+function getApiConfig() {
+  // Prefer GROQ_API_KEY (our primary), fall back to OPENAI_API_KEY
+  const key = process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY || '';
+  const url = 'https://api.groq.com/openai/v1';
+  const model = process.env.OPENAI_MODEL || 'llama-3.3-70b-versatile';
+  return { key, url, model };
+}
 
-const MODEL = process.env.OPENAI_MODEL || 'gpt-4-turbo-preview';
+// ─── HTTP helper (no extra deps) ──────────────────────────────────────────────
+function postJSON(url, headers, body) {
+  return new Promise((resolve, reject) => {
+    const u    = new URL(url);
+    const opts = {
+      hostname : u.hostname,
+      port     : 443,
+      path     : u.pathname,
+      method   : 'POST',
+      headers  : { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), ...headers },
+    };
+    const req = https.request(opts, (res) => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => resolve({ status: res.statusCode, body: data }));
+    });
+    req.setTimeout(15_000, () => req.destroy(new Error('AI_TIMEOUT')));
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
 
-/**
- * Core AI chat function - Arabic-optimized
- * دالة الذكاء الاصطناعي الأساسية - محسنة للعربية
- */
+// ─── Core chat function ────────────────────────────────────────────────────────
 async function chat(systemPrompt, userMessage, options = {}) {
-  try {
-    if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY === 'demo-key') {
-      return getFallbackResponse(options.type);
-    }
+  const { key: API_KEY, url: BASE_URL, model: MODEL } = getApiConfig();
+  // If key is not set or is a placeholder, return fallback immediately
+  if (!API_KEY || API_KEY === 'demo-key' || API_KEY.startsWith('your-')) {
+    logger.debug('[AI-SERVICE] No real API key — using fallback response');
+    return getFallbackResponse(options.type);
+  }
 
-    const response = await openai.chat.completions.create({
-      model: MODEL,
+  try {
+    const payload = JSON.stringify({
+      model   : MODEL,
       messages: [
         { role: 'system', content: systemPrompt },
-        { role: 'user', content: userMessage },
+        { role: 'user',   content: userMessage  },
       ],
-      max_tokens: options.maxTokens || 500,
-      temperature: options.temperature || 0.7,
-      response_format: options.jsonMode ? { type: 'json_object' } : undefined,
+      max_tokens  : options.maxTokens  || 600,
+      temperature : options.temperature || 0.7,
+      ...(options.jsonMode && { response_format: { type: 'json_object' } }),
     });
 
-    const content = response.choices[0].message.content;
-    return options.jsonMode ? JSON.parse(content) : content;
+    const { status, body } = await postJSON(
+      `${BASE_URL}/chat/completions`,
+      { Authorization: `Bearer ${API_KEY}` },
+      payload
+    );
+
+    if (status === 429) { logger.warn('[AI-SERVICE] Rate limit hit'); return getFallbackResponse(options.type); }
+    if (status !== 200) throw new Error(`Groq HTTP ${status}: ${body.slice(0, 200)}`);
+
+    const parsed  = JSON.parse(body);
+    const content = parsed?.choices?.[0]?.message?.content || '';
+    logger.debug('[AI-SERVICE] Response received', { model: MODEL, chars: content.length });
+
+    if (options.jsonMode) {
+      try { return JSON.parse(content); }
+      catch {
+        // Try extracting JSON block from text
+        const match = content.match(/\{[\s\S]*\}/);
+        if (match) try { return JSON.parse(match[0]); } catch { /* ignore */ }
+        logger.warn('[AI-SERVICE] JSON parse failed, returning fallback');
+        return getFallbackResponse(options.type);
+      }
+    }
+    return content;
   } catch (error) {
-    logger.error('OpenAI API error:', error.message);
+    logger.error('[AI-SERVICE] Error:', error.message);
     return getFallbackResponse(options.type);
   }
 }
 
-// =======================================
-// System Prompt Templates
-// =======================================
-
+// ─── System prompt template ────────────────────────────────────────────────────
 const SYSTEM_PROMPTS = {
-  assistant: (user) => `
-أنت "LifeFlow"، مساعد شخصي ذكي ومميز باللغة العربية.
-شخصيتك: ${user?.ai_personality || 'friendly'} - مشجع، إيجابي، ومحترف.
+  assistant: (user) => `أنت "LifeFlow"، مساعد شخصي ذكي ومميز باللغة العربية.
+شخصيتك: مشجع، إيجابي، ومحترف.
 معلومات المستخدم:
 - الاسم: ${user?.name || 'المستخدم'}
 - المنطقة الزمنية: ${user?.timezone || 'Africa/Cairo'}
-- وقت الاستيقاظ: ${user?.wake_up_time || '07:00'}
-- ساعات العمل: ${user?.work_start_time || '09:00'} - ${user?.work_end_time || '17:00'}
 
 قواعد مهمة:
-1. دائماً تحدث بالعربية
+1. تحدث دائماً بالعربية
 2. كن مشجعاً وإيجابياً
 3. قدم توصيات عملية وقابلة للتنفيذ
 4. اجعل ردودك مختصرة ومفيدة
-5. استخدم إيموجي باعتدال لجعل النص أكثر حيوية
-`,
+5. استخدم إيموجي باعتدال`,
 };
 
-// =======================================
-// AI Service Methods
-// =======================================
-
+// ─── AI Service methods ────────────────────────────────────────────────────────
 const aiService = {
 
-  /**
-   * Prioritize a task using AI
-   * ترتيب أولوية المهمة بالذكاء الاصطناعي
-   */
   async prioritizeTask(task, user) {
-    const systemPrompt = SYSTEM_PROMPTS.assistant(user) + `
-مهمتك: تحليل المهمة وإعطاء درجة أولوية من 0 إلى 100.
-أعد JSON فقط بهذا الشكل:
-{
-  "score": 75,
-  "reasoning": "سبب الدرجة بالعربية",
-  "suggestions": ["اقتراح 1", "اقتراح 2"]
-}`;
-
-    const userMessage = `
-المهمة: ${task.title}
-الوصف: ${task.description || 'لا يوجد'}
-الفئة: ${task.category}
-الأولوية المحددة: ${task.priority}
-الموعد النهائي: ${task.due_date || 'غير محدد'}
-الوقت المقدر: ${task.estimated_duration ? task.estimated_duration + ' دقيقة' : 'غير محدد'}
-`;
-
-    const result = await chat(systemPrompt, userMessage, { jsonMode: true, type: 'priority' });
-    return {
-      score: result.score || 50,
-      suggestions: result.suggestions || [],
-      reasoning: result.reasoning || '',
-    };
+    const sys = SYSTEM_PROMPTS.assistant(user) + `\nمهمتك: تحليل المهمة وإعطاء درجة أولوية من 0 إلى 100.\nأعد JSON فقط: {"score":75,"reasoning":"سبب الدرجة","suggestions":["اقتراح1","اقتراح2"]}`;
+    const msg = `المهمة: ${task.title}\nالأولوية: ${task.priority}\nالموعد: ${task.due_date || 'غير محدد'}`;
+    const result = await chat(sys, msg, { jsonMode: true, type: 'priority' });
+    return { score: result.score || 50, suggestions: result.suggestions || [], reasoning: result.reasoning || '' };
   },
 
-  /**
-   * Break down a large task into subtasks
-   * تقسيم مهمة كبيرة لمهام صغيرة
-   */
   async breakdownTask(title, description, user) {
-    const systemPrompt = SYSTEM_PROMPTS.assistant(user) + `
-مهمتك: تقسيم المهمة الكبيرة إلى مهام فرعية صغيرة قابلة للتنفيذ.
-أعد JSON فقط:
-{
-  "subtasks": [
-    {
-      "title": "عنوان المهمة الفرعية",
-      "estimated_duration": 30,
-      "priority": "high",
-      "description": "وصف مختصر"
-    }
-  ],
-  "tips": ["نصيحة 1", "نصيحة 2"]
-}`;
-
-    return await chat(systemPrompt,
-      `المهمة: ${title}\nالوصف: ${description || 'لا يوجد'}`,
-      { jsonMode: true, type: 'breakdown' }
-    );
+    const sys = SYSTEM_PROMPTS.assistant(user) + `\nمهمتك: تقسيم المهمة إلى مهام فرعية صغيرة.\nأعد JSON فقط: {"subtasks":[{"title":"...","estimated_duration":30,"priority":"high","description":"..."}],"tips":["نصيحة"]}`;
+    return await chat(sys, `المهمة: ${title}\nالوصف: ${description || 'لا يوجد'}`, { jsonMode: true, type: 'breakdown' });
   },
 
-  /**
-   * Analyze mood and give recommendation
-   * تحليل المزاج وتقديم توصية
-   */
   async analyzeMood(moodEntry, user) {
-    const systemPrompt = SYSTEM_PROMPTS.assistant(user) + `
-أنت محلل نفسي لطيف ومتعاطف.
-مهمتك: تحليل مزاج المستخدم وتقديم توصية مفيدة.
-أعد JSON:
-{
-  "analysis": "تحليل موجز للمزاج",
-  "recommendation": "توصية عملية ومشجعة",
-  "action_items": ["فعل 1", "فعل 2"]
-}`;
-
-    const msg = `
-درجة المزاج: ${moodEntry.mood_score}/10
-المشاعر: ${(moodEntry.emotions || []).join('، ')}
-مستوى الطاقة: ${moodEntry.energy_level || 'غير محدد'}
-مستوى التوتر: ${moodEntry.stress_level || 'غير محدد'}
-التأثيرات الإيجابية: ${(moodEntry.factors?.positive || []).join('، ')}
-التأثيرات السلبية: ${(moodEntry.factors?.negative || []).join('، ')}
-الملاحظات: ${moodEntry.journal_entry || 'لا يوجد'}
-`;
-
-    return await chat(systemPrompt, msg, { jsonMode: true, type: 'mood' });
+    const sys = SYSTEM_PROMPTS.assistant(user) + `\nأنت محلل نفسي لطيف.\nأعد JSON: {"analysis":"تحليل موجز","recommendation":"توصية عملية","action_items":["فعل1","فعل2"]}`;
+    const msg = `درجة المزاج: ${moodEntry.mood_score}/10\nالمشاعر: ${(moodEntry.emotions || []).join('، ')}\nمستوى الطاقة: ${moodEntry.energy_level || 'غير محدد'}\nالملاحظات: ${moodEntry.journal_entry || 'لا يوجد'}`;
+    return await chat(sys, msg, { jsonMode: true, type: 'mood' });
   },
 
-  /**
-   * Generate daily summary
-   * إنشاء ملخص يومي
-   */
   async generateDailySummary({ user, date, tasks, habits, mood }) {
-    const systemPrompt = SYSTEM_PROMPTS.assistant(user) + `
-مهمتك: كتابة ملخص يومي مشجع وإيجابي للمستخدم.
-أعد JSON:
-{
-  "summary": "الملخص اليومي بالعربية (3-5 جمل)",
-  "highlights": ["إنجاز 1", "إنجاز 2"],
-  "recommendations": ["توصية لليوم التالي 1", "توصية 2", "توصية 3"]
-}`;
-
-    const msg = `
-التاريخ: ${date}
-المهام: ${tasks.completed}/${tasks.total} مكتملة
-العادات: ${habits.completed}/${habits.total} مكتملة
-المزاج: ${mood ? `${mood.mood_score}/10` : 'لم يُسجَّل'}
-`;
-
-    return await chat(systemPrompt, msg, { jsonMode: true, type: 'daily_summary', maxTokens: 800 });
+    const sys = SYSTEM_PROMPTS.assistant(user) + `\nمهمتك: كتابة ملخص يومي مشجع.\nأعد JSON: {"summary":"الملخص (3-5 جمل)","highlights":["إنجاز1"],"recommendations":["توصية1","توصية2"]}`;
+    const msg = `التاريخ: ${date}\nالمهام: ${tasks.completed}/${tasks.total} مكتملة\nالعادات: ${habits.completed}/${habits.total} مكتملة\nالمزاج: ${mood ? `${mood.mood_score}/10` : 'لم يُسجَّل'}`;
+    return await chat(sys, msg, { jsonMode: true, type: 'daily_summary', maxTokens: 800 });
   },
 
-  /**
-   * Generate weekly report
-   * إنشاء تقرير أسبوعي
-   */
   async generateWeeklyReport({ user, tasks, habits, mood, period }) {
-    const systemPrompt = SYSTEM_PROMPTS.assistant(user) + `
-مهمتك: كتابة تقرير أسبوعي شامل ومفصل للمستخدم.
-أعد JSON:
-{
-  "report": "التقرير الأسبوعي (5-7 جمل)",
-  "strengths": ["نقطة قوة 1", "نقطة قوة 2"],
-  "areas_to_improve": ["مجال تطوير 1", "مجال 2"],
-  "recommendations": ["توصية 1", "توصية 2", "توصية 3"],
-  "next_week_goals": ["هدف 1", "هدف 2"]
-}`;
-
-    const msg = `
-معدل إتمام المهام: ${tasks.completion_rate}%
-معدل الاتساق في العادات: ${habits.consistency_rate}%
-متوسط المزاج: ${mood?.average || 'غير متاح'}/10
-`;
-
-    return await chat(systemPrompt, msg, { jsonMode: true, type: 'weekly_report', maxTokens: 1000 });
+    const sys = SYSTEM_PROMPTS.assistant(user) + `\nمهمتك: كتابة تقرير أسبوعي شامل.\nأعد JSON: {"report":"التقرير","strengths":["نقطة قوة"],"areas_to_improve":["مجال"],"recommendations":["توصية"],"next_week_goals":["هدف"]}`;
+    const msg = `معدل المهام: ${tasks.completion_rate}%\nالعادات: ${habits.consistency_rate}%\nالمزاج: ${mood?.average || 'غير متاح'}/10`;
+    return await chat(sys, msg, { jsonMode: true, type: 'weekly_report', maxTokens: 1000 });
   },
 
-  /**
-   * Analyze behavior patterns
-   * تحليل أنماط السلوك
-   */
   async analyzeBehavior(behaviorData, user) {
-    const systemPrompt = SYSTEM_PROMPTS.assistant(user) + `
-مهمتك: تحليل أنماط سلوك المستخدم خلال آخر 30 يوم.
-أعد JSON:
-{
-  "analysis": "التحليل الشامل",
-  "peak_productivity_insight": "رؤية عن ساعات الذروة",
-  "habit_pattern": "نمط العادات",
-  "recommendations": ["توصية 1", "توصية 2", "توصية 3"],
-  "action_plan": ["خطوة 1", "خطوة 2"]
-}`;
-
-    return await chat(systemPrompt,
-      JSON.stringify(behaviorData, null, 2),
-      { jsonMode: true, type: 'behavior', maxTokens: 800 }
-    );
+    const sys = SYSTEM_PROMPTS.assistant(user) + `\nمهمتك: تحليل أنماط السلوك.\nأعد JSON: {"analysis":"التحليل","peak_productivity_insight":"رؤية","habit_pattern":"النمط","recommendations":["توصية"],"action_plan":["خطوة"]}`;
+    return await chat(sys, JSON.stringify(behaviorData, null, 2), { jsonMode: true, type: 'behavior', maxTokens: 800 });
   },
 
-  /**
-   * Get smart context-aware suggestion
-   * اقتراح ذكي بناءً على السياق
-   */
   async getSmartSuggestion({ user, tasks, habits, habitLogs, mood, currentHour }) {
-    const systemPrompt = SYSTEM_PROMPTS.assistant(user) + `
-مهمتك: تقديم اقتراح واحد ذكي ومناسب للسياق الحالي.
-أعد JSON:
-{
-  "suggestion": "الاقتراح بالعربية",
-  "reason": "سبب الاقتراح",
-  "action": "ما يجب فعله",
-  "priority": "high/medium/low"
-}`;
-
-    const pendingTasks = tasks.filter(t => t.status === 'pending').length;
-    const completedHabits = habitLogs.filter(l => l.completed).length;
-
-    const msg = `
-الوقت الحالي: ${currentHour}:00
-المهام المعلقة: ${pendingTasks}
-العادات المكتملة اليوم: ${completedHabits}/${habits.length}
-المزاج: ${mood ? `${mood.mood_score}/10` : 'لم يُسجَّل'}
-`;
-
-    return await chat(systemPrompt, msg, { jsonMode: true, type: 'suggestion' });
+    const sys = SYSTEM_PROMPTS.assistant(user) + `\nمهمتك: تقديم اقتراح واحد ذكي مناسب للسياق.\nأعد JSON: {"suggestion":"الاقتراح","reason":"السبب","action":"ما يجب فعله","priority":"high/medium/low"}`;
+    const pendingTasks = (tasks || []).filter(t => t.status === 'pending').length;
+    const completedHabits = (habitLogs || []).filter(l => l.completed).length;
+    const msg = `الوقت: ${currentHour}:00\nالمهام المعلقة: ${pendingTasks}\nالعادات المكتملة: ${completedHabits}/${(habits||[]).length}\nالمزاج: ${mood ? `${mood.mood_score}/10` : 'لم يُسجَّل'}`;
+    return await chat(sys, msg, { jsonMode: true, type: 'suggestion' });
   },
 
-  /**
-   * Analyze a specific habit
-   * تحليل عادة محددة
-   */
   async analyzeHabit(habit, stats, user) {
-    const systemPrompt = SYSTEM_PROMPTS.assistant(user) + `
-مهمتك: تحليل عادة المستخدم وتقديم رؤى قيمة.
-أعد JSON:
-{
-  "analysis": "تحليل العادة",
-  "strengths": ["نقطة قوة"],
-  "recommendations": ["توصية 1", "توصية 2"],
-  "motivation": "رسالة تحفيزية"
-}`;
-
-    return await chat(systemPrompt,
-      `العادة: ${habit.name}\nالتسلسل الحالي: ${stats.current_streak} يوم\nمعدل الإتمام: ${stats.completion_rate}%`,
-      { jsonMode: true, type: 'habit_analysis' }
-    );
+    const sys = SYSTEM_PROMPTS.assistant(user) + `\nمهمتك: تحليل العادة.\nأعد JSON: {"analysis":"التحليل","strengths":["نقطة"],"recommendations":["توصية"],"motivation":"رسالة تحفيزية"}`;
+    return await chat(sys, `العادة: ${habit.name}\nالتسلسل: ${stats.current_streak} يوم\nمعدل الإتمام: ${stats.completion_rate}%`, { jsonMode: true, type: 'habit_analysis' });
   },
 
-  /**
-   * Get mood insight
-   */
   async getMoodInsight(entries, user) {
-    const systemPrompt = SYSTEM_PROMPTS.assistant(user) + `
-مهمتك: تقديم رؤية عميقة حول مزاج المستخدم خلال الأسبوعين الماضيين.
-أعد نصاً عربياً مفيداً ومشجعاً (3-4 جمل).`;
-
-    const avgMood = entries.length > 0
-      ? (entries.reduce((s, e) => s + e.mood_score, 0) / entries.length).toFixed(1)
-      : 5;
-
-    return await chat(systemPrompt,
-      `متوسط المزاج: ${avgMood}/10\nعدد التسجيلات: ${entries.length}`,
-      { type: 'mood_insight' }
-    );
+    const sys = SYSTEM_PROMPTS.assistant(user) + `\nمهمتك: تقديم رؤية عميقة حول مزاج المستخدم خلال الأسبوعين الماضيين.\nأعد نصاً عربياً مفيداً ومشجعاً (3-4 جمل فقط).`;
+    const avg = entries.length > 0 ? (entries.reduce((s, e) => s + e.mood_score, 0) / entries.length).toFixed(1) : 5;
+    return await chat(sys, `متوسط المزاج: ${avg}/10\nعدد التسجيلات: ${entries.length}`, { type: 'mood_insight' });
   },
 
-  /**
-   * Get productivity tips
-   * نصائح إنتاجية مخصصة
-   */
   async getProductivityTips(user) {
-    const systemPrompt = SYSTEM_PROMPTS.assistant(user) + `
-مهمتك: تقديم 5 نصائح إنتاجية مخصصة للمستخدم.
-أعد JSON:
-{
-  "tips": [
-    {
-      "title": "عنوان النصيحة",
-      "description": "شرح مختصر",
-      "category": "time_management/focus/habits/mindset",
-      "difficulty": "easy/medium/hard"
-    }
-  ]
-}`;
-
-    return await chat(systemPrompt,
-      `معلومات المستخدم: ${user.name}, وقت العمل: ${user.work_start_time}-${user.work_end_time}`,
-      { jsonMode: true, type: 'tips', maxTokens: 800 }
-    );
+    const sys = SYSTEM_PROMPTS.assistant(user) + `\nمهمتك: تقديم 5 نصائح إنتاجية مخصصة.\nأعد JSON: {"tips":[{"title":"...","description":"...","category":"time_management/focus/habits/mindset","difficulty":"easy/medium/hard"}]}`;
+    return await chat(sys, `المستخدم: ${user.name}`, { jsonMode: true, type: 'tips', maxTokens: 800 });
   },
 
-  /**
-   * Voice command processing
-   * معالجة الأوامر الصوتية
-   */
   async processVoiceCommand(text, user) {
-    const systemPrompt = SYSTEM_PROMPTS.assistant(user) + `
-مهمتك: تحليل أمر صوتي وتحديد النية والإجراء المطلوب.
-أعد JSON:
-{
-  "intent": "create_task/complete_task/check_habits/check_mood/get_summary/ask_question",
-  "entities": {
-    "task_title": null,
-    "date": null,
-    "time": null,
-    "habit_name": null
+    const sys = SYSTEM_PROMPTS.assistant(user) + `\nمهمتك: تحليل أمر صوتي.\nأعد JSON: {"intent":"create_task/complete_task/check_habits/check_mood/get_summary/ask_question","entities":{"task_title":null,"date":null},"response":"رد طبيعي","action":"الإجراء"}`;
+    return await chat(sys, text, { jsonMode: true, type: 'voice_command' });
   },
-  "response": "رد طبيعي للمستخدم",
-  "action": "الإجراء الموصى به"
-}`;
 
-    return await chat(systemPrompt, text, { jsonMode: true, type: 'voice_command' });
+  // ─── Copilot / conversation (real AI) ─────────────────────────────────────
+  async copilotChat(userMessage, context, user) {
+    const ctx = context || {};
+    const sys = `${SYSTEM_PROMPTS.assistant(user)}
+
+السياق الحالي للمستخدم:
+- درجة الحياة: ${ctx.life_score || 'غير محددة'}/100
+- درجة الطاقة: ${ctx.energy_score || 'غير محددة'}/100
+- المهام المعلقة: ${ctx.pending_tasks || 0}
+- المزاج الأخير: ${ctx.last_mood || 'غير مسجّل'}
+
+أجب على سؤال المستخدم بشكل مباشر، ذكي، وشخصي. يمكنك طرح سؤال واحد للمتابعة إن لزم.`;
+    return await chat(sys, userMessage, { type: 'copilot', maxTokens: 600 });
   },
 };
 
-// =======================================
-// Fallback responses when AI is offline
-// =======================================
-
+// ─── Fallback responses ────────────────────────────────────────────────────────
 function getFallbackResponse(type) {
   const fallbacks = {
-    priority: { score: 50, suggestions: ['راجع موعد التسليم', 'قدّر الوقت اللازم'], reasoning: 'أولوية متوسطة' },
-    breakdown: { subtasks: [{ title: 'البحث والتحضير', estimated_duration: 30, priority: 'high' }, { title: 'التنفيذ', estimated_duration: 60, priority: 'high' }, { title: 'المراجعة', estimated_duration: 20, priority: 'medium' }], tips: ['ابدأ بالخطوات الأصغر'] },
-    mood: { analysis: 'شكراً لمشاركتك مزاجك معي!', recommendation: 'استمر في تتبع مزاجك يومياً لفهم أنماطك', action_items: ['خذ استراحة قصيرة', 'اشرب كوب ماء'] },
-    daily_summary: { summary: 'يوم مليء بالإنجازات! كل خطوة صغيرة تقربك من أهدافك.', highlights: ['تسجيل حضور في التطبيق'], recommendations: ['راجع مهامك لغداً', 'احرص على النوم الجيد', 'مارس نشاطاً بدنياً'] },
-    weekly_report: { report: 'أسبوع جديد فرصة جديدة للنمو والتطور!', strengths: ['الاستمرارية'], areas_to_improve: ['إدارة الوقت'], recommendations: ['ضع أولوياتك بوضوح', 'راجع أهدافك الأسبوعية'], next_week_goals: ['إتمام المهام المعلقة', 'الحفاظ على عاداتك اليومية'] },
-    behavior: { analysis: 'بناءً على بياناتك، لديك قدرة جيدة على إدارة مهامك.', peak_productivity_insight: 'معظم الناس أكثر إنتاجية في الصباح', habit_pattern: 'الاستمرارية مفتاح النجاح', recommendations: ['حدد أوقاتك المنتجة', 'استرح بين المهام', 'تابع تقدمك يومياً'], action_plan: ['ابدأ يومك بمهمة مهمة', 'راجع أهدافك أسبوعياً'] },
-    suggestion: { suggestion: 'حان وقت مراجعة مهامك اليوم!', reason: 'الوقت المناسب للتخطيط', action: 'افتح قائمة المهام وحدد أولوياتك', priority: 'medium' },
-    habit_analysis: { analysis: 'استمر في هذه العادة الرائعة!', strengths: ['الاستمرارية'], recommendations: ['حاول الحفاظ على وقت ثابت للعادة'], motivation: 'كل يوم تبني نسخة أفضل من نفسك!' },
-    tips: { tips: [{ title: 'قاعدة 2 دقيقة', description: 'إذا كانت المهمة تستغرق أقل من دقيقتين، افعلها الآن', category: 'time_management', difficulty: 'easy' }, { title: 'تقنية بومودورو', description: 'اعمل 25 دقيقة ثم استرح 5 دقائق', category: 'focus', difficulty: 'easy' }, { title: 'صباح منتج', description: 'ابدأ يومك بأهم مهمة قبل التحقق من البريد', category: 'habits', difficulty: 'medium' }, { title: 'قلل التشتيت', description: 'أغلق الإشعارات أثناء العمل المركز', category: 'focus', difficulty: 'easy' }, { title: 'راجع يومك', description: 'خصص 10 دقائق في المساء لمراجعة ما أنجزته', category: 'mindset', difficulty: 'easy' }] },
-    voice_command: { intent: 'ask_question', entities: {}, response: 'عذراً، لم أفهم طلبك. هل يمكنك إعادة صياغته؟', action: 'retry' },
-    mood_insight: 'استمر في تتبع مزاجك يومياً! هذا يساعدك على فهم نفسك أفضل.',
-    default: 'شكراً لاستخدامك LifeFlow! دائماً هنا لمساعدتك.',
+    priority       : { score: 50, suggestions: ['راجع موعد التسليم', 'قدّر الوقت اللازم'], reasoning: 'أولوية متوسطة' },
+    breakdown      : { subtasks: [{ title: 'البحث والتحضير', estimated_duration: 30, priority: 'high' }, { title: 'التنفيذ', estimated_duration: 60, priority: 'high' }, { title: 'المراجعة', estimated_duration: 20, priority: 'medium' }], tips: ['ابدأ بالخطوات الأصغر'] },
+    mood           : { analysis: 'شكراً لمشاركتك مزاجك!', recommendation: 'استمر في تتبع مزاجك يومياً لفهم أنماطك', action_items: ['خذ استراحة قصيرة', 'اشرب كوب ماء'] },
+    daily_summary  : { summary: 'يوم مليء بالإنجازات! كل خطوة صغيرة تقربك من أهدافك.', highlights: ['تسجيل حضور في التطبيق'], recommendations: ['راجع مهامك لغداً', 'احرص على النوم الجيد'] },
+    weekly_report  : { report: 'أسبوع جديد فرصة جديدة للنمو!', strengths: ['الاستمرارية'], areas_to_improve: ['إدارة الوقت'], recommendations: ['ضع أولوياتك بوضوح'], next_week_goals: ['إتمام المهام المعلقة'] },
+    behavior       : { analysis: 'لديك قدرة جيدة على إدارة مهامك.', peak_productivity_insight: 'معظم الناس أكثر إنتاجية في الصباح', habit_pattern: 'الاستمرارية مفتاح النجاح', recommendations: ['حدد أوقاتك المنتجة', 'استرح بين المهام'], action_plan: ['ابدأ يومك بمهمة مهمة'] },
+    suggestion     : { suggestion: 'حان وقت مراجعة مهامك اليوم!', reason: 'الوقت المناسب للتخطيط', action: 'افتح قائمة المهام وحدد أولوياتك', priority: 'medium' },
+    habit_analysis : { analysis: 'استمر في هذه العادة!', strengths: ['الاستمرارية'], recommendations: ['حافظ على وقت ثابت للعادة'], motivation: 'كل يوم تبني نسخة أفضل من نفسك!' },
+    tips           : { tips: [{ title: 'قاعدة 2 دقيقة', description: 'إذا كانت المهمة تستغرق أقل من دقيقتين، افعلها الآن', category: 'time_management', difficulty: 'easy' }, { title: 'تقنية بومودورو', description: 'اعمل 25 دقيقة ثم استرح 5 دقائق', category: 'focus', difficulty: 'easy' }] },
+    voice_command  : { intent: 'ask_question', entities: {}, response: 'عذراً، لم أفهم طلبك. هل يمكنك إعادة صياغته؟', action: 'retry' },
+    mood_insight   : 'استمر في تتبع مزاجك يومياً! هذا يساعدك على فهم نفسك بشكل أفضل.',
+    copilot        : 'مرحباً! أنا مساعدك الشخصي في LifeFlow. كيف يمكنني مساعدتك اليوم؟',
+    default        : 'شكراً لاستخدامك LifeFlow! دائماً هنا لمساعدتك.',
   };
   return fallbacks[type] || fallbacks.default;
 }
