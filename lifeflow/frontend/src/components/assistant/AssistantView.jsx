@@ -388,13 +388,15 @@ export default function AssistantView() {
     },
     onSuccess: (response) => {
       setIsTyping(false);
-      const d = response?.data;
+      // Backend returns { success, data: { reply, ... } } — Axios wraps it in response.data
+      // So the actual payload is response.data.data
+      const d = response?.data?.data || response?.data;
       if (!d) return;
 
       const assistantMsg = {
         id                : `a_${Date.now()}`,
         role              : 'assistant',
-        content           : d.reply || 'حدث خطأ في الرد',
+        content           : d.reply || d.message || '⚠️ لم أتمكن من توليد رد، حاول مرة أخرى.',
         action_taken      : d.action_taken,
         actions           : d.actions || [],           // new format: array of actions
         needs_confirmation: d.needs_confirmation,
