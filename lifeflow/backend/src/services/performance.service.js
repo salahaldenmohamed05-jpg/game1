@@ -12,7 +12,7 @@ const logger  = require('../utils/logger');
 // Lazy-load models to avoid circular deps
 const getModels = () => ({
   Task:               require('../models/task.model'),
-  Habit:              require('../models/habit.model'),
+  Habit:              require('../models/habit.model').Habit,
   MoodEntry:          require('../models/mood.model'),
   ProductivityScore:  require('../models/productivity_score.model'),
   EnergyProfile:      require('../models/energy_profile.model'),
@@ -71,7 +71,6 @@ async function computeDailyScore(userId, dateStr = null, timezone = 'Africa/Cair
     const [tasks, habitLogs, moodEntries, user] = await Promise.all([
       Task.findAll({ where: { user_id: userId } }),
       fetchHabitLogs(userId, dayStart, dayEnd),
-      // Fix: use entry_date (DATEONLY) not createdAt for mood lookup
       MoodEntry.findAll({ where: { user_id: userId, entry_date: today } }),
       User.findByPk(userId),
     ]);

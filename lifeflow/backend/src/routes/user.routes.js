@@ -8,6 +8,15 @@ const User = require('../models/user.model');
 
 router.use(protect);
 
+// Get profile — aliases: /users/me and /users/profile
+router.get('/me', async (req, res) => {
+  try {
+    res.json({ success: true, data: req.user.toSafeObject() });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'فشل في جلب الملف الشخصي' });
+  }
+});
+
 // Get profile (GET /users/profile)
 router.get('/profile', async (req, res) => {
   try {

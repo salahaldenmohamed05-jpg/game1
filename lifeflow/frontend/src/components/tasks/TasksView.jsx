@@ -84,33 +84,16 @@ export default function TasksView() {
     mutationFn: (data) => taskAPI.createTask(data),
     onSuccess: () => { invalidate(); toast.success('تم إضافة المهمة الفرعية'); setAddingSubtaskFor(null); setNewSubtask({ title: '', estimated_duration: '' }); },
     onError: (e) => toast.error(e.message || 'فشل في إضافة المهمة الفرعية'),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tasks'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      toast.success('تم إنشاء المهمة ✅');
-      setShowAdd(false);
-      setNewTask({ title: '', description: '', category: 'personal', priority: 'medium', due_date: '', estimated_duration: '' });
-    },
-    onError: (err) => toast.error(err.message || 'فشل في إنشاء المهمة'),
   });
 
   const completeMutation = useMutation({
     mutationFn: (id) => taskAPI.completeTask(id),
-    onSuccess: () => { invalidate(); toast.success('أحسنت! 🎉'); },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tasks'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      toast.success('أحسنت! تم إتمام المهمة 🎉');
-    },
+    onSuccess: () => { invalidate(); toast.success('أحسنت! تم إتمام المهمة 🎉'); },
   });
 
   const deleteMutation = useMutation({
     mutationFn: taskAPI.deleteTask,
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['tasks'] }); toast.success('تم الحذف'); },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tasks'] });
-      toast.success('تم حذف المهمة');
-    },
+    onSuccess: () => { invalidate(); toast.success('تم حذف المهمة'); },
   });
 
   const breakdownMutation = useMutation({
@@ -119,7 +102,7 @@ export default function TasksView() {
   });
 
   // ── Derived data ──
-  const allTasks = data?.data?.tasks || [];
+  const allTasks = data?.data?.data?.tasks || data?.data?.tasks || [];
 
   // Separate parent tasks and subtasks
   const parentTasks = allTasks.filter(t => !t.parent_task_id);
@@ -718,12 +701,12 @@ export default function TasksView() {
                   />
                 </div>
 
-                {breakdownMutation.data?.data?.subtasks && (
+                {(breakdownMutation.data?.data?.data?.subtasks || breakdownMutation.data?.data?.subtasks) && (
                   <div className="bg-white/5 rounded-xl p-4 space-y-2">
                     <p className="text-xs font-semibold text-primary-400 mb-3 flex items-center gap-1.5">
                       <Sparkles size={13} /> المهام الفرعية المقترحة:
                     </p>
-                    {breakdownMutation.data.data.subtasks.map((st, i) => (
+                    {(breakdownMutation.data.data?.data?.subtasks || breakdownMutation.data.data?.subtasks || []).map((st, i) => (
                       <div key={i} className="flex items-center gap-2.5 p-2 rounded-lg hover:bg-white/5 transition-colors">
                         <span className="w-5 h-5 rounded-full text-xs flex items-center justify-center font-bold flex-shrink-0"
                           style={{ background: 'rgba(108,99,255,0.2)', color: '#6C63FF' }}>

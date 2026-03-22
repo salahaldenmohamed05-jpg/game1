@@ -40,6 +40,7 @@ const ProductivityScore = sequelize.define('ProductivityScore', {
   },
 }, {
   tableName: 'productivity_scores',
+  underscored: false,
   indexes: [
     { fields: ['user_id', 'score_date'], unique: true },
     { fields: ['score_date'] },

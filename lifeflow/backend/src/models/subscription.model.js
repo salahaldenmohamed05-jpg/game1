@@ -53,6 +53,7 @@ const Subscription = sequelize.define('Subscription', {
   },
 }, {
   tableName: 'subscriptions',
+  underscored: false,
   indexes: [{ fields: ['user_id'] }, { fields: ['stripe_subscription_id'] }],
 });
 

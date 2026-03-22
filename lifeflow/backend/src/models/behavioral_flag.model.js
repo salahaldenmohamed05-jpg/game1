@@ -64,6 +64,7 @@ const BehavioralFlag = sequelize.define('BehavioralFlag', {
   occurrence_count: { type: DataTypes.INTEGER, defaultValue: 1 },
 }, {
   tableName: 'behavioral_flags',
+  underscored: false,
   indexes: [
     { fields: ['user_id', 'flag_type'] },
     { fields: ['user_id', 'is_resolved'] },

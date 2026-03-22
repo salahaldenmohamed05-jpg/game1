@@ -81,8 +81,16 @@ const User = sequelize.define('User', {
   // ── Onboarding ────────────────────────────────────────────────────
   onboarding_completed: { type: DataTypes.BOOLEAN, defaultValue: false },
   onboarding_step:      { type: DataTypes.INTEGER, defaultValue: 0 },
+
+  // ── Password Reset & OTP ─────────────────────────────────────────
+  phone:                  { type: DataTypes.STRING(30), allowNull: true },
+  reset_token:            { type: DataTypes.STRING(200), allowNull: true },
+  reset_token_expires:    { type: DataTypes.DATE, allowNull: true },
+  email_verify_token:     { type: DataTypes.STRING(10), allowNull: true },
+  email_verify_expires:   { type: DataTypes.DATE, allowNull: true },
 }, {
   tableName: 'users',
+  underscored: false,
   hooks: {
     beforeCreate: async (user) => {
       if (user.password) user.password = await bcrypt.hash(user.password, 12);

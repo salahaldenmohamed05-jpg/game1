@@ -62,7 +62,8 @@ export default function PerformanceView({ userPlan }) {
     );
   }
 
-  const data       = dashboardQuery.data?.data;
+  // dashboardQuery.data = Axios response: { data: { success, data: { today_score, history_7d, ... } } }
+  const data       = dashboardQuery.data?.data?.data || dashboardQuery.data?.data;
   const isLoading  = dashboardQuery.isLoading;
 
   return (

@@ -66,6 +66,7 @@ const WeeklyAudit = sequelize.define('WeeklyAudit', {
   is_read: { type: DataTypes.BOOLEAN, defaultValue: false },
 }, {
   tableName: 'weekly_audits',
+  underscored: false,
   indexes: [
     { fields: ['user_id', 'week_start'], unique: true },
   ],

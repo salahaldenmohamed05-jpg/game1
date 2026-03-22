@@ -379,3 +379,60 @@ class ApiService {
     }
   }
 }
+
+  // ─── Phase 9: Energy Score ─────────────────────────────────────────────────
+
+  Future<Map<String, dynamic>> getEnergyScore([String? token]) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/intelligence/energy'),
+        headers: _headers(token),
+      ).timeout(const Duration(seconds: 15));
+      return _handleResponse(response);
+    } catch (e) {
+      return {'success': false, 'error': 'تعذر تحميل نقاط الطاقة'};
+    }
+  }
+
+  Future<Map<String, dynamic>> getFocusWindows([String? token]) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/intelligence/focus-windows'),
+        headers: _headers(token),
+      ).timeout(const Duration(seconds: 15));
+      return _handleResponse(response);
+    } catch (e) {
+      return {'success': false, 'error': 'تعذر تحميل نوافذ التركيز'};
+    }
+  }
+
+  // ─── Phase 9: AI Coach ─────────────────────────────────────────────────────
+
+  Future<Map<String, dynamic>> getCoachInsights([String? token]) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/intelligence/coach'),
+        headers: _headers(token),
+      ).timeout(const Duration(seconds: 20));
+      return _handleResponse(response);
+    } catch (e) {
+      return {'success': false, 'error': 'تعذر تحميل تحليلات المدرب'};
+    }
+  }
+
+  // ─── Phase 9: Day Planner ──────────────────────────────────────────────────
+
+  Future<Map<String, dynamic>> planDay({String? date, String? token}) async {
+    try {
+      final body = date != null ? jsonEncode({'date': date}) : jsonEncode({});
+      final response = await http.post(
+        Uri.parse('$baseUrl/intelligence/plan-day'),
+        headers: _headers(token),
+        body: body,
+      ).timeout(const Duration(seconds: 20));
+      return _handleResponse(response);
+    } catch (e) {
+      return {'success': false, 'error': 'تعذر بناء خطة اليوم'};
+    }
+  }
+}

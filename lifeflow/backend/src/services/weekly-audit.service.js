@@ -15,7 +15,7 @@ const logger  = require('../utils/logger');
 
 const getModels = () => ({
   Task:              require('../models/task.model'),
-  Habit:             require('../models/habit.model'),
+  Habit:             require('../models/habit.model').Habit,
   MoodEntry:         require('../models/mood.model'),
   ProductivityScore: require('../models/productivity_score.model'),
   WeeklyAudit:       require('../models/weekly_audit.model'),
@@ -72,9 +72,9 @@ async function generateWeeklyAudit(userId, weekStartStr = null, timezone = 'Afri
     const moodEntries = await MoodEntry.findAll({
       where: {
         user_id:    userId,
-        createdAt: { [Op.between]: [weekStartUTC, weekEndUTC] },
+        entry_date: { [Op.between]: [weekStartDate, weekEndDate] },
       },
-      order: [['createdAt', 'ASC']],
+      order: [['entry_date', 'ASC']],
     });
 
     const moodAnalysis = analyzeMoodTrend(moodEntries);
@@ -137,41 +137,42 @@ async function generateWeeklyAudit(userId, weekStartStr = null, timezone = 'Afri
     const topAchievement  = findTopAchievement(tasks, habitStats, moodAnalysis);
     const biggestChallenge = findBiggestChallenge(tasks, habitStats, moodAnalysis, patterns);
 
-    // ── 8. Upsert Audit ───────────────────────────────────────────────────────
-    const [audit] = await WeeklyAudit.upsert({
-      user_id:    userId,
-      week_start: weekStartDate,
+    // ── 8. Upsert Audit (findOrCreate + update to handle composite unique key) ─
+    const auditData = {
       week_end:   weekEndDate,
       week_number: weekStart.isoWeek(),
-
       total_tasks:       totalTasks,
       completed_tasks:   completedTasks,
       overdue_tasks:     overdueTasks,
       rescheduled_tasks: rescheduledTasks,
       task_completion_rate: taskCompletionRate,
-
       total_habit_checkins:  habitStats.totalCheckins,
       habit_completion_rate: habitStats.completionRate,
       best_habit_streak:     habitStats.bestStreak,
       missed_habits:         habitStats.missedHabits,
-
       avg_mood:       moodAnalysis.avgMood,
       mood_trend:     moodAnalysis.trend,
       best_mood_day:  moodAnalysis.bestDay,
       worst_mood_day: moodAnalysis.worstDay,
-
       avg_productivity_score:  avgProductivity,
       avg_focus_score:         avgFocus,
       avg_consistency_score:   avgConsistency,
       week_score_vs_last_week: weekScoreDelta,
-
       improvement_strategies: strategies,
       patterns,
       coach_summary:    coachSummary,
       top_achievement:  topAchievement,
       biggest_challenge: biggestChallenge,
-      is_read: false,
+    };
+
+    const [audit, created] = await WeeklyAudit.findOrCreate({
+      where: { user_id: userId, week_start: weekStartDate },
+      defaults: { user_id: userId, week_start: weekStartDate, ...auditData, is_read: false },
     });
+
+    if (!created) {
+      await audit.update(auditData);
+    }
 
     logger.info(`✅ Weekly audit generated for user ${userId} — week ${weekStartDate}`);
     return audit;
@@ -255,7 +256,7 @@ function analyzeMoodTrend(entries) {
   // Day-by-day mood
   const dayMap = {};
   entries.forEach(e => {
-    const day = moment(e.createdAt).format('dddd');
+    const day = e.entry_date ? moment(e.entry_date).format('dddd') : moment(e.createdAt).format('dddd');
     if (!dayMap[day]) dayMap[day] = [];
     dayMap[day].push(e.mood_score || 5);
   });

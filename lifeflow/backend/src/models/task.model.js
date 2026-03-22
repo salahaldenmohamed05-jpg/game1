@@ -54,6 +54,7 @@ const Task = sequelize.define('Task', {
   original_due_date: { type: DataTypes.DATE, allowNull: true },
 }, {
   tableName: 'tasks',
+  underscored: false,
   indexes: [
     { fields: ['user_id'] }, { fields: ['status'] }, { fields: ['due_date'] },
   ],

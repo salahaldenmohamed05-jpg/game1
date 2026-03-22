@@ -11,7 +11,8 @@ const User = require('../models/user.model');
 const Task = require('../models/task.model');
 const { Habit, HabitLog } = require('../models/habit.model');
 const MoodEntry = require('../models/mood.model');
-const { Goal } = require('../models/insight.model');
+const { Insight, Notification } = require('../models/insight.model');
+const Goal = require('../models/goal.model');
 const moment = require('moment');
 
 async function seed() {
@@ -109,14 +110,14 @@ async function seed() {
 
   // Create goals
   const goals = [
-    { name: 'إتمام مشروع العمل', description: 'إنهاء مشروع التطوير الرئيسي', category: 'work', deadline: '2026-03-15', progress: 60, status: 'active' },
-    { name: 'تعلم الذكاء الاصطناعي', description: 'دراسة مبادئ AI والتعلم الآلي', category: 'learning', deadline: '2026-04-01', progress: 35, status: 'active' },
-    { name: 'تحسين اللياقة البدنية', description: 'الوصول لوزن مثالي وقوة بدنية', category: 'health', deadline: '2026-06-01', progress: 20, status: 'active' },
+    { title: 'إتمام مشروع العمل', description: 'إنهاء مشروع التطوير الرئيسي', category: 'productivity', target_date: '2026-03-15', progress: 60, status: 'active' },
+    { title: 'تعلم الذكاء الاصطناعي', description: 'دراسة مبادئ AI والتعلم الآلي', category: 'learning', target_date: '2026-04-01', progress: 35, status: 'active' },
+    { title: 'تحسين اللياقة البدنية', description: 'الوصول لوزن مثالي وقوة بدنية', category: 'health', target_date: '2026-06-01', progress: 20, status: 'active' },
   ];
 
   for (const goal of goals) {
     await Goal.findOrCreate({
-      where: { user_id: user.id, name: goal.name },
+      where: { user_id: user.id, title: goal.title },
       defaults: { ...goal, user_id: user.id },
     });
   }

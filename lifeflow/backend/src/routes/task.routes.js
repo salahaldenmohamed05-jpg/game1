@@ -16,4 +16,25 @@ router.patch('/:id/complete', taskController.completeTask);
 router.delete('/:id', taskController.deleteTask);
 router.post('/ai-breakdown', taskController.aiBreakdown);
 
+// AI prioritize — smart sort of pending tasks
+router.post('/ai-prioritize', async (req, res) => {
+  try {
+    const Task = require('../models/task.model');
+    const { chat } = require('../ai/ai.service');
+    const tasks = await Task.findAll({
+      where: { user_id: req.user.id, status: 'pending' },
+      order: [['due_date', 'ASC']], limit: 20
+    });
+    if (tasks.length === 0) return res.json({ success: true, data: { tasks: [], message: 'لا توجد مهام معلقة' } });
+    const list = tasks.map((t,i) => `${i+1}. ${t.title} (${t.priority}، ${t.due_date||'غير محدد'})`).join('\n');
+    const reply = await chat(
+      'أنت مساعد إنتاجية. رتّب هذه المهام حسب الأولوية وأضف تعليقاً مختصراً بالعربية لكل منها.',
+      list, { max_tokens: 400 }
+    );
+    res.json({ success: true, data: { tasks: tasks.map(t=>({id:t.id,title:t.title,priority:t.priority,due_date:t.due_date})), ai_priority_notes: reply } });
+  } catch(e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
 module.exports = router;

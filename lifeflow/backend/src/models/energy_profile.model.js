@@ -56,6 +56,7 @@ const EnergyProfile = sequelize.define('EnergyProfile', {
   last_updated:{ type: DataTypes.DATE, defaultValue: DataTypes.NOW },
 }, {
   tableName: 'energy_profiles',
+  underscored: false,
 });
 
 module.exports = EnergyProfile;
