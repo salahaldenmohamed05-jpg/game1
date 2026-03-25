@@ -17,8 +17,64 @@ router.get('/behavior', insightController.getBehaviorAnalysis);
 router.get('/productivity-tips', insightController.getProductivityTips);
 
 // POST /insights/generate — used by frontend aiAPI.generateInsight
-// Delegates to daily summary generator (idempotent)
-router.post('/generate', insightController.getDailySummary);
+// Handles all insight types: daily_summary, weekly_review, behavior, productivity, mood
+router.post('/generate', async (req, res) => {
+  const { type = 'daily_summary' } = req.body;
+  try {
+    // Route by type
+    if (type === 'weekly_review' || type === 'weekly_report') {
+      return insightController.getWeeklyReport(req, res);
+    }
+    if (type === 'behavior') {
+      return insightController.getBehaviorAnalysis(req, res);
+    }
+    if (type === 'productivity') {
+      return insightController.getProductivityTips(req, res);
+    }
+    if (type === 'mood') {
+      // Generate a mood-based insight
+      const moment   = require('moment-timezone');
+      const { Insight } = require('../models/insight.model');
+      const MoodEntry   = require('../models/mood.model');
+      const timezone = req.user.timezone || 'Africa/Cairo';
+      const today    = moment().tz(timezone).format('YYYY-MM-DD');
+      const weekAgo  = moment().tz(timezone).subtract(7, 'days').format('YYYY-MM-DD');
+
+      let existing = await Insight.findOne({
+        where: { user_id: req.user.id, type: 'mood_analysis',
+          period_start: { [require('sequelize').Op.gte]: weekAgo } },
+      });
+      if (!existing) {
+        const moodEntries = await MoodEntry.findAll({
+          where: { user_id: req.user.id,
+            entry_date: { [require('sequelize').Op.between]: [weekAgo, today] },
+          },
+          order: [['entry_date', 'DESC']],
+        });
+        const avgMood = moodEntries.length
+          ? (moodEntries.reduce((s, e) => s + (e.mood_score || 5), 0) / moodEntries.length).toFixed(1)
+          : 5;
+        existing = await Insight.create({
+          id: require('uuid').v4(),
+          user_id    : req.user.id,
+          type       : 'mood_analysis',
+          title      : 'تحليل المزاج الأسبوعي',
+          content    : `متوسط مزاجك خلال الأسبوع الماضي: ${avgMood}/10. ${parseFloat(avgMood) >= 7 ? 'أنت في حالة نفسية ممتازة 🌟' : parseFloat(avgMood) >= 5 ? 'مزاجك معتدل، حاول الاهتمام أكثر بالراحة.' : 'انتبه لصحتك النفسية، خذ استراحة.'}`,
+          data       : { entries: moodEntries.length, average: avgMood, trend: moodEntries.slice(0, 5).map(e => ({ date: e.entry_date, score: e.mood_score })) },
+          recommendations: ['مارس التأمل يومياً', 'احتفل بإنجازاتك الصغيرة', 'حافظ على النوم المنتظم'],
+          period_start: weekAgo,
+          period_end  : today,
+        });
+      }
+      return res.json({ success: true, data: existing });
+    }
+    // Default: daily summary
+    return insightController.getDailySummary(req, res);
+  } catch (e) {
+    logger.error('[POST /insights/generate] error:', e.message);
+    res.status(500).json({ success: false, message: 'فشل في إنشاء الرؤية' });
+  }
+});
 
 // ─── Phase 15: New Endpoints ──────────────────────────────────────────────────
 

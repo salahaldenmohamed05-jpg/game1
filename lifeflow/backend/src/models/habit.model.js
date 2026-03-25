@@ -46,6 +46,24 @@ const Habit = sequelize.define('Habit', {
   habit_type: { type: DataTypes.STRING(20), defaultValue: 'boolean' },
   // count_label: unit label for count habits, e.g. "كأس", "ركعة"
   count_label: { type: DataTypes.STRING(30), allowNull: true },
+  // Phase 2 (Upgrade): Flexible scheduling fields
+  frequency_type: { type: DataTypes.STRING(10), defaultValue: 'daily', comment: 'daily|weekly|monthly|custom' },
+  custom_days: {
+    type: DataTypes.TEXT, defaultValue: null,
+    get() { try { const v = this.getDataValue('custom_days'); return v ? JSON.parse(v) : null; } catch { return null; } },
+    set(val) { this.setDataValue('custom_days', val ? JSON.stringify(val) : null); },
+    comment: '[0-6] days of week for weekly/custom',
+  },
+  monthly_days: {
+    type: DataTypes.TEXT, defaultValue: null,
+    get() { try { const v = this.getDataValue('monthly_days'); return v ? JSON.parse(v) : null; } catch { return null; } },
+    set(val) { this.setDataValue('monthly_days', val ? JSON.stringify(val) : null); },
+    comment: '[1-31] dates of month for monthly',
+  },
+  preferred_time: { type: DataTypes.STRING(8), allowNull: true, comment: 'HH:mm — user preferred time for this habit' },
+  reminder_before: { type: DataTypes.INTEGER, defaultValue: 15, comment: 'minutes before preferred_time to notify' },
+  ai_best_time: { type: DataTypes.STRING(8), allowNull: true, comment: 'AI-suggested optimal time HH:mm' },
+  ai_best_time_reason: { type: DataTypes.TEXT, allowNull: true, comment: 'reason for AI time suggestion' },
 }, {
   tableName: 'habits',
   underscored: false,

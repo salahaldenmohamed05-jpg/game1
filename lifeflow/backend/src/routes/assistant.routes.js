@@ -32,6 +32,23 @@ const adaptiveBehavior                 = require('../services/adaptive.behavior.
 const decisionEngine                   = require('../services/decision.engine.service');
 const { buildProfile }                 = require('../services/personalization.service');
 const { DEFAULT_FALLBACK }             = require('../services/ai/ai.error.handler');
+
+// Phase 16 — Scheduling Engine
+function getScheduler() {
+  try { return require('../services/scheduling.engine.service'); } catch (_) { return null; }
+}
+// Phase 16 — Next Best Action
+function getNextAction() {
+  try { return require('../services/next.action.service'); } catch (_) { return null; }
+}
+// Phase 16 — Life Feed
+function getLifeFeed() {
+  try { return require('../services/life.feed.service'); } catch (_) { return null; }
+}
+// Phase 16 — Task Decomposition
+function getDecomposer() {
+  try { return require('../services/task.decomposition.service'); } catch (_) { return null; }
+}
 const logger                           = require('../utils/logger');
 
 // In-memory session store (per user) — stores pending confirmations
@@ -42,9 +59,10 @@ router.use(protect);
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /assistant/command
 // Main entry: receive user message, classify intent, execute, conversational reply
+// Phase 16: persists messages to ChatSession/ChatMessage DB + returns confidence/explanation
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/command', async (req, res) => {
-  const { message, pending_action } = req.body;
+  const { message, pending_action, session_id } = req.body;
   if (!message?.trim()) return res.status(400).json({ success: false, message: 'الرسالة مطلوبة' });
 
   const userId   = req.user.id;
@@ -53,13 +71,82 @@ router.post('/command', async (req, res) => {
   const pending  = pending_action || session.pendingAction || null;
 
   try {
+    // Run the AI command engine
     const result = await processCommand(userId, message, timezone, pending);
 
-    // Update session
+    // Update in-memory session
     if (result.needs_confirmation && result.pending_action) {
       sessions.set(userId, { pendingAction: result.pending_action });
     } else {
       sessions.set(userId, { pendingAction: null });
+    }
+
+    // ── Phase 16: Persist to ChatSession/ChatMessage DB ────────────────────
+    let dbSessionId = session_id || null;
+    try {
+      const db = require('../config/database').sequelize;
+      const ChatSession = db.models.ChatSession;
+      const ChatMessage = db.models.ChatMessage;
+      const { v4: uuidv4 } = require('uuid');
+
+      if (ChatSession && ChatMessage) {
+        // Find or create a default session for this user
+        let chatSession;
+        if (dbSessionId) {
+          chatSession = await ChatSession.findOne({ where: { id: dbSessionId, user_id: userId } });
+        }
+        if (!chatSession) {
+          // Find the most recent active session or create one
+          chatSession = await ChatSession.findOne({
+            where: { user_id: userId, is_active: true },
+            order: [['updated_at', 'DESC']],
+          });
+        }
+        if (!chatSession) {
+          chatSession = await ChatSession.create({
+            id       : uuidv4(),
+            user_id  : userId,
+            title    : message.substring(0, 50),
+            mode     : 'manager',
+            is_active: true,
+            auto_title: true,
+          });
+        }
+        dbSessionId = chatSession.id;
+
+        // Save user message
+        await ChatMessage.create({
+          id        : uuidv4(),
+          session_id: chatSession.id,
+          user_id   : userId,
+          role      : 'user',
+          content   : message,
+        });
+
+        // Save AI reply
+        await ChatMessage.create({
+          id          : uuidv4(),
+          session_id  : chatSession.id,
+          user_id     : userId,
+          role        : 'assistant',
+          content     : result.reply || '',
+          intent      : result.intent || null,
+          mode        : result.mode || null,
+          confidence  : result.confidence || null,
+          is_fallback : result.is_fallback || false,
+          suggestions : result.suggestions || [],
+          actions_taken: result.actions || [],
+        });
+
+        // Update session message count
+        const currentCount = chatSession.message_count || 0;
+        await chatSession.update({
+          message_count   : currentCount + 2,
+          last_message_at : new Date(),
+        });
+      }
+    } catch (dbErr) {
+      logger.warn('[ASSISTANT] /command DB persist failed:', dbErr.message);
     }
 
     logger.info(`[ASSISTANT] user=${userId} intent=${result.intent} action=${result.action_taken?.action||'none'}`);
@@ -69,11 +156,18 @@ router.post('/command', async (req, res) => {
       data: {
         reply             : result.reply,
         action_taken      : result.action_taken,
+        actions           : result.actions || [],
         needs_confirmation: result.needs_confirmation,
         pending_action    : result.needs_confirmation ? result.pending_action : null,
         intent            : result.intent,
         suggestions       : result.suggestions || [],
         context_used      : result.context_used,
+        // Phase 16: confidence + explainability
+        confidence        : result.confidence ?? 70,
+        explanation       : result.explanation || [],
+        mode              : result.mode || 'manager',
+        is_fallback       : result.is_fallback || false,
+        session_id        : dbSessionId,
       }
     });
   } catch (e) {
@@ -107,12 +201,18 @@ router.post('/chat', async (req, res) => {
     res.json({
       success: true,
       data: {
-        reply      : result.reply,
-        mode       : result.mode,
-        actions    : result.actions    || [],
-        suggestions: result.suggestions || [],
-        intent     : result.intentCategory,
-        is_fallback: !!result.is_fallback,
+        reply       : result.reply,
+        mode        : result.mode,
+        actions     : result.actions     || [],
+        suggestions : result.suggestions  || [],
+        intent      : result.intentCategory,
+        is_fallback : !!result.is_fallback,
+        confidence  : result.confidence  || 70,
+        explanation : result.explanation || [],
+        planningTip : result.planningTip || null,
+        snapshot    : result.snapshot    || null,
+        prediction  : result.prediction  || null,
+        pipeline_ms : result.pipeline_ms || null,
       },
     });
   } catch (e) {
@@ -121,11 +221,58 @@ router.post('/chat', async (req, res) => {
     res.json({
       success: true,
       data: {
-        reply      : DEFAULT_FALLBACK,
-        mode       : 'hybrid',
-        actions    : [],
-        suggestions: ['أعد المحاولة', 'كيف طاقتي؟', 'وضعي اليوم'],
-        is_fallback: true,
+        reply       : DEFAULT_FALLBACK,
+        mode        : 'hybrid',
+        actions     : [],
+        suggestions : ['أعد المحاولة', 'كيف طاقتي؟', 'وضعي اليوم'],
+        is_fallback : true,
+        confidence  : 0,
+        explanation : [],
+      },
+    });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /assistant  ← alias for /assistant/chat (Phase 16 explainability)
+// Forwards directly to the same handler so POST /api/v1/assistant also works
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/', async (req, res) => {
+  const { message } = req.body;
+  if (!message?.trim()) return res.status(400).json({ success: false, message: 'الرسالة مطلوبة' });
+  const userId   = req.user.id;
+  const timezone = req.user.timezone || 'Africa/Cairo';
+  try {
+    let userCtx = null;
+    try { userCtx = await fetchUserContext(userId, timezone); } catch (_) {}
+    const result = await orchestrator.companionChat(userId, message, timezone, userCtx);
+    logger.info(`[ASSISTANT] / alias: user=${userId}, mode=${result.mode}`);
+    res.json({
+      success: true,
+      data: {
+        reply       : result.reply,
+        mode        : result.mode,
+        actions     : result.actions     || [],
+        suggestions : result.suggestions  || [],
+        intent      : result.intentCategory,
+        is_fallback : !!result.is_fallback,
+        confidence  : result.confidence  || 70,
+        explanation : result.explanation || [],
+        planningTip : result.planningTip || null,
+      },
+    });
+  } catch (e) {
+    logger.error('[ASSISTANT] / alias error:', e.message);
+    res.json({
+      success: true,
+      data: {
+        reply       : DEFAULT_FALLBACK,
+        mode        : 'hybrid',
+        actions     : [],
+        suggestions : ['أعد المحاولة', 'كيف طاقتي؟'],
+        is_fallback : true,
+        confidence  : 0,
+        explanation : [],
       },
     });
   }
@@ -148,7 +295,11 @@ router.get('/context', async (req, res) => {
       : hour < 17 ? `مساء النور ${name} 🌤️`
       :             `مساء الخير ${name} 🌙`;
 
-    const todayTasks = ctx.recentTasks.filter(t => t.due_date === ctx.today);
+    const todayTasks = ctx.recentTasks.filter(t => {
+      if (!t.due_date) return false;
+      const d = typeof t.due_date === 'string' ? t.due_date.substring(0, 10) : (t.due_date instanceof Date ? t.due_date.toISOString().substring(0, 10) : '');
+      return d === ctx.today;
+    });
 
     res.json({
       success: true,
@@ -156,11 +307,12 @@ router.get('/context', async (req, res) => {
         ...ctx,
         greeting,
         hour,
-        tasks_today   : todayTasks.length,
+        tasks_today   : ctx.todayTasks || todayTasks.length,
         tasks_pending : ctx.recentTasks.length,
         mood_today    : ctx.todayMood,
         habits_active : ctx.habits.length,
         recent_tasks  : ctx.recentTasks,
+        completed_today: ctx.completedToday || 0,
       }
     });
   } catch (e) {
@@ -328,10 +480,37 @@ router.get('/profile', async (req, res) => {
 // GET /assistant/decisions
 // Returns decision engine audit log for this user
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/decisions', (req, res) => {
+router.get('/decisions', async (req, res) => {
   try {
-    const log = decisionEngine.getDecisionLog(req.user.id, 20);
-    res.json({ success: true, data: { decisions: log, count: log.length } });
+    const userId = req.user.id;
+    // Get in-memory decision log
+    const log = decisionEngine.getDecisionLog(userId, 20);
+
+    // Also include DB-persisted decisions
+    let dbDecisions = [];
+    try {
+      const LO = require('../models/learning_outcome.model');
+      const rows = await LO.findAll({
+        where  : { user_id: userId, type: 'decision' },
+        order  : [['ts', 'DESC']],
+        limit  : 20,
+        raw    : true,
+      });
+      dbDecisions = rows.map(r => ({
+        action    : r.action,
+        risk      : r.risk,
+        mode      : r.mode,
+        energy    : r.energy,
+        mood      : r.mood,
+        hour      : r.hour,
+        source    : 'db',
+        timestamp : new Date(Number(r.ts)).toISOString(),
+      }));
+    } catch (_) {}
+
+    // Merge in-memory + DB (deduplicate by latest)
+    const merged = log.length > 0 ? log : dbDecisions;
+    res.json({ success: true, data: { decisions: merged, count: merged.length } });
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
   }
@@ -423,8 +602,29 @@ router.post('/auto-reschedule', async (req, res) => {
 router.get('/learning', async (req, res) => {
   try {
     const learningEngine = require('../services/learning.engine.service');
-    const profile = learningEngine.getUserLearningProfile(req.user.id);
-    res.json({ success: true, profile });
+    const userId = req.user.id;
+    const profile = learningEngine.getUserLearningProfile(userId);
+
+    // Also query DB for total counts (more accurate than in-memory)
+    let db_total_records = 0, db_total_outcomes = 0;
+    try {
+      const LO = require('../models/learning_outcome.model');
+      db_total_records  = await LO.count({ where: { user_id: userId } });
+      db_total_outcomes = await LO.count({ where: { user_id: userId, type: 'outcome' } });
+    } catch (_) {}
+
+    res.json({
+      success: true,
+      data: {
+        ...profile.stats,
+        total_records   : db_total_records  || profile.stats.totalRecords,
+        total_outcomes  : db_total_outcomes || profile.stats.totalOutcomes,
+        insights        : profile.insights.map(i => i.description || i),
+        optimal_hours   : profile.stats.optimalHours,
+        success_rates   : profile.stats.successRates,
+        generated_at    : profile.generatedAt,
+      },
+    });
   } catch (e) {
     logger.error('[ASSISTANT] /learning error:', e.message);
     res.status(500).json({ success: false, message: e.message });
@@ -449,6 +649,49 @@ router.get('/plan', async (req, res) => {
   } catch (e) {
     logger.error('[ASSISTANT] /plan error:', e.message);
     res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 16: GET /assistant/daily-plan
+// Smart scheduling engine — returns time-slotted ordered plan with ML context
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/daily-plan', async (req, res) => {
+  try {
+    const scheduler = getScheduler();
+    if (!scheduler) {
+      return res.status(503).json({ success: false, message: 'Scheduling engine not available' });
+    }
+
+    const userId   = req.user.id;
+    const timezone = req.user.timezone || 'Africa/Cairo';
+
+    const { schedule, timeline, energy_curve, focus_score, stats } = await scheduler.getDailyPlan(userId, timezone);
+
+    logger.info(`[ASSISTANT] daily-plan: ${schedule.length} items for user ${userId}`);
+
+    res.json({
+      success : true,
+      data    : {
+        timeline    : timeline || schedule,
+        schedule,
+        energy_curve: energy_curve || [],
+        focus_score : focus_score ?? stats?.focus_score ?? 70,
+        ml_enhanced : stats?.ml_enhanced ?? false,   // Phase 11: top-level ML flag
+        stats,
+        generated_at : new Date().toISOString(),
+        timezone,
+        ml_note: stats.ml_enhanced
+          ? `📊 الخطة محسّنة بالذكاء الاصطناعي — أفضل وقت تركيز: ${stats.best_focus_hour}:00 — نقاط التركيز: ${focus_score ?? stats.focus_score}`
+          : '📋 خطة يومية أساسية',
+      },
+    });
+  } catch (e) {
+    logger.error('[ASSISTANT] /daily-plan error:', e.message);
+    res.json({
+      success: true,
+      data   : { schedule: [], stats: { error: e.message }, generated_at: new Date().toISOString() },
+    });
   }
 });
 
@@ -761,9 +1004,45 @@ router.get('/present', async (req, res) => {
       return res.json({ success: true, cards: [], count: 0 });
     }
 
-    const cards = presenter.presentOrchestrationResult(orchestrated);
+    const cards = presenter.presentOrchestration(orchestrated);
     res.json({ success: true, cards, count: cards.length });
   } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 10: POST /assistant/present — convert a single AI output into a UI card
+// Body: { type, action?, title, message?, confidence }
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/present', async (req, res) => {
+  try {
+    const presenter = require('../services/assistant.presenter.service');
+    const { type = 'action', action, title, message, confidence = 80, explanation = [] } = req.body;
+
+    let card;
+    if (type === 'action') {
+      card = presenter.presentAction({ action: action || 'create_task', executor: 'ai', confidence, why: explanation });
+    } else if (type === 'suggestion') {
+      card = presenter.presentSuggestion({ message: title || message || 'اقتراح', confidence });
+    } else if (type === 'insight') {
+      card = presenter.presentInsight({ message: title || message || 'رؤية', confidence });
+    } else {
+      card = presenter.presentAction({ action: action || 'create_task', executor: 'ai', confidence, why: explanation });
+    }
+
+    // Normalise: ensure type and icon are at top level of data
+    res.json({
+      success: true,
+      data: {
+        ...card,
+        title      : card.title || title,
+        message    : card.message || message,
+        confidence : card.confidence ?? confidence,
+      },
+    });
+  } catch (e) {
+    logger.error('[ASSISTANT] POST /present error:', e.message);
     res.status(500).json({ success: false, message: e.message });
   }
 });
@@ -793,16 +1072,43 @@ router.get('/ml-predictions', async (req, res) => {
     const tz     = req.user.timezone || 'Africa/Cairo';
     const learning = require('../services/learning.engine.service');
 
-    // Get current context for ML predictions
+    // Pre-warm the learning engine — await DB load so predictions use real data
+    try { await learning.warmup(userId); } catch (_) {}
+
+    // Get current context for ML predictions with real user data
     let context = { energy: 55, mood: 5, overdueCount: 0 };
     try {
-      const ctxService = require('../services/context.snapshot.service');
-      const snap = await ctxService.getSnapshot(userId, tz, false);
-      if (snap) {
-        context.energy       = snap.energy?.score || 55;
-        context.mood         = snap.mood?.score   || 5;
-        context.overdueCount = snap.tasks?.overdue || 0;
+      const db = require('../config/database').sequelize;
+      // Get today's mood
+      const moment = require('moment-timezone');
+      const today  = moment().tz(tz).format('YYYY-MM-DD');
+      if (db.models.MoodEntry) {
+        const moodEntry = await db.models.MoodEntry.findOne({
+          where: { user_id: userId, entry_date: today },
+          order: [['createdAt', 'DESC']],
+        });
+        if (moodEntry) context.mood = moodEntry.mood_score || 5;
       }
+      // Get overdue tasks count
+      if (db.models.Task) {
+        const overdueCount = await db.models.Task.count({
+          where: {
+            user_id: userId,
+            status: ['pending', 'in_progress'],
+            due_date: { [require('sequelize').Op.lt]: today },
+          },
+        });
+        context.overdueCount = overdueCount;
+      }
+      // Try context snapshot service for energy
+      try {
+        const ctxService = require('../services/context.snapshot.service');
+        const snap = await ctxService.getSnapshot(userId, tz, false);
+        if (snap) {
+          context.energy = snap.energy?.score || 55;
+          context.mood   = snap.mood?.score   || context.mood;
+        }
+      } catch (_) {}
     } catch (_) {}
 
     const mlPredictions = learning.getMLPredictions(userId, context);
@@ -812,6 +1118,12 @@ router.get('/ml-predictions', async (req, res) => {
       success: true,
       data: {
         ...mlPredictions,
+        energy_forecast: mlPredictions.best_focus_hours ? {
+          best_hours  : mlPredictions.best_focus_hours,
+          peak_hour   : mlPredictions.best_focus_hours[0] || 10,
+          description : `أفضل وقت للتركيز: ${mlPredictions.best_focus_hours[0] || 10}:00`,
+        } : null,
+        risk_percentage: mlPredictions.burnout_risk ? Math.round(mlPredictions.burnout_risk * 100) : null,
         insights      : profile.insights.slice(0, 5),
         learning_stats: {
           total_records   : profile.stats.totalRecords,
@@ -840,6 +1152,540 @@ router.get('/ml-predictions', async (req, res) => {
         computed_at                : new Date().toISOString(),
       },
     });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 16: GET /assistant/next-action
+// Returns the single best action the user should take RIGHT NOW
+// Query params: ?energy=0-100&mood=1-10
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/next-action', async (req, res) => {
+  try {
+    const userId        = req.user.id;
+    const timezone      = req.user.timezone || 'Africa/Cairo';
+    const currentEnergy = req.query.energy ? parseInt(req.query.energy) : undefined;
+    const currentMood   = req.query.mood   ? parseFloat(req.query.mood) : undefined;
+
+    const nextActionSvc = getNextAction();
+    if (!nextActionSvc) {
+      return res.status(503).json({ success: false, message: 'Next-action service not available' });
+    }
+
+    const action = await nextActionSvc.getNextBestAction(userId, {
+      timezone,
+      currentEnergy,
+      currentMood,
+    });
+
+    // Enrich with real task data if action references a task
+    let taskData = null;
+    if (action.task_id) {
+      try {
+        const Task = require('../models/task.model');
+        const t = await Task.findOne({ where: { id: action.task_id, user_id: userId } });
+        if (t) {
+          taskData = {
+            id:          t.id,
+            title:       t.title,
+            priority:    t.priority,
+            due_date:    t.due_date,
+            start_time:  t.start_time,
+            energy_required: t.energy_required,
+          };
+        }
+      } catch (_) {}
+    }
+
+    logger.info(`[ASSISTANT] next-action: user=${userId}, action=${action.action}, urgency=${action.urgency}`);
+
+    res.json({
+      success: true,
+      data   : {
+        ...action,
+        task_title  : taskData?.title || action.title || null,
+        task_data   : taskData,
+        generated_at: new Date().toISOString(),
+      },
+    });
+  } catch (e) {
+    logger.error('[ASSISTANT] /next-action error:', e.message);
+    // Try to return a real task from DB as fallback
+    try {
+      const Task = require('../models/task.model');
+      const { Op } = require('sequelize');
+      const moment = require('moment-timezone');
+      const tz = req.user.timezone || 'Africa/Cairo';
+      const today = moment().tz(tz).format('YYYY-MM-DD');
+      const tasks = await Task.findAll({
+        where: {
+          user_id: req.user.id,
+          status: { [Op.in]: ['pending','in_progress'] },
+          due_date: { [Op.lte]: `${today}T23:59:59` },
+        },
+        order: [['ai_priority_score','DESC'],['due_date','ASC']],
+        limit: 1,
+      });
+      if (tasks.length > 0) {
+        const t = tasks[0];
+        return res.json({ success: true, data: {
+          action: 'start_task', task_id: t.id,
+          title: t.title, task_title: t.title,
+          message: `ابدأ الآن: ${t.title}`,
+          reasons: [`أولوية ${t.priority}`, 'مستحقة اليوم'],
+          confidence: 70, urgency: 'high', energy_match: true,
+          generated_at: new Date().toISOString(),
+        }});
+      }
+    } catch (_) {}
+    res.json({
+      success: true,
+      data   : {
+        action    : 'review_plan',
+        title     : '📋 راجع خطتك',
+        task_title: '📋 راجع خطتك',
+        message   : 'تحقق من مهامك وابدأ بالأهم.',
+        reasons   : ['راجع مهام اليوم'],
+        confidence: 50,
+        urgency   : 'medium',
+        energy_match: true,
+        generated_at: new Date().toISOString(),
+      },
+    });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 16: GET /assistant/life-feed
+// Returns personalized feed of AI insights, tasks, mood, habits, ML insights
+// Query params: ?limit=20&timezone=Africa/Cairo
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/life-feed', async (req, res) => {
+  try {
+    const lifeFeedSvc = getLifeFeed();
+    if (!lifeFeedSvc) {
+      return res.json({ success: true, data: { feed: [], count: 0 } });
+    }
+
+    const userId   = req.user.id;
+    const timezone = req.user.timezone || req.query.timezone || 'Africa/Cairo';
+    const limit    = Math.min(parseInt(req.query.limit) || 20, 50);
+
+    const feed = await lifeFeedSvc.getLifeFeed(userId, { timezone, limit });
+
+    logger.info(`[ASSISTANT] life-feed: ${feed.length} items for user ${userId}`);
+
+    res.json({
+      success: true,
+      data   : {
+        feed,
+        count       : feed.length,
+        generated_at: new Date().toISOString(),
+      },
+    });
+  } catch (e) {
+    logger.error('[ASSISTANT] /life-feed error:', e.message);
+    res.json({ success: true, data: { feed: [], count: 0, generated_at: new Date().toISOString() } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 16: POST /assistant/decompose
+// Decompose a complex task into ordered subtasks using AI
+// Body: { task_title, task_id?, category?, due_date?, priority?, estimated_minutes? }
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/decompose', async (req, res) => {
+  // Support both `task_title` and `task` field names
+  const task_title_raw = req.body.task_title || req.body.task;
+  const { task_id, category, due_date, priority, estimated_minutes } = req.body;
+  const task_title = task_title_raw;
+
+  if (!task_title?.trim()) {
+    return res.status(400).json({ success: false, message: 'task_title مطلوب' });
+  }
+
+  try {
+    const decomposer = getDecomposer();
+    if (!decomposer) {
+      return res.status(503).json({ success: false, message: 'Task decomposition service not available' });
+    }
+
+    const result = await decomposer.decomposeTask(task_title.trim(), {
+      category,
+      due_date,
+      priority,
+      estimated_minutes,
+    });
+
+    logger.info(`[ASSISTANT] decompose: "${task_title}" → ${result.subtasks?.length} subtasks (${result.source})`);
+
+    // Normalize subtask field names: ensure both `duration` and `estimated_minutes` exist
+    const normalizedSubtasks = (result.subtasks || []).map(st => ({
+      ...st,
+      estimated_minutes: st.estimated_minutes ?? st.duration ?? 30,
+      duration         : st.duration ?? st.estimated_minutes ?? 30,
+    }));
+
+    res.json({
+      success: true,
+      data   : {
+        task_title,
+        task_id,
+        ...result,
+        subtasks    : normalizedSubtasks,
+        generated_at: new Date().toISOString(),
+      },
+    });
+  } catch (e) {
+    logger.error('[ASSISTANT] /decompose error:', e.message);
+    res.status(500).json({ success: false, message: 'خطأ في تقسيم المهمة' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 16: GET /assistant/burnout-status
+// Returns current burnout risk + energy-aware recommendations
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/burnout-status', async (req, res) => {
+  try {
+    const userId   = req.user.id;
+    const tz       = req.user.timezone || 'Africa/Cairo';
+
+    let burnoutRisk    = 0.3;
+    let bestFocusHour  = 10;
+    let completionBoost = 0;
+    let insights       = [];
+
+    try {
+      const learning = require('../services/learning.engine.service');
+      const mlPreds  = learning.getMLPredictions(userId, { energy: 55, mood: 5, overdueCount: 0 });
+      burnoutRisk     = mlPreds.burnout_risk         || 0.3;
+      bestFocusHour   = mlPreds.best_focus_hours?.[0] ?? 10;
+      completionBoost = (mlPreds.task_completion_probability || 0.5) - 0.5;
+
+      const profile = learning.getUserLearningProfile(userId);
+      insights = profile?.insights?.slice(0, 3) || [];
+    } catch (_) {}
+
+    const riskLevel = burnoutRisk >= 0.7 ? 'high' : burnoutRisk >= 0.45 ? 'medium' : 'low';
+    const riskPercent = Math.round(burnoutRisk * 100);
+
+    const recommendations = riskLevel === 'high'
+      ? ['خذ استراحة 20 دقيقة الآن', 'قلّل عدد المهام لـ 3 فقط', 'توقف عن العمل الساعة 6 مساءً']
+      : riskLevel === 'medium'
+      ? ['خذ استراحة كل 90 دقيقة', 'راجع أولوياتك قبل الإضافة', 'تأكد من النوم الكافي']
+      : ['حافظ على الإيقاع الحالي', `أفضل وقت تركيز: ${bestFocusHour}:00`, 'أنت في وضع ممتاز'];
+
+    res.json({
+      success: true,
+      data   : {
+        burnout_risk    : burnoutRisk,
+        risk_level      : riskLevel,
+        risk_percent    : riskPercent,
+        risk_percentage : riskPercent,   // alias for frontend compatibility
+        best_focus_hour : bestFocusHour,
+        completion_boost: completionBoost,
+        recommendations,
+        insights,
+        summary: riskLevel === 'high'
+          ? `⚠️ خطر إجهاد مرتفع (${riskPercent}%) — تحتاج للراحة`
+          : riskLevel === 'medium'
+          ? `🟡 إجهاد متوسط (${riskPercent}%) — انتبه لحجم عملك`
+          : `✅ وضع ممتاز (خطر ${riskPercent}%) — استمر!`,
+        generated_at: new Date().toISOString(),
+      },
+    });
+  } catch (e) {
+    logger.error('[ASSISTANT] /burnout-status error:', e.message);
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 16: GET /assistant/chat-summary
+// Returns overview of all persistent chat sessions for this user
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/chat-summary', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    let sessions = [], totalMessages = 0;
+
+    try {
+      const db           = require('../config/database').sequelize;
+      const ChatSession  = db.models.ChatSession;
+      const ChatMessage  = db.models.ChatMessage;
+      const { Op }       = require('sequelize');
+
+      if (ChatSession && ChatMessage) {
+        const [sessRows, msgCount] = await Promise.all([
+          ChatSession.findAll({
+            where  : { user_id: userId, is_active: true },
+            order  : [['last_message_at', 'DESC'], ['createdAt', 'DESC']],
+            limit  : 10,
+            attributes: ['id', 'title', 'message_count', 'last_message_at', 'summary', 'createdAt'],
+          }),
+          ChatMessage.count({ where: { user_id: userId } }),
+        ]);
+        sessions      = sessRows.map(s => s.toJSON());
+        totalMessages = msgCount;
+      }
+    } catch (_) {}
+
+    // Also include in-memory memory stats
+    const memStats = memory.getShortTermStats(userId);
+
+    res.json({
+      success: true,
+      data   : {
+        sessions,
+        session_count  : sessions.length,
+        total_messages : totalMessages,
+        memory_stats   : memStats,
+        generated_at   : new Date().toISOString(),
+      },
+    });
+  } catch (e) {
+    logger.error('[ASSISTANT] /chat-summary error:', e.message);
+    res.json({ success: true, data: { sessions: [], session_count: 0, total_messages: 0 } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 16: POST /assistant/smart-notify
+// Generate AI-powered smart notification content for a task/habit
+// Body: { type: 'task'|'habit', item_id, minutes_before? }
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/smart-notify', async (req, res) => {
+  // Support both `minutes_before` and `reminder_before` field names
+  const { type = 'task', item_id, context } = req.body;
+  const minutes_before = req.body.minutes_before ?? req.body.reminder_before ?? 30;
+
+  if (!item_id) {
+    return res.status(400).json({ success: false, message: 'item_id مطلوب' });
+  }
+
+  try {
+    const userId = req.user.id;
+    const tz     = req.user.timezone || 'Africa/Cairo';
+
+    // Fetch the item
+    let item = null;
+    try {
+      const db = require('../config/database').sequelize;
+      if (type === 'task' && db.models.Task) {
+        const t = await db.models.Task.findOne({ where: { id: item_id, user_id: userId } });
+        if (t) item = t.toJSON();
+      } else if (type === 'habit' && db.models.Habit) {
+        const h = await db.models.Habit.findOne({ where: { id: item_id, user_id: userId } });
+        if (h) item = h.toJSON();
+      }
+    } catch (_) {}
+
+    if (!item) {
+      return res.status(404).json({ success: false, message: 'العنصر غير موجود' });
+    }
+
+    // Build dynamic notification message
+    const name        = req.user.name?.split(' ')[0] || 'صديقي';
+    const itemTitle   = item.title || item.name_ar || item.name || 'مهمتك';
+    const minute_label = minutes_before >= 60
+      ? `${Math.round(minutes_before / 60)} ساعة`
+      : `${minutes_before} دقيقة`;
+
+    let title, body, icon;
+
+    if (type === 'task') {
+      const isUrgent = item.priority === 'urgent' || item.priority === 'high';
+      title = isUrgent ? `⚡ ${name}، مهمة عاجلة!` : `📋 تذكير: ${itemTitle}`;
+      body  = minutes_before <= 15
+        ? `"${itemTitle}" بعد ${minute_label} فقط — ابدأ الآن!`
+        : `"${itemTitle}" بعد ${minute_label}. خصّص وقتك وكن مستعداً.`;
+      icon  = isUrgent ? '⚡' : '📋';
+    } else {
+      title = `🔄 حان وقت عادتك!`;
+      body  = `"${itemTitle}" بعد ${minute_label}. لا تكسر سلسلتك!`;
+      icon  = '🔄';
+    }
+
+    logger.info(`[ASSISTANT] smart-notify: type=${type}, item=${itemTitle}, before=${minutes_before}m`);
+
+    // Build dynamic_message — AI-enhanced context-aware message
+    const dynamicMessage = type === 'task'
+      ? `${name}، تذكير بـ "${itemTitle}"! ${
+          item.priority === 'urgent' ? '⚡ هذه مهمة عاجلة جداً.' :
+          item.priority === 'high'   ? '🔴 مهمة ذات أولوية عالية.' : ''
+        } ${minutes_before <= 15 ? 'ابدأ الآن فوراً!' : `لديك ${minute_label} للاستعداد.`}`
+      : `${name}، حان وقت عادة "${itemTitle}"! الاتساق هو مفتاح النجاح. ${minutes_before <= 15 ? 'ابدأ الآن!' : `لديك ${minute_label}.`}`;
+
+    // Save notification to DB with new Phase 16 fields
+    let notification_id = null;
+    try {
+      const db = require('../config/database').sequelize;
+      if (db.models.Notification) {
+        const { v4: uuidv4 } = require('uuid');
+        const notif = await db.models.Notification.create({
+          id               : uuidv4(),
+          user_id          : userId,
+          type             : `smart_${type}_reminder`,
+          title,
+          body,
+          dynamic_message  : dynamicMessage,
+          reminder_before  : minutes_before,
+          related_item_id  : item_id,
+          related_item_type: type,
+          priority         : item.priority || 'medium',
+          channel          : 'in_app',
+          scheduled_at     : new Date(Date.now() + minutes_before * 60 * 1000),
+          data             : { item_title: itemTitle, context: context || null },
+        });
+        notification_id = notif.id;
+      }
+    } catch (dbErr) {
+      logger.warn('[ASSISTANT] smart-notify DB save failed:', dbErr.message);
+    }
+
+    res.json({
+      success: true,
+      data   : {
+        notification_id,
+        title,
+        body,
+        icon,
+        dynamic_message: dynamicMessage,
+        reminder_before: minutes_before,
+        item_id,
+        item_type       : type,
+        item_title      : itemTitle,
+        priority        : item.priority || 'medium',
+        scheduled_at    : new Date(Date.now() + minutes_before * 60 * 1000).toISOString(),
+        generated_at    : new Date().toISOString(),
+      },
+    });
+  } catch (e) {
+    logger.error('[ASSISTANT] /smart-notify error:', e.message);
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 16: GET /assistant/ai-mode  — Get current AI mode for user
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/ai-mode', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const db     = require('../config/database').sequelize;
+    const User   = db.models.User;
+
+    let ai_mode = req.user.ai_mode || 'suggestive';
+    if (User) {
+      const user = await User.findByPk(userId, { attributes: ['ai_mode'] });
+      if (user && user.ai_mode) ai_mode = user.ai_mode;
+    }
+
+    const modeDescriptions = {
+      passive    : 'المساعد يراقب فقط ويقترح عند الطلب — لا إجراءات تلقائية',
+      suggestive : 'المساعد يقترح الإجراءات ويطلب موافقتك قبل التنفيذ',
+      active     : 'المساعد ينفذ الإجراءات الآمنة تلقائياً ويُخبرك بما تم',
+    };
+
+    res.json({
+      success: true,
+      data   : {
+        ai_mode,
+        current_mode: ai_mode,   // alias for frontend compatibility
+        description: modeDescriptions[ai_mode] || modeDescriptions['suggestive'],
+        available_modes: [
+          { mode: 'passive',    label: 'سلبي',     description: modeDescriptions.passive,    icon: '👁️' },
+          { mode: 'suggestive', label: 'اقتراحي',  description: modeDescriptions.suggestive, icon: '💡' },
+          { mode: 'active',     label: 'نشط',      description: modeDescriptions.active,     icon: '⚡' },
+        ],
+      },
+    });
+  } catch (e) {
+    logger.error('[ASSISTANT] GET /ai-mode error:', e.message);
+    res.json({ success: true, data: { ai_mode: 'suggestive' } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 16: PUT /assistant/ai-mode  — Update AI mode for user
+// Body: { mode: 'passive' | 'suggestive' | 'active' }
+// ─────────────────────────────────────────────────────────────────────────────
+router.put('/ai-mode', async (req, res) => {
+  try {
+    const { mode } = req.body;
+    const validModes = ['passive', 'suggestive', 'active'];
+
+    if (!mode || !validModes.includes(mode)) {
+      return res.status(400).json({
+        success: false,
+        message: `النمط غير صحيح. الأنماط المتاحة: ${validModes.join(', ')}`,
+      });
+    }
+
+    const db   = require('../config/database').sequelize;
+    const User = db.models.User;
+
+    if (User) {
+      await User.update({ ai_mode: mode }, { where: { id: req.user.id } });
+    }
+
+    const modeMessages = {
+      passive    : '👁️ تم التفعيل: المساعد الآن في وضع المراقبة فقط',
+      suggestive : '💡 تم التفعيل: المساعد يقترح ويطلب موافقتك',
+      active     : '⚡ تم التفعيل: المساعد ينفذ الإجراءات الآمنة تلقائياً',
+    };
+
+    logger.info(`[ASSISTANT] AI mode changed to "${mode}" for user ${req.user.id}`);
+
+    res.json({
+      success: true,
+      data   : { ai_mode: mode, updated_at: new Date().toISOString() },
+      message: modeMessages[mode],
+    });
+  } catch (e) {
+    logger.error('[ASSISTANT] PUT /ai-mode error:', e.message);
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 16: GET /assistant/presenter  — Presenter layer: convert last action to UI-ready card
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/presenter', async (req, res) => {
+  try {
+    const presenter = require('../services/assistant.presenter.service');
+    const memory    = require('../services/memory.service');
+
+    const userId = req.user.id;
+    const msgs   = memory.getShortTermMemory?.(userId) || [];
+    const last   = msgs.filter(m => m.role === 'assistant').slice(-1)[0];
+
+    if (!last) {
+      return res.json({
+        success: true,
+        data   : presenter.presentReply({
+          reply      : 'مرحباً! أنا مساعدك الذكي. كيف يمكنني مساعدتك اليوم؟',
+          confidence : 100,
+          suggestions: ['عرض الخطة اليومية', 'أضف مهمة', 'كيف حالي؟'],
+          explanation: ['لا توجد محادثة سابقة'],
+        }),
+      });
+    }
+
+    res.json({
+      success: true,
+      data   : presenter.presentReply({
+        reply      : last.content,
+        confidence : last.confidence || 70,
+        suggestions: last.suggestions || [],
+        explanation: last.explanation || [],
+        mode       : last.mode,
+      }),
+    });
+  } catch (e) {
+    logger.error('[ASSISTANT] GET /presenter error:', e.message);
+    res.json({ success: false, message: e.message });
   }
 });
 
@@ -879,3 +1725,4 @@ function getActionIcon(action) {
 }
 
 module.exports = router;
+

@@ -274,7 +274,7 @@ html.light .glass-card:hover {
 .notification-badge {
   position: absolute;
   top: -4px;
-  left: -4px;
+  right: -4px;
   width: 18px;
   height: 18px;
   background: var(--secondary);
@@ -328,35 +328,134 @@ html.light .glass-card:hover {
 .recharts-cartesian-axis-tick-value { fill: #94A3B8 !important; }
 
 /* ========================
-   Mobile Responsive
+   Mobile Responsive (Full Optimization)
    ======================== */
 
+/* Bottom-nav padding so content isn't hidden behind it on mobile */
+.mobile-content-pad {
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
 @media (max-width: 768px) {
-  .glass-card { border-radius: 12px; }
+  .glass-card { border-radius: 14px; }
+  .glass-card:hover { transform: none; } /* Disable hover lift on mobile */
 
   /* Prevent horizontal scroll */
   .overflow-x-auto { -webkit-overflow-scrolling: touch; }
 
-  /* Make input fields larger for touch */
-  .input-field { padding: 14px 16px; font-size: 16px; /* prevents zoom on iOS */ }
-
-  /* Smaller grid gaps on mobile */
-  .grid { gap: 12px; }
-
-  /* Reduce padding in main content area */
-  main { padding: 12px !important; }
-
-  /* Make modals full-screen on mobile */
-  .fixed.inset-0 > .glass-card {
-    max-height: 95vh;
-    overflow-y: auto;
+  /* Make ALL input / textarea / select touch-safe (prevents iOS zoom) */
+  input, textarea, select, .input-field {
+    font-size: 16px !important;
   }
 
-  /* Habit grid: 2 columns on mobile */
-  .habits-grid { grid-template-columns: repeat(2, 1fr) !important; }
+  /* Optimized grid gaps on mobile */
+  .grid { gap: 8px; }
 
-  /* Stats grid: 2 columns on mobile */
-  .stats-grid { grid-template-columns: repeat(2, 1fr) !important; }
+  /* Reduce padding in main content area — handled by MobileLayout now */
+  /* main padding is controlled by MobileLayout component, not CSS */
+
+  /* Better touch targets */
+  button { min-height: 36px; }
+  .btn-touch { min-height: 48px; min-width: 48px; }
+
+  /* Header compact on mobile */
+  header { padding: 8px 12px !important; }
+
+  /* Responsive font sizes */
+  .text-2xl { font-size: 1.25rem !important; }
+  .text-3xl { font-size: 1.5rem !important; }
+  .text-4xl { font-size: 1.75rem !important; }
+
+  /* Full-width cards on mobile */
+  .glass-card { margin-left: 0; margin-right: 0; }
+
+  /* Smoother touch interactions */
+  * { -webkit-tap-highlight-color: transparent; }
+  button, a, [role="button"] {
+    -webkit-touch-callout: none;
+    user-select: none;
+  }
+}
+
+/* Small phones */
+@media (max-width: 380px) {
+  main { padding: 8px !important; }
+  .glass-card { padding: 12px; border-radius: 12px; }
+  .text-xl { font-size: 1.1rem !important; }
+  .text-2xl { font-size: 1.15rem !important; }
+  .text-3xl { font-size: 1.35rem !important; }
+}
+
+/* ========================
+   Mobile Bottom Navigation
+   ======================== */
+
+.bottom-nav {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 40;
+  background: var(--sidebar-bg);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-top: 1px solid var(--border);
+  padding: 6px 0 max(6px, env(safe-area-inset-bottom));
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+}
+
+.bottom-nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 6px 10px;
+  border-radius: 12px;
+  transition: all 0.2s ease;
+  cursor: pointer;
+  position: relative;
+  min-width: 52px;
+}
+
+.bottom-nav-item.active {
+  color: var(--primary);
+}
+
+.bottom-nav-item:not(.active) {
+  color: #64748B;
+}
+
+.bottom-nav-item span {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.bottom-nav-badge {
+  position: absolute;
+  top: 2px;
+  right: 8px;
+  width: 16px;
+  height: 16px;
+  background: #EF4444;
+  border-radius: 50%;
+  font-size: 9px;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+}
+
+/* Swipe-to-close modals on mobile */
+@media (max-width: 768px) {
+  .swipe-sheet {
+    border-radius: 20px 20px 0 0 !important;
+    max-height: 90vh;
+    overflow-y: auto;
+  }
 }
 
 /* ========================
@@ -487,15 +586,15 @@ button, a { transition: all 0.2s ease !important; }
               linear-gradient(135deg, #6C63FF, #FF6584) border-box;
 }
 
-/* Life area cards */
-.area-card-university { border-left: 3px solid #6C63FF; }
-.area-card-work { border-left: 3px solid #10B981; }
-.area-card-health { border-left: 3px solid #EF4444; }
-.area-card-fitness { border-left: 3px solid #F59E0B; }
-.area-card-finance { border-left: 3px solid #84CC16; }
-.area-card-personal { border-left: 3px solid #EC4899; }
-.area-card-social { border-left: 3px solid #06B6D4; }
-.area-card-learning { border-left: 3px solid #8B5CF6; }
+/* Life area cards — RTL: use border-right */
+.area-card-university { border-right: 3px solid #6C63FF; }
+.area-card-work { border-right: 3px solid #10B981; }
+.area-card-health { border-right: 3px solid #EF4444; }
+.area-card-fitness { border-right: 3px solid #F59E0B; }
+.area-card-finance { border-right: 3px solid #84CC16; }
+.area-card-personal { border-right: 3px solid #EC4899; }
+.area-card-social { border-right: 3px solid #06B6D4; }
+.area-card-learning { border-right: 3px solid #8B5CF6; }
 
 /* Pulsing notification dot */
 .pulse-dot {

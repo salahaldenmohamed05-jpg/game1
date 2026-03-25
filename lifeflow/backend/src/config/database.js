@@ -14,7 +14,7 @@ let sequelize;
 if (process.env.NODE_ENV !== 'production' && process.env.USE_SQLITE !== 'false') {
   sequelize = new Sequelize({
     dialect: 'sqlite',
-    storage: path.join(__dirname, '../../lifeflow_dev.db'),
+    storage: process.env.SQLITE_PATH || path.resolve('/home/user/webapp/lifeflow/backend/lifeflow_dev.db'),
     logging: false,
   });
 } else {
@@ -62,6 +62,11 @@ function registerModels() {
   // Phase 14 — life OS
   require('../models/connected_integration.model');
   require('../models/external_event.model');
+  // Phase 15/16 — ML persistence
+  require('../models/learning_outcome.model');
+  // Phase 16 — chat memory
+  require('../models/chat_session.model');
+  require('../models/chat_message.model');
 }
 
 async function connectDB() {
@@ -72,15 +77,56 @@ async function connectDB() {
     logger.info(`📦 Database connected (${dialect})`);
 
     if (dialect === 'sqlite') {
-      // SQLite: sync without alter to avoid constraint issues on existing data
+      // SQLite: use force:false which creates missing tables without altering existing ones
       try {
-        await sequelize.sync({ alter: false });
+        // First pass: create any missing tables (safe — won't drop existing tables)
+        await sequelize.sync({ force: false });
         logger.info('📊 Database tables synchronized (SQLite)');
       } catch (syncErr) {
-        // If sync fails, try force: false (non-destructive)
-        logger.warn('⚠️  SQLite sync warning, using safe fallback');
-        await sequelize.sync({ force: false });
+        logger.warn('⚠️  SQLite sync warning:', syncErr.message);
+        // Retry with alter:false as last resort
+        try { await sequelize.sync({ alter: false }); } catch (_) {}
       }
+
+      // Phase 16: Safe column migrations for SQLite (ALTER TABLE IF NOT EXISTS column)
+      const addColumnIfMissing = async (table, column, definition) => {
+        try {
+          const [cols] = await sequelize.query(`PRAGMA table_info(${table})`);
+          if (!cols.find(c => c.name === column)) {
+            await sequelize.query(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+            logger.info(`✅ Added column ${table}.${column}`);
+          }
+        } catch (e) {
+          // Ignore - column already exists or table doesn't exist
+        }
+      };
+
+      // Notifications: add Phase 16 smart fields
+      await addColumnIfMissing('notifications', 'reminder_before',    'INTEGER');
+      await addColumnIfMissing('notifications', 'dynamic_message',    'TEXT');
+      await addColumnIfMissing('notifications', 'priority',           'VARCHAR(10) DEFAULT "medium"');
+      await addColumnIfMissing('notifications', 'related_item_id',    'VARCHAR(36)');
+      await addColumnIfMissing('notifications', 'related_item_type',  'VARCHAR(10)');
+
+      // Tasks: add Phase 16 energy-aware fields
+      await addColumnIfMissing('tasks', 'energy_level',        'VARCHAR(10)');
+      await addColumnIfMissing('tasks', 'focus_required',      'TINYINT(1) DEFAULT 0');
+      await addColumnIfMissing('tasks', 'burnout_risk_flag',   'TINYINT(1) DEFAULT 0');
+
+      // Users: add Phase 16 AI mode + reminder preferences
+      await addColumnIfMissing('users', 'ai_mode',             'VARCHAR(20) DEFAULT "suggestive"');
+      await addColumnIfMissing('users', 'default_reminder_before', 'INTEGER DEFAULT 30');
+
+      // Chat sessions: add pin + auto_title support
+      await addColumnIfMissing('chat_sessions', 'is_pinned',   'TINYINT(1) DEFAULT 0');
+      await addColumnIfMissing('chat_sessions', 'auto_title',  'TINYINT(1) DEFAULT 1');
+      await addColumnIfMissing('chat_sessions', 'mode',        'VARCHAR(20) DEFAULT "manager"');
+
+      // Mood entries: ensure energy_level column exists
+      await addColumnIfMissing('mood_entries', 'energy_level',  'INTEGER DEFAULT 50');
+      await addColumnIfMissing('mood_entries', 'stress_level',  'INTEGER');
+      await addColumnIfMissing('mood_entries', 'focus_level',   'INTEGER');
+
     } else {
       await sequelize.sync({ alter: true });
       logger.info('📊 Database tables synchronized');

@@ -11,6 +11,79 @@ const { aiService } = require('../ai/ai.service');
 const logger = require('../utils/logger');
 const moment = require('moment-timezone');
 
+/* ─── Frequency helpers ────────────────────────────────────────── */
+
+/**
+ * Check if a habit is scheduled for a specific date based on its frequency_type.
+ * @param {object} habit
+ * @param {string} dateStr  YYYY-MM-DD
+ * @returns {boolean}
+ */
+function isScheduledForDate(habit, dateStr) {
+  const m = moment(dateStr);
+  const dayOfWeek  = m.day();   // 0=Sun … 6=Sat
+  const dayOfMonth = m.date();  // 1-31
+  const freqType = habit.frequency_type || habit.frequency || 'daily';
+
+  switch (freqType) {
+    case 'daily': return true;
+
+    case 'weekly': {
+      // custom_days is a JSON array of week-day numbers, e.g. [1,3,5]
+      let days;
+      try { days = JSON.parse(habit.custom_days || '[]'); } catch { days = []; }
+      return days.length ? days.includes(dayOfWeek) : true;
+    }
+
+    case 'custom': {
+      let days;
+      try { days = JSON.parse(habit.custom_days || '[]'); } catch { days = []; }
+      return days.includes(dayOfWeek);
+    }
+
+    case 'monthly': {
+      let mdays;
+      try { mdays = JSON.parse(habit.monthly_days || '[]'); } catch { mdays = []; }
+      return mdays.includes(dayOfMonth);
+    }
+
+    case 'weekdays': return dayOfWeek >= 1 && dayOfWeek <= 5;
+    case 'weekends': return dayOfWeek === 0 || dayOfWeek === 6;
+
+    default: return true;
+  }
+}
+
+/**
+ * Generate next-7-days schedule for a habit.
+ * Returns array of { date, day_name, scheduled, completed, log }.
+ */
+async function generateWeekSchedule(habit, userId, timezone) {
+  const schedule = [];
+  const dayNames = ['الأحد','الإثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
+
+  for (let i = 0; i < 7; i++) {
+    const m = moment().tz(timezone).add(i, 'days');
+    const dateStr  = m.format('YYYY-MM-DD');
+    const scheduled = isScheduledForDate(habit, dateStr);
+    let log = null;
+    if (scheduled) {
+      log = await HabitLog.findOne({
+        where: { habit_id: habit.id, log_date: dateStr },
+      });
+    }
+    schedule.push({
+      date:      dateStr,
+      day_name:  dayNames[m.day()],
+      is_today:  i === 0,
+      scheduled,
+      completed: log?.completed || false,
+      log:       log || null,
+    });
+  }
+  return schedule;
+}
+
 /**
  * @route   GET /api/v1/habits
  * @desc    Get all habits for user
@@ -77,7 +150,17 @@ exports.createHabit = async (req, res) => {
       target_value, unit, description,
       habit_type = 'boolean', // 'boolean' | 'count'
       count_label,            // e.g. "كأس", "ركعة", "محاضرة"
+      // Phase 2: flexible scheduling fields
+      frequency_type,
+      custom_days,
+      monthly_days,
+      preferred_time,
+      reminder_before = 15,
+      reminder_enabled = true,
     } = req.body;
+
+    // Resolve frequency_type: use explicit field, fallback to frequency
+    const resolvedFreqType = frequency_type || frequency || 'daily';
 
     // For prayers (5 per day), water (8 glasses), etc.
     const habitData = {
@@ -87,14 +170,20 @@ exports.createHabit = async (req, res) => {
       category,
       icon,
       color,
-      frequency,
-      target_time: target_time || null,
+      frequency: resolvedFreqType,
+      frequency_type: resolvedFreqType,
+      custom_days: custom_days || null,
+      monthly_days: monthly_days || null,
+      preferred_time: preferred_time || target_time || null,
+      target_time: target_time || preferred_time || null,
       duration_minutes: parseInt(duration_minutes) || 30,
       target_value: parseInt(target_value) || (habit_type === 'count' ? 1 : null),
       unit: unit || (habit_type === 'count' ? 'مرة' : null),
       description,
       habit_type,
       count_label: count_label || unit || 'مرة',
+      reminder_before: parseInt(reminder_before) || 15,
+      reminder_enabled: reminder_enabled !== false,
     };
 
     const habit = await Habit.create(habitData);
@@ -125,7 +214,9 @@ exports.updateHabit = async (req, res) => {
 
     const allowedFields = [
       'name', 'name_ar', 'category', 'icon', 'color',
-      'frequency', 'target_time', 'duration_minutes',
+      'frequency', 'frequency_type', 'custom_days', 'monthly_days',
+      'preferred_time', 'reminder_before', 'ai_best_time', 'ai_best_time_reason',
+      'target_time', 'duration_minutes',
       'target_value', 'unit', 'description', 'is_active',
       'habit_type', 'count_label', 'reminder_enabled', 'reminder_times',
     ];
@@ -335,6 +426,7 @@ exports.logValue = async (req, res) => {
  */
 exports.getHabitStats = async (req, res) => {
   try {
+    const timezone = req.user.timezone || 'Africa/Cairo';
     const habit = await Habit.findOne({
       where: { id: req.params.id, user_id: req.user.id },
       include: [{ model: HabitLog, as: 'logs', limit: 90, order: [['log_date', 'DESC']] }],
@@ -346,15 +438,29 @@ exports.getHabitStats = async (req, res) => {
     const completedDays = logs.filter(l => l.completed).length;
     const totalDays = logs.length;
 
+    // Compute AI best_time from log patterns
+    const bestTime = computeBestTime(logs);
+
+    // Update ai_best_time if we have enough data
+    if (bestTime && completedDays >= 5) {
+      await habit.update({
+        ai_best_time:        bestTime.time,
+        ai_best_time_reason: bestTime.reason,
+      });
+    }
+
     const stats = {
-      current_streak: habit.current_streak,
-      longest_streak: habit.longest_streak,
+      current_streak:    habit.current_streak,
+      longest_streak:    habit.longest_streak,
       total_completions: habit.total_completions,
-      completion_rate: totalDays > 0 ? ((completedDays / totalDays) * 100).toFixed(1) : 0,
-      last_30_days: getLast30DaysData(logs),
-      weekly_pattern: getWeeklyPattern(logs),
-      average_mood: getAverageMood(logs),
-      // For count habits
+      completion_rate:   totalDays > 0 ? ((completedDays / totalDays) * 100).toFixed(1) : 0,
+      last_30_days:      getLast30DaysData(logs),
+      weekly_pattern:    getWeeklyPattern(logs),
+      average_mood:      getAverageMood(logs),
+      ai_best_time:      habit.ai_best_time || bestTime?.time || null,
+      ai_best_time_reason: habit.ai_best_time_reason || bestTime?.reason || null,
+      preferred_time:    habit.preferred_time || null,
+      week_schedule:     await generateWeekSchedule(habit, req.user.id, timezone),
       average_daily_value: habit.habit_type === 'count'
         ? (logs.reduce((sum, l) => sum + (l.value || 0), 0) / Math.max(1, logs.length)).toFixed(1)
         : null,
@@ -372,6 +478,45 @@ exports.getHabitStats = async (req, res) => {
     res.json({ success: true, data: stats });
   } catch (error) {
     res.status(500).json({ success: false, message: 'فشل في جلب إحصائيات العادة' });
+  }
+};
+
+/**
+ * @route   GET /api/v1/habits/:id/schedule
+ * @desc    Get 7-day schedule for a habit | جدول العادة لأسبوع
+ */
+exports.getHabitSchedule = async (req, res) => {
+  try {
+    const timezone = req.user.timezone || 'Africa/Cairo';
+    const habit = await Habit.findOne({
+      where: { id: req.params.id, user_id: req.user.id },
+    });
+
+    if (!habit) return res.status(404).json({ success: false, message: 'العادة غير موجودة' });
+
+    const schedule = await generateWeekSchedule(habit, req.user.id, timezone);
+
+    res.json({
+      success: true,
+      data: {
+        habit: {
+          id:              habit.id,
+          name:            habit.name_ar || habit.name,
+          frequency_type:  habit.frequency_type || habit.frequency,
+          custom_days:     habit.custom_days,
+          monthly_days:    habit.monthly_days,
+          preferred_time:  habit.preferred_time,
+          reminder_before: habit.reminder_before,
+          ai_best_time:    habit.ai_best_time,
+          ai_best_time_reason: habit.ai_best_time_reason,
+        },
+        schedule,
+        week_start: moment().tz(timezone).format('YYYY-MM-DD'),
+        week_end:   moment().tz(timezone).add(6, 'days').format('YYYY-MM-DD'),
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'فشل في جلب جدول العادة' });
   }
 };
 
@@ -502,4 +647,37 @@ function getAverageMood(logs) {
   const withMood = logs.filter(l => l.mood_after);
   if (!withMood.length) return null;
   return (withMood.reduce((sum, l) => sum + l.mood_after, 0) / withMood.length).toFixed(1);
+}
+
+/**
+ * Compute the best time of day for a habit based on completion patterns.
+ * Returns { time: 'HH:MM', reason: string } or null.
+ */
+function computeBestTime(logs) {
+  const completedWithTime = logs.filter(l => l.completed && l.completed_at);
+  if (completedWithTime.length < 3) return null;
+
+  // Bucket by hour
+  const hourBuckets = {};
+  for (const log of completedWithTime) {
+    const h = moment(log.completed_at).hour();
+    hourBuckets[h] = (hourBuckets[h] || 0) + 1;
+  }
+
+  // Find most frequent hour
+  const bestHour = Object.entries(hourBuckets)
+    .sort((a, b) => b[1] - a[1])[0][0];
+
+  const h = parseInt(bestHour);
+  const timeStr = `${String(h).padStart(2, '0')}:00`;
+
+  let period = 'صباحاً';
+  if (h >= 12 && h < 17) period = 'ظهراً';
+  else if (h >= 17 && h < 21) period = 'مساءً';
+  else if (h >= 21) period = 'ليلاً';
+
+  return {
+    time:   timeStr,
+    reason: `أفضل وقت بناءً على ${completedWithTime.length} إنجاز — عادةً ${period}`,
+  };
 }

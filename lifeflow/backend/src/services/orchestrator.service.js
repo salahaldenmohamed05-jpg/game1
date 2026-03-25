@@ -20,7 +20,9 @@ const { buildProfile, buildPersonalizationBlock } = require('./personalization.s
 const adaptiveBehavior = require('./adaptive.behavior.service');
 const { buildSystemPrompt, getSuggestions } = require('../config/personality.config');
 const { safeExecute, DEFAULT_FALLBACK }    = require('./ai/ai.error.handler');
-const { chat }                             = require('../ai/ai.service');
+// Use ai.client for multi-provider retry + cache (Gemini → Groq multi-model fallback)
+const { chat: chatClient, buildIntelligentFallback } = require('./ai/ai.client');
+const { chat: chatFallback }               = require('../ai/ai.service'); // backup if client fails
 
 // ─── Lazy Service Loaders ─────────────────────────────────────────────────────
 function getContextSnapshot() {
@@ -85,16 +87,42 @@ function buildContextBlock(ctx, profile, historyStr, snapshot = null, learningPr
   parts.push(`المزاج اليوم: ${ctx.todayMood ? ctx.todayMood + '/10' : 'لم يُسجَّل'}`);
   parts.push(`الإنتاجية (7 أيام): ${ctx.productivity || 55}/100`);
 
-  // Tasks
+  // Tasks — Phase 6: inject REAL task details
   if (ctx.tasks?.length > 0) {
     parts.push(`مهام معلقة: ${ctx.tasks.length}`);
+    // List actual task titles so AI references them
+    const taskList = ctx.tasks.slice(0, 5).map(t => {
+      let info = `"${t.title}" (${t.priority || 'medium'})`;
+      if (t.start_time) info += ` الساعة ${new Date(t.start_time).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Cairo' })}`;
+      return info;
+    }).join(' | ');
+    parts.push(`قائمة المهام: ${taskList}`);
   }
   if (ctx.urgentTasks?.length > 0) {
-    parts.push(`مهام عاجلة: ${ctx.urgentTasks.length} (${ctx.urgentTasks.slice(0, 2).map(t => t.title).join('، ')})`);
+    parts.push(`مهام عاجلة: ${ctx.urgentTasks.length} (${ctx.urgentTasks.slice(0, 3).map(t => t.title).join('، ')})`);
   }
   if (ctx.overdueTasks?.length > 0) {
-    parts.push(`مهام متأخرة: ⚠️ ${ctx.overdueTasks.length}`);
+    parts.push(`مهام متأخرة: ⚠️ ${ctx.overdueTasks.length} (${ctx.overdueTasks.slice(0, 2).map(t => t.title).join('، ')})`);
   }
+  if (ctx.todayTasks?.length > 0) {
+    parts.push(`مهام اليوم: ${ctx.todayTasks.length}`);
+  }
+  // Phase 6: completed today — prevents AI from suggesting done tasks
+  if (ctx.completedToday?.length > 0) {
+    parts.push(`مهام مكتملة اليوم: ${ctx.completedToday.length} (${ctx.completedToday.slice(0, 3).map(t => t.title).join('، ')})`);
+  }
+  // Phase 6: habits status
+  if (ctx.habits?.length > 0) {
+    parts.push(`عادات نشطة: ${ctx.habits.length}`);
+    if (ctx.completedHabitCount > 0) {
+      parts.push(`عادات مكتملة اليوم: ${ctx.completedHabitCount}/${ctx.habits.length}`);
+    }
+  }
+  // Phase 6: current Cairo time
+  const moment = require('moment-timezone');
+  const cairoNow = moment().tz('Africa/Cairo');
+  parts.push(`الوقت الحالي (القاهرة): ${cairoNow.format('HH:mm')} — ${cairoNow.format('dddd')}`);
+  parts.push(`التاريخ: ${cairoNow.format('YYYY-MM-DD')}`);
 
   // Context snapshot signals
   if (snapshot?.signals?.length > 0) {
@@ -293,14 +321,73 @@ async function orchestrate({
 
     const { reply, is_fallback } = await safeExecute(
       async () => {
-        const response = await chat(systemPrompt, userMsgForAI, {
-          temperature: mode === 'companion' ? 0.8 : mode === 'manager' ? 0.5 : 0.7,
-          maxTokens  : 500,
-        });
-        return response;
+        // Try ai.client first (Groq multi-model + Gemini fallback with cache)
+        try {
+          const response = await chatClient(systemPrompt, userMsgForAI, {
+            temperature: mode === 'companion' ? 0.8 : mode === 'manager' ? 0.5 : 0.7,
+            maxTokens  : 500,
+          });
+          return response;
+        } catch (clientErr) {
+          const errMsg = clientErr.message || '';
+          logger.warn('[ORCHESTRATOR] ai.client failed:', errMsg);
+
+          // If rate limited on ALL providers, use intelligent local fallback
+          // (not the generic ai.service fallback which returns "شكراً لاستخدامك LifeFlow!")
+          if (errMsg.includes('RATE_LIMIT_ALL') || errMsg.includes('ALL_PROVIDERS_FAILED')) {
+            logger.info('[ORCHESTRATOR] Building intelligent local fallback for rate limit');
+            // Use the user's original message + context to generate meaningful response
+            const intelligentReply = buildIntelligentFallback(message, {
+              intentCategory,
+              mode,
+              userName: userCtx?.name,
+              tasks   : userCtx?.urgentTasks || [],
+            });
+            // Return as object to signal it's a soft fallback (contextual, not error)
+            // We still return is_fallback=true so the frontend can optionally show a note
+            throw Object.assign(new Error('INTELLIGENT_FALLBACK'), {
+              intelligentReply,
+            });
+          }
+
+          // For other errors, try ai.service as last resort
+          logger.warn('[ORCHESTRATOR] Trying ai.service as last resort');
+          const response = await chatFallback(systemPrompt, userMsgForAI, {
+            temperature: mode === 'companion' ? 0.8 : mode === 'manager' ? 0.5 : 0.7,
+            maxTokens  : 500,
+          });
+          return response;
+        }
       },
       { userName: userCtx?.name, intentCategory }
     );
+
+    // If safeExecute caught INTELLIGENT_FALLBACK error, reply will be the contextual message
+    // (safeExecute classifies it as UNKNOWN and uses buildContextualFallback)
+    // We need to check if we have a better intelligent reply available
+    let finalReply = reply;
+    let finalIsFallback = is_fallback;
+
+    // Check if the reply is a generic error message — if so, build intelligent fallback
+    const genericPhrases = [
+      'حصل مشكلة مؤقتة',
+      'حاول تاني',
+      'نعالج طلبات كثيرة',
+      'استغرق الرد',
+      'تعذّر معالجة',
+    ];
+    const isGenericReply = genericPhrases.some(phrase => reply?.includes(phrase));
+
+    if (isGenericReply || (is_fallback && reply === DEFAULT_FALLBACK)) {
+      finalReply = buildIntelligentFallback(message, {
+        intentCategory,
+        mode,
+        userName: userCtx?.name,
+        tasks   : userCtx?.urgentTasks || [],
+      });
+      finalIsFallback = true; // Still mark as fallback — was not real AI
+      logger.info('[ORCHESTRATOR] Replaced generic error with intelligent fallback');
+    }
 
     // ── STEP 10: Adaptive Suggestions ────────────────────────────────────────
     const suggestions = adaptiveBehavior.getAdaptiveSuggestions(userId, intentCategory);
@@ -337,11 +424,11 @@ async function orchestrate({
 
     // ── STEP 13: Store in Memory ──────────────────────────────────────────────
     memory.addShortTerm(userId, 'user', message, { intent: intentCategory, mode });
-    memory.addShortTerm(userId, 'assistant', reply, { mode, is_fallback: !!is_fallback, confidence });
+    memory.addShortTerm(userId, 'assistant', finalReply, { mode, is_fallback: !!finalIsFallback, confidence });
     memory.incrementStat(userId, 'totalMessages');
 
     // ── STEP 14: Record Outcome in Learning Engine ────────────────────────────
-    if (!is_fallback) {
+    if (!finalIsFallback) {
       try {
         const learning = getLearning();
         if (learning) {
@@ -369,20 +456,21 @@ async function orchestrate({
       userId,
       mode,
       intentCategory,
-      is_fallback : !!is_fallback,
+      is_fallback       : !!finalIsFallback,
+      used_intelligent  : finalIsFallback && reply !== finalReply,
       confidence,
-      elapsed_ms  : elapsed,
-      has_snapshot: !!snapshot,
-      has_learning: !!learningProfile,
-      has_prediction: !!prediction,
+      elapsed_ms        : elapsed,
+      has_snapshot      : !!snapshot,
+      has_learning      : !!learningProfile,
+      has_prediction    : !!prediction,
     });
 
     return {
-      reply,
+      reply       : finalReply,
       mode,
       actions,
       suggestions,
-      is_fallback   : !!is_fallback,
+      is_fallback : !!finalIsFallback,
       intentCategory,
       confidence,
       explanation   : explanation || [],

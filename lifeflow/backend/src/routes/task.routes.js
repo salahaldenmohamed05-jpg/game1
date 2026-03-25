@@ -5,11 +5,20 @@ const express = require('express');
 const router = express.Router();
 const taskController = require('../controllers/task.controller');
 const { protect } = require('../middleware/auth.middleware');
+const logger = require('../utils/logger');
 
 router.use(protect);
 
+// Smart View — AI-scored grouping with recommendation (replaces frontend computeAIScore)
+router.get('/smart-view', taskController.getSmartView);
+
 router.get('/', taskController.getTasks);
 router.get('/today', taskController.getTodayTasks);
+// Convenience alias: GET /tasks/grouped → same as GET /tasks?grouped=true
+router.get('/grouped', (req, res, next) => {
+  req.query.grouped = 'true';
+  return taskController.getTasks(req, res, next);
+});
 router.post('/', taskController.createTask);
 router.put('/:id', taskController.updateTask);
 router.patch('/:id/complete', taskController.completeTask);
@@ -33,6 +42,22 @@ router.post('/ai-prioritize', async (req, res) => {
     );
     res.json({ success: true, data: { tasks: tasks.map(t=>({id:t.id,title:t.title,priority:t.priority,due_date:t.due_date})), ai_priority_notes: reply } });
   } catch(e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// AI recommendation logging — track display, click, completion events
+router.post('/smart-view/log', async (req, res) => {
+  try {
+    const { event, taskId, score } = req.body;
+    // event: 'display' | 'click' | 'complete'
+    const validEvents = ['display', 'click', 'complete'];
+    if (!validEvents.includes(event)) {
+      return res.status(400).json({ success: false, message: 'Invalid event type' });
+    }
+    logger.info(`[SMART-LOG] user=${req.user.id} event=${event} task=${taskId || 'none'} score=${score || 0}`);
+    res.json({ success: true });
+  } catch (e) {
     res.status(500).json({ success: false, message: e.message });
   }
 });

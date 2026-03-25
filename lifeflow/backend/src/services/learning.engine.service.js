@@ -1,7 +1,7 @@
 /**
  * Learning Engine Service — محرك التعلم الذاتي
  * ================================================
- * Phase 15: Self-Learning AI Layer
+ * Phase 15/16: Self-Learning AI Layer with DB Persistence
  *
  * Tracks AI decisions, user responses, and task outcomes.
  * Computes:
@@ -11,13 +11,103 @@
  *  - User preference patterns (accepted vs rejected suggestions)
  *  - Energy/mood correlation with productivity
  *
- * Storage: In-memory (ring-buffer, per-user, TTL 24h)
+ * Storage: In-memory ring-buffer (fast reads) + SQLite DB (persistent)
  * Exports: getUserLearningProfile(userId), recordOutcome(), recordDecision()
  */
 
 'use strict';
 
 const logger = require('../utils/logger');
+
+// ─── DB Model (lazy-loaded to avoid circular dependency) ─────────────────────
+function getLearningOutcomeModel() {
+  try {
+    return require('../models/learning_outcome.model');
+  } catch (_) {
+    return null;
+  }
+}
+
+// ─── Async DB Persistence (fire-and-forget) ───────────────────────────────────
+function persistToDB(record) {
+  setImmediate(async () => {
+    try {
+      const LO = getLearningOutcomeModel();
+      if (!LO) return;
+      await LO.create({
+        user_id        : record.userId,
+        type           : record.type,
+        action         : record.action,
+        success        : record.success !== undefined ? record.success : true,
+        energy         : record.energy || 55,
+        mood           : record.mood || 5,
+        hour           : record.hour || new Date().getHours(),
+        day_of_week    : record.day || new Date().getDay(),
+        mode           : record.mode || null,
+        suggestion_type: record.suggestionType || null,
+        user_response  : record.userResponse || null,
+        fail_reason    : record.failReason || null,
+        priority       : record.priority || null,
+        risk           : record.risk || null,
+        confidence     : record.confidence || 70,
+        ts             : record.ts || Date.now(),
+      });
+    } catch (e) {
+      // Non-fatal: DB write fails silently, in-memory data still used
+      logger.debug('[LEARNING] DB persist failed (non-fatal):', e.message);
+    }
+  });
+}
+
+// ─── Load recent DB records into memory on first access ───────────────────────
+const _dbLoaded = new Set();
+async function loadFromDB(userId) {
+  if (_dbLoaded.has(userId)) return;
+  _dbLoaded.add(userId);
+  try {
+    const LO = getLearningOutcomeModel();
+    if (!LO) return;
+    const rows = await LO.findAll({
+      where  : { user_id: userId },
+      order  : [['ts', 'DESC']],
+      limit  : 500,
+      raw    : true,
+    });
+    if (rows.length === 0) return;
+    const store = getStore(userId);
+    // Convert DB rows back to in-memory format
+    const existing = new Set(store.records.map(r => r.ts + r.action));
+    let added = 0;
+    for (const row of rows.reverse()) {
+      const key = row.ts + row.action;
+      if (!existing.has(key)) {
+        store.records.push({
+          type          : row.type,
+          action        : row.action,
+          success       : row.success,
+          failReason    : row.fail_reason,
+          energy        : row.energy,
+          mood          : row.mood,
+          suggestionType: row.suggestion_type,
+          userResponse  : row.user_response,
+          hour          : row.hour,
+          day           : row.day_of_week,
+          mode          : row.mode,
+          risk          : row.risk,
+          ts            : Number(row.ts),
+        });
+        added++;
+      }
+    }
+    if (added > 0) {
+      store._statsDirty = true;
+      logger.debug(`[LEARNING] Loaded ${added} records from DB for user ${userId}`);
+    }
+  } catch (e) {
+    logger.debug('[LEARNING] DB load failed (non-fatal):', e.message);
+    _dbLoaded.delete(userId); // allow retry
+  }
+}
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const MAX_RECORDS_PER_USER  = 500;   // ring-buffer limit
@@ -74,9 +164,13 @@ function dayBucket(ts) {
  * @param {string} [decision.intent]      - detected intent
  */
 function recordDecision(userId, decision) {
+  // Ensure DB records are loaded first (async, non-blocking)
+  loadFromDB(userId).catch(() => {});
+
   const store = getStore(userId);
 
   const record = {
+    userId,
     type      : 'decision',
     action    : decision.action || 'unknown',
     risk      : decision.risk || 'low',
@@ -95,6 +189,9 @@ function recordDecision(userId, decision) {
   store.lastUpdated = Date.now();
 
   pruneOldRecords(store);
+
+  // Persist to DB asynchronously (non-blocking)
+  persistToDB(record);
 
   logger.debug(`[LEARNING] Decision recorded for ${userId}: ${record.action}`);
   return record;
@@ -115,9 +212,13 @@ function recordDecision(userId, decision) {
  * @param {string} [outcome.userResponse] - 'accepted' | 'rejected' | 'ignored'
  */
 function recordOutcome(userId, outcome) {
+  // Ensure DB records are loaded first (async, non-blocking)
+  loadFromDB(userId).catch(() => {});
+
   const store = getStore(userId);
 
   const record = {
+    userId,
     type           : 'outcome',
     action         : outcome.action || 'unknown',
     success        : outcome.success === true,
@@ -144,6 +245,9 @@ function recordOutcome(userId, outcome) {
   if (matchingDecision) {
     matchingDecision.outcome = outcome.success ? 'success' : 'failure';
   }
+
+  // Persist to DB asynchronously (non-blocking)
+  persistToDB(record);
 
   logger.debug(`[LEARNING] Outcome recorded for ${userId}: ${record.action} → ${record.success ? '✓' : '✗'}`);
   return record;
@@ -290,6 +394,9 @@ function computeStats(store) {
  * @returns {object} LearningProfile
  */
 function getUserLearningProfile(userId) {
+  // Trigger async DB load (non-blocking — data will appear on next call)
+  loadFromDB(userId).catch(() => {});
+
   const store = getStore(userId);
   const stats = computeStats(store);
 
@@ -648,6 +755,8 @@ module.exports = {
   predictTaskCompletion,
   detectBurnoutRisk,
   getMLPredictions,
+  // Warmup — await DB load before predictions (Phase 16)
+  warmup: (userId) => loadFromDB(userId),
   // Dev helpers
   _seedTestData,
 };

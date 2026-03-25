@@ -1,7 +1,10 @@
 /**
- * Main Dashboard Component
- * =========================
- * لوحة التحكم الرئيسية - الصفحة المحورية للتطبيق
+ * Main Dashboard Component — Unified MobileLayout
+ * ==================================================
+ * - Flex column shell: sidebar (desktop) + main area
+ * - Main area: Header + MobileLayout (scrollable) + bottom nav (mobile)
+ * - No conflicting h-screen / overflow-hidden on content panels
+ * - Desktop: sidebar handles navigation; Mobile: bottom-nav handles navigation
  */
 
 import { useState, useEffect } from 'react';
@@ -10,6 +13,7 @@ import { motion } from 'framer-motion';
 import { dashboardAPI } from '../../utils/api';
 import Sidebar from '../layout/Sidebar';
 import Header from '../layout/Header';
+import MobileLayout from '../layout/MobileLayout';
 import DashboardHome from './DashboardHome';
 import TasksView from '../tasks/TasksView';
 import HabitsView from '../habits/HabitsView';
@@ -25,6 +29,7 @@ import AssistantView from '../assistant/AssistantView';
 import LogsView from '../logs/LogsView';
 import useAuthStore from '../../store/authStore';
 import ErrorBoundary from '../common/ErrorBoundary';
+import MobileBottomNav from '../layout/MobileBottomNav';
 
 const VIEWS = {
   dashboard:     DashboardHome,
@@ -32,14 +37,13 @@ const VIEWS = {
   habits:        HabitsView,
   mood:          MoodView,
   insights:      InsightsView,
-  assistant:     AssistantView,        // Unified: ai_chat + copilot + adaptive + optimizer
+  assistant:     AssistantView,
   calendar:      CalendarView,
   notifications: NotificationsView,
   performance:   PerformanceView,
   subscription:  SubscriptionView,
   intelligence:  GlobalIntelligenceView,
   integrations:  IntegrationsView,
-  // Legacy redirects (keep for backwards compat)
   ai_chat:       AssistantView,
   copilot:       AssistantView,
   adaptive:      AssistantView,
@@ -72,7 +76,7 @@ export default function Dashboard() {
   const ActiveView = VIEWS[activeView] || DashboardHome;
 
   return (
-    <div className="flex h-screen bg-dark overflow-hidden" style={{ direction: 'rtl' }}>
+    <div className="flex h-screen bg-dark overflow-hidden" dir="rtl">
       {/* Animated background */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none z-0">
         <div className="absolute top-0 right-0 w-96 h-96 bg-primary-500/5 rounded-full blur-3xl" />
@@ -105,37 +109,42 @@ export default function Dashboard() {
         />
       </div>
 
-      {/* Main Content */}
+      {/* Main Content Area — flex column: Header → scrollable content → bottom nav
+          CRITICAL: min-w-0 prevents flex item from growing beyond parent width.
+          overflow-x-hidden clips any accidental horizontal overflow.
+          Without min-w-0, the flex item's min-width:auto default lets content
+          push it wider than the viewport, causing text clipping in RTL. */}
       <div
-        className={`flex-1 flex flex-col overflow-hidden transition-all duration-300 ${
+        className={`flex-1 min-w-0 flex flex-col min-h-0 overflow-x-hidden transition-all duration-300 relative z-10 ${
           sidebarOpen ? 'md:mr-64' : 'md:mr-16'
         }`}
       >
+        {/* Sticky Header */}
         <Header
           onViewChange={setActiveView}
           activeView={activeView}
           onMenuToggle={() => setSidebarOpen(!sidebarOpen)}
         />
 
-        {/* Page Content */}
-        <main className="flex-1 overflow-y-auto p-4 md:p-6 relative z-10">
-          <motion.div
-            key={activeView}
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.25 }}
-          >
-            <ErrorBoundary>
-              <ActiveView
-                dashboardData={dashboardData?.data?.data}
-                isLoading={isLoading}
-                refetch={refetch}
-                userPlan={userPlan}
-                onViewChange={setActiveView}
-              />
-            </ErrorBoundary>
-          </motion.div>
-        </main>
+        {/* Scrollable Page Content via MobileLayout */}
+        <MobileLayout>
+          <ErrorBoundary>
+            <ActiveView
+              dashboardData={dashboardData?.data?.data}
+              isLoading={isLoading}
+              refetch={refetch}
+              userPlan={userPlan}
+              onViewChange={setActiveView}
+            />
+          </ErrorBoundary>
+        </MobileLayout>
+
+        {/* Mobile Bottom Navigation — fixed at bottom, z-40 (modals are z-50) */}
+        <MobileBottomNav
+          activeView={activeView}
+          setActiveView={setActiveView}
+          dashboardData={dashboardData?.data?.data}
+        />
       </div>
     </div>
   );

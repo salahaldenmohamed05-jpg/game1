@@ -37,6 +37,7 @@ const intelligenceRoutes = require('./routes/intelligence.routes');
 const adaptiveRoutes     = require('./routes/adaptive.routes');
 const aiCentralRoutes    = require('./routes/ai.central.routes');
 const assistantRoutes    = require('./routes/assistant.routes');
+const chatRoutes         = require('./routes/chat.routes');        // Phase 16: chat sessions
 const { router: logsRoutes } = require('./routes/logs.routes');
 
 // Import scheduler
@@ -91,6 +92,16 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+// Ensure UTF-8 charset on all JSON responses
+app.use((req, res, next) => {
+  const originalJson = res.json.bind(res);
+  res.json = (data) => {
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    return originalJson(data);
+  };
+  next();
+});
+
 // ============================================
 // API Routes
 // ============================================
@@ -113,7 +124,8 @@ app.use(`${API}/subscription`, subscriptionRoutes);
 app.use(`${API}/intelligence`, intelligenceRoutes);
 app.use(`${API}/adaptive`,     adaptiveRoutes);
 app.use(`${API}/assistant`,    assistantRoutes);  // New: AI Personal Assistant
-app.use(`${API}/logs`,         logsRoutes);       // Error & activity logging
+app.use(`${API}/chat`,         chatRoutes);        // Phase 16: Persistent chat sessions
+app.use(`${API}/logs`,         logsRoutes);        // Error & activity logging
 
 // ============================================
 // Health Check
