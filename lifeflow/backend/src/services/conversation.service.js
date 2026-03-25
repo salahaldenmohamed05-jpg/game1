@@ -10,7 +10,7 @@
 
 const moment = require('moment-timezone');
 const logger  = require('../utils/logger');
-const { chat } = require('../ai/ai.service');
+const { chat: aiClientChat, buildIntelligentFallback } = require('./ai/ai.client');
 
 // ─── In-Memory Session Store ──────────────────────────────────────────────────
 const sessions    = new Map();
@@ -196,14 +196,37 @@ async function fetchUserContext(userId, timezone) {
     const energy     = energyLogs?.[0]?.energy_score || 55;
 
     const urgentTasks  = tasks.filter(t => ['urgent', 'high'].includes(t.priority));
-    const overdueTasks = tasks.filter(t => t.due_date < today);
-    const todayTasks   = tasks.filter(t => t.due_date === today);
+    const overdueTasks = tasks.filter(t => t.due_date && t.due_date.substring(0,10) < today);
+    const todayTasks   = tasks.filter(t => t.due_date && t.due_date.substring(0,10) === today);
+
+    // Phase 6: Also fetch completed tasks today for AI context (avoid suggesting done things)
+    let completedToday = [];
+    try {
+      completedToday = await Task.findAll({
+        where: { user_id: userId, status: 'completed', completed_at: { [Op.gte]: `${today}T00:00:00` } },
+        limit: 10, raw: true,
+      });
+    } catch(_) {}
+
+    // Phase 6: Get today's habit logs for AI context
+    let habitLogs = [];
+    try {
+      const { HabitLog } = require('../models/habit.model');
+      habitLogs = await HabitLog.findAll({
+        where: { user_id: userId, log_date: today },
+        raw: true,
+      });
+    } catch(_) {}
 
     return {
       name, greeting, hour, today, timezone,
       tasks, urgentTasks, todayTasks, overdueTasks,
+      completedToday,
       todayMood: todayMood?.mood_score || null,
+      moodEmotions: todayMood?.emotions || null,
       habits,
+      habitLogs,
+      completedHabitCount: habitLogs.filter(l => l.completed).length,
       productivity: avgScore,
       energy,
     };
@@ -251,7 +274,10 @@ ${overdueLine}
 7. إذا ذكر المستخدم تعباً أو ضغطاً: اعترف بمشاعره أولاً ثم قدم حلاً عملياً
 8. لا تقل "تم!" فقط — دائماً اشرح ما تم واسأل سؤالاً متابعة مفيداً
 9. إذا لم تكن متأكداً من القصد، اطرح سؤالاً توضيحياً واحداً فقط
-10. أجب بذكاء حتى لو السؤال غير متعلق بالمهام (صحة، علاقات، دراسة...)`;
+10. أجب بذكاء حتى لو السؤال غير متعلق بالمهام (صحة، علاقات، دراسة...)
+11. عند إنشاء جداول مذاكرة: اليوم فيه 24 ساعة فقط، الحد الأقصى للدراسة 8 ساعات/يوم
+12. عند ذكر الصلوات الخمس في الجدول: تأكد من إدراج جميعها (فجر، ظهر، عصر، مغرب، عشاء) بدون استثناء
+13. إذا تجاوزت المهام سعة اليوم، وزّعها على أيام أكثر بدلاً من حشر الكل في يوم واحد`;
 }
 
 // ─── History Context Builder ──────────────────────────────────────────────────
@@ -333,11 +359,16 @@ async function processConversation(userId, message, timezone = 'Africa/Cairo', a
           userMsgForAI = `[محاولة تنفيذ: ${actionResult.message || 'فشل'}]\n\nالمستخدم قال: ${message}`;
         }
 
-        reply = await chat(systemPrompt, userMsgForAI, { temperature: 0.72, maxTokens: 500 });
+        reply = await aiClientChat(systemPrompt, userMsgForAI, { temperature: 0.72, maxTokens: 500 });
         logger.info(`[CONV-SERVICE] AI reply generated for user=${userId}, intent=${intentCategory}`);
       } catch (aiErr) {
-        logger.warn('[CONV-SERVICE] AI call failed, using fallback:', aiErr.message);
-        reply = buildFallbackReply(intentCategory, ctx, actionSummary);
+        logger.warn('[CONV-SERVICE] AI call failed, using intelligent fallback:', aiErr.message);
+        // Use intelligent fallback for rate limits / all-providers-failed
+        if (aiErr.message && (aiErr.message.includes('RATE_LIMIT') || aiErr.message.includes('ALL_PROVIDERS'))) {
+          reply = buildIntelligentFallback(message, { intentCategory });
+        } else {
+          reply = buildFallbackReply(intentCategory, ctx, actionSummary);
+        }
       }
     } else {
       reply = buildFallbackReply(intentCategory, ctx, actionSummary);

@@ -112,6 +112,9 @@ export const authAPI = {
 // ─── Task API ─────────────────────────────────────────────────────────────────
 export const taskAPI = {
   getTasks: (params = {}) => api.get('/tasks', { params }),
+  getGroupedTasks: (params = {}) => api.get('/tasks', { params: { ...params, grouped: true } }),
+  getSmartView: () => api.get('/tasks/smart-view'),
+  logSmartEvent: (event, taskId, score) => api.post('/tasks/smart-view/log', { event, taskId, score }),
   createTask: (data) => api.post('/tasks', data),
   updateTask: (id, data) => api.put(`/tasks/${id}`, data),
   deleteTask: (id) => api.delete(`/tasks/${id}`),
@@ -266,8 +269,8 @@ export const adaptiveAPI = {
 // ─── Personal Assistant API (Unified) ─────────────────────────────────────────
 export const assistantAPI = {
   // Command endpoint (full action + conversational reply)
-  sendCommand: (message, pendingAction = null) =>
-    api.post('/assistant/command', { message, pending_action: pendingAction }),
+  sendCommand: (message, pendingAction = null, sessionId = null) =>
+    api.post('/assistant/command', { message, pending_action: pendingAction, session_id: sessionId }),
   // Orchestrated chat endpoint → { reply, mode, actions, suggestions }
   chat: (message, timezone = null) => api.post('/assistant/chat', { message, timezone }),
   // Context / autonomous
@@ -298,6 +301,42 @@ export const assistantAPI = {
   explainDecision: (action, energy, mood, priority, risk) =>
     api.post('/assistant/explain', { action, energy, mood, priority, risk }),
   getMetrics: () => api.get('/assistant/metrics'),
+  // Phase 16: Smart Scheduling + Daily Timeline
+  getSmartDailyPlan: () => api.get('/assistant/daily-plan'),
+  // Phase 16: Next Best Action
+  getNextAction: () => api.get('/assistant/next-action'),
+  // Phase 16: Life Feed
+  getLifeFeed: () => api.get('/assistant/life-feed'),
+  // Phase 16: Burnout / Energy status
+  getBurnoutStatus: () => api.get('/assistant/burnout-status'),
+  // Phase 16: Task Decomposition
+  decomposeTask: (task, options = {}) => api.post('/assistant/decompose', { task, ...options }),
+  // Phase 16: AI Mode
+  getAIMode: () => api.get('/assistant/ai-mode'),
+  setAIMode: (mode) => api.put('/assistant/ai-mode', { mode }),
+  // Phase 16: Smart Notification
+  smartNotify: (type, item_id, item_title, reminder_before = 30) =>
+    api.post('/assistant/smart-notify', { type, item_id, item_title, reminder_before }),
+};
+
+// ─── Chat Session API (Phase 16) ──────────────────────────────────────────────
+export const chatAPI = {
+  // Create new session
+  createSession: (title = null) => api.post('/chat/session', title ? { title } : {}),
+  // List all sessions
+  getSessions: () => api.get('/chat/sessions'),
+  // Get single session with messages
+  getSession: (id) => api.get(`/chat/session/${id}`),
+  // GET messages for session (CRUD endpoint)
+  getMessages: (id, params = {}) => api.get(`/chat/session/${id}/messages`, { params }),
+  // Send message in session
+  sendMessage: (session_id, message) => api.post('/chat/message', { session_id, message }),
+  // Rename session
+  renameSession: (id, title) => api.put(`/chat/session/${id}`, { title }),
+  // Pin/unpin
+  pinSession: (id, is_pinned) => api.put(`/chat/session/${id}/pin`, { is_pinned }),
+  // Delete session
+  deleteSession: (id) => api.delete(`/chat/session/${id}`),
 };
 
 // ─── Logs API ──────────────────────────────────────────────────────────────────

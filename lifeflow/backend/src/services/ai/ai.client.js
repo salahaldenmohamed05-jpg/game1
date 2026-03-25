@@ -1,16 +1,18 @@
 /**
- * AI Client — Centralized LLM Communication Layer (v2)
+ * AI Client — Centralized LLM Communication Layer (v3)
  * ======================================================
  * Handles all outbound requests to Gemini and Groq APIs.
  * Features:
  *   - API key validation at call time (never stale)
- *   - 10-second timeout per request with AbortController
+ *   - 15-second timeout per request
  *   - Full debug logging: request payload, response, errors
  *   - Safe response parsing: response?.choices?.[0]?.message?.content
- *   - Fallback reply: "حصل مشكلة مؤقتة، حاول تاني بعد شوية 🙏"
- *   - Provider retry order: Gemini → Groq → static fallback
+ *   - Multi-model Groq fallback: llama-3.3-70b → llama-3.1-8b-instant → gemma2-9b-it
+ *   - Rate-limit resilience: retries with faster models before giving up
+ *   - Provider retry order: Gemini → Groq (3 models) → intelligent local fallback
  *   - 10-minute in-memory cache (via ai.cache.js)
  *   - Prompt sanitization (PII removal)
+ *   - Throws on ALL-PROVIDERS-FAILED so callers can detect and handle
  */
 
 'use strict';
@@ -22,9 +24,17 @@ const cache  = require('./ai.cache');
 const { DEFAULT_FALLBACK, validateResponse, safeParseJSON } = require('./ai.error.handler');
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const REQUEST_TIMEOUT_MS = 15_000;  // 15 seconds hard limit (Phase 0 fix)
+const REQUEST_TIMEOUT_MS = 15_000;  // 15 seconds hard limit
 const GEMINI_BASE        = 'https://generativelanguage.googleapis.com/v1beta/models';
 const GROQ_BASE          = 'https://api.groq.com/openai/v1/chat/completions';
+
+// Groq model fallback chain — sorted by speed (fastest last to use as last resort)
+// llama-3.1-8b-instant has much higher rate limits than llama-3.3-70b
+const GROQ_MODEL_CHAIN = [
+  'llama-3.3-70b-versatile',   // best quality
+  'llama-3.1-8b-instant',      // faster, higher rate limits
+  'gemma2-9b-it',              // smallest, rarely rate limited
+];
 
 // ─── Key Validators ───────────────────────────────────────────────────────────
 function isValidKey(key) {
@@ -178,12 +188,8 @@ async function callGemini(systemPrompt, userPrompt, opts = {}) {
   return text;
 }
 
-// ─── Groq Client ─────────────────────────────────────────────────────────────
-async function callGroq(systemPrompt, userPrompt, opts = {}) {
-  const apiKey = getGroqKey();
-  if (!apiKey) throw new Error('GROQ_KEY_MISSING');
-
-  const model   = opts.model || process.env.OPENAI_MODEL || 'llama-3.3-70b-versatile';
+// ─── Groq Client (single model) ──────────────────────────────────────────────
+async function callGroqModel(apiKey, model, systemPrompt, userPrompt, opts = {}) {
   const cleanSys  = sanitizePrompt(systemPrompt);
   const cleanUser = sanitizePrompt(userPrompt);
 
@@ -212,11 +218,11 @@ async function callGroq(systemPrompt, userPrompt, opts = {}) {
   );
 
   if (statusCode === 429) {
-    logger.warn('[AI-CLIENT] Groq rate limit (429)');
+    logger.warn(`[AI-CLIENT] Groq rate limit (429) for model: ${model}`);
     throw new Error('RATE_LIMIT');
   }
   if (statusCode !== 200) {
-    logger.error('[AI-CLIENT] Groq error', { statusCode, body: raw.slice(0, 300) });
+    logger.error('[AI-CLIENT] Groq error', { statusCode, model, body: raw.slice(0, 300) });
     throw new Error(`Groq HTTP ${statusCode}`);
   }
 
@@ -242,16 +248,168 @@ async function callGroq(systemPrompt, userPrompt, opts = {}) {
   return content;
 }
 
-// ─── Unified Send with Provider Retry: Gemini → Groq → Fallback ──────────────
+// ─── Groq Client with Multi-Model Fallback ───────────────────────────────────
+async function callGroq(systemPrompt, userPrompt, opts = {}) {
+  const apiKey = getGroqKey();
+  if (!apiKey) throw new Error('GROQ_KEY_MISSING');
+
+  // Use explicitly requested model, or try the full model chain
+  if (opts.model) {
+    return callGroqModel(apiKey, opts.model, systemPrompt, userPrompt, opts);
+  }
+
+  // Try each model in the chain
+  const preferredModel = process.env.OPENAI_MODEL || GROQ_MODEL_CHAIN[0];
+  const modelChain = [
+    preferredModel,
+    ...GROQ_MODEL_CHAIN.filter(m => m !== preferredModel),
+  ];
+
+  let lastError;
+  for (const model of modelChain) {
+    try {
+      const result = await callGroqModel(apiKey, model, systemPrompt, userPrompt, opts);
+      if (model !== modelChain[0]) {
+        logger.info(`[AI-CLIENT] Groq fallback model succeeded: ${model}`);
+      }
+      return result;
+    } catch (err) {
+      logger.warn(`[AI-CLIENT] Groq model ${model} failed: ${err.message}`);
+      lastError = err;
+      // Only retry on rate limit — other errors don't benefit from different model
+      if (!err.message.includes('RATE_LIMIT') && !err.message.includes('429')) {
+        throw err;
+      }
+      // Brief pause before trying next model
+      await new Promise(r => setTimeout(r, 200));
+    }
+  }
+
+  throw lastError || new Error('GROQ_ALL_MODELS_FAILED');
+}
+
+// ─── Intelligent Local Fallback ───────────────────────────────────────────────
+// When ALL providers fail (rate limit, etc.), generate a meaningful response
+// based on user's message intent instead of a generic error message.
+// opts can include: intentCategory, mode, userName, tasks
+function buildIntelligentFallback(userPrompt, opts = {}) {
+  if (!userPrompt || typeof userPrompt !== 'string') return DEFAULT_FALLBACK;
+
+  const msg             = userPrompt.toLowerCase();
+  const intent          = opts.intentCategory || '';
+  const mode            = opts.mode || '';
+  const name            = opts.userName ? opts.userName.split(' ')[0] : 'صديقي';
+  const tasks           = Array.isArray(opts.tasks) ? opts.tasks : [];
+  const taskList        = tasks.slice(0, 3).map((t, i) => `${i + 1}. ${t.title}`).join('\n');
+  const hasTasks        = tasks.length > 0;
+  const greeting        = `مرحباً ${name}! `;
+
+  // Task/priority management
+  if (
+    intent === 'task_action' ||
+    msg.includes('مهمة') || msg.includes('مهام') ||
+    msg.includes('ترتيب') || msg.includes('أبدأ') || msg.includes('ابدأ') ||
+    msg.includes('أولوية')
+  ) {
+    const taskSection = hasTasks
+      ? `\n\n**مهامك العاجلة دلوقتي:**\n${taskList}\n\nابدأ بالأولى — هي الأكثر أهمية وفق أولوياتك.`
+      : '\n\nلسه ما عندكش مهام مسجّلة. قولي مهامك وهساعدك ترتبها.';
+
+    return `${greeting}أفهم إنك عايز تحدد أولوياتك 📋
+
+**الطريقة الأسرع:**
+1. حدد المهمة الأكثر إلحاحاً (موعد تسليم قريب؟)
+2. ابدأ بالمهمة اللي تاخد أقل من 5 دقائق — خلص منها فوراً
+3. اقسم المهام الكبيرة لخطوات صغيرة
+
+**نصيحة:** افعل أصعب مهمة أول الصبح — دماغك يكون في أفضل حالاته 🐸${taskSection}`;
+  }
+
+  // Fatigue/emotional support
+  if (
+    mode === 'companion' ||
+    intent === 'advice' ||
+    msg.includes('تعبان') || msg.includes('تعب') ||
+    msg.includes('مش قادر') || msg.includes('مرهق') ||
+    msg.includes('ضغط') || msg.includes('توتر') ||
+    msg.includes('حزين') || msg.includes('زهقت')
+  ) {
+    return `${greeting}أنا حاسس بيك 💙 التعب حاجة طبيعية ولازم نأخدها بجدية.
+
+**أول 3 حاجات دلوقتي:**
+1. 🌊 اشرب كوب مية كامل — الجفاف بيسبب تعب مش متوقع
+2. 😮‍💨 خد 5 نفسات عميقة — بجد بتفرق جداً
+3. 🚶 قوم امشي 5 دقائق حتى لو جوه البيت
+
+**للشغل والمهام:**
+- ماتحاولش تخلص كل حاجة وأنت تعبان
+- حدد مهمة واحدة بس اللازم تتعمل النهارده
+- الباقي ممكن يأجل من غير ذنب
+
+إنت مش محتاج تكون بطل كل يوم. استمع لجسمك 🙏`;
+  }
+
+  // Planning/organizing the day
+  if (
+    msg.includes('رتب يومي') || msg.includes('نظم يومي') ||
+    msg.includes('خطة') || msg.includes('جدول') ||
+    msg.includes('plan') || msg.includes('schedule')
+  ) {
+    return `${greeting}هنظم يومك بكل سرور 📅✨
+
+**نموذج يوم ناجح:**
+- 🌅 **الصبح (6-9):** المهام الصعبة والمهمة — دماغك في أفضل حالاته
+- 💼 **النهار (9-12):** الاجتماعات والتواصل
+- 🍽️ **بعد الأكل (12-2):** راحة قصيرة أو مهام خفيفة
+- 🎯 **العصر (2-5):** العمل التركيزي الثاني
+- 🌙 **المساء:** مراجعة اليوم والتخطيط للغد
+
+**لو عندك مهام معينة، قولي:**
+- إيه المهام اللازم تتخلص منها؟
+- فين وقتك الحر؟
+
+وهعمل لك جدول شخصي دقيق مبني على طاقتك 🎯`;
+  }
+
+  // Questions about mood/feelings/status
+  if (
+    msg.includes('حالي') || msg.includes('مزاج') ||
+    msg.includes('شعور') || msg.includes('احساس') ||
+    msg.includes('وضعي') || msg.includes('إزيك')
+  ) {
+    return `${greeting}سؤال مهم — إزيك فعلاً؟ 🤔
+
+عشان أفهم وضعك أكتر، قولي:
+- **طاقتك دلوقتي من 1-10:** كام؟
+- **مزاجك:** كويس، عادي، أو مش كويس؟
+- **إيه أكتر حاجة على دماغك دلوقتي؟**
+
+بناءً على كده هقدر أعطيك تحليل وتوصيات دقيقة لوضعك 💙`;
+  }
+
+  // Generic helpful response for anything else
+  return `${greeting}أنا هنا ومستمع ليك 👋
+
+عشان أساعدك أحسن، قولي أكثر عن اللي محتاجه:
+- مهام ومسؤوليات؟
+- تخطيط وجدول اليوم؟
+- نصيحة أو دعم نفسي؟
+- أو أي حاجة تانية؟
+
+أنا مساعدك الشخصي وعندي وصول لكل بياناتك — مهامك، عاداتك، طاقتك. قولي إيه اللي تحتاجه وهبدأ فوراً 🚀`;
+}
+
+// ─── Unified Send with Provider Retry: Gemini → Groq → Intelligent Fallback ──
 /**
  * sendPrompt(provider, systemPrompt, userPrompt, opts)
  *
  * Retry order:
  *   1. Requested provider
  *   2. Other provider (auto-fallback)
- *   3. Static Arabic fallback string
+ *   3. Intelligent context-aware local response (not generic error)
  *
- * Always returns a string (never throws to caller).
+ * IMPORTANT: When all providers fail due to rate limit, throws RATE_LIMIT_ALL
+ * error so the caller can mark is_fallback = true properly.
  */
 async function sendPrompt(provider, systemPrompt, userPrompt, opts = {}) {
   // Check cache first
@@ -266,6 +424,7 @@ async function sendPrompt(provider, systemPrompt, userPrompt, opts = {}) {
     : ['groq', 'gemini'];
 
   let lastError;
+  let allRateLimited = true;
 
   for (const p of providerOrder) {
     try {
@@ -294,20 +453,28 @@ async function sendPrompt(provider, systemPrompt, userPrompt, opts = {}) {
     } catch (err) {
       logger.warn(`[AI-CLIENT] Provider ${p} failed: ${err.message}`);
       lastError = err;
-      // Continue to next provider
+
+      // Track if this is a non-rate-limit error
+      if (!err.message.includes('RATE_LIMIT') && !err.message.includes('429')) {
+        allRateLimited = false;
+      }
     }
   }
 
-  // All providers failed — return static Arabic fallback
-  logger.error('[AI-CLIENT] All providers failed, using static fallback', {
+  // All providers failed
+  const errorType = allRateLimited ? 'RATE_LIMIT_ALL' : 'ALL_PROVIDERS_FAILED';
+  logger.error(`[AI-CLIENT] All providers failed (${errorType})`, {
     lastError: lastError?.message,
   });
 
-  // Return JSON fallback if json mode
+  // For JSON mode, return a structured fallback but mark it
   if (opts.jsonMode) {
-    return { reply: DEFAULT_FALLBACK, is_fallback: true };
+    return { reply: DEFAULT_FALLBACK, is_fallback: true, _rate_limited: true };
   }
-  return DEFAULT_FALLBACK;
+
+  // Throw so the caller (safeExecute / orchestrator) can properly set is_fallback = true
+  // and use intelligent fallback logic
+  throw new Error(errorType);
 }
 
 // ─── Simple Chat Function (string in → string out) ────────────────────────────
@@ -315,26 +482,33 @@ async function sendPrompt(provider, systemPrompt, userPrompt, opts = {}) {
  * chat(systemPrompt, userMessage, opts) → string
  * Convenience wrapper used by most services.
  * Always returns a non-empty string.
+ *
+ * IMPORTANT: When all providers fail (rate limit), throws RATE_LIMIT_ALL error
+ * so callers (safeExecute, orchestrator) can properly set is_fallback = true.
+ * This prevents silently returning a generic error as if it were a real AI response.
  */
 async function chat(systemPrompt, userMessage, opts = {}) {
   const geminiKey = getGeminiKey();
   const groqKey   = getGroqKey();
 
-  // Determine starting provider
-  const provider = geminiKey ? 'gemini' : groqKey ? 'groq' : null;
+  // Determine starting provider (prefer Groq — faster & cheaper)
+  const provider = groqKey ? 'groq' : geminiKey ? 'gemini' : null;
 
   if (!provider) {
     logger.warn('[AI-CLIENT] No valid API keys — returning fallback');
-    return DEFAULT_FALLBACK;
+    throw new Error('GROQ_KEY_MISSING');
   }
 
+  // Will throw RATE_LIMIT_ALL or ALL_PROVIDERS_FAILED if everything fails
   const result = await sendPrompt(provider, systemPrompt, userMessage, opts);
 
   // Ensure always string
   if (typeof result === 'string') return result;
-  if (result?.reply) return result.reply;
+  if (result?.reply && !result?.is_fallback) return result.reply;
   if (result?.raw)   return result.raw;
-  return DEFAULT_FALLBACK;
+
+  // Should not reach here normally
+  throw new Error('ALL_PROVIDERS_FAILED');
 }
 
 // ─── Latency Probe ────────────────────────────────────────────────────────────
@@ -346,7 +520,7 @@ async function measureLatency(provider) {
     if (provider === 'gemini') {
       await callGemini(sys, user, { maxTokens: 20, temperature: 0, jsonMode: true });
     } else {
-      await callGroq(sys, user, { maxTokens: 20, temperature: 0, jsonMode: true });
+      await callGroqModel(getGroqKey(), GROQ_MODEL_CHAIN[0], sys, user, { maxTokens: 20, temperature: 0, jsonMode: true });
     }
     return Date.now() - start;
   } catch {
@@ -363,4 +537,6 @@ module.exports = {
   isValidKey,
   getGeminiKey,
   getGroqKey,
+  buildIntelligentFallback,
+  GROQ_MODEL_CHAIN,
 };

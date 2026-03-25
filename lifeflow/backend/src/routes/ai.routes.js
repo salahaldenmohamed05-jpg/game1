@@ -252,4 +252,111 @@ router.post('/voice-analysis', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /ai/knowledge?query= — Phase 4: Knowledge layer
+// Returns { answer, source, confidence, related }
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/knowledge', async (req, res) => {
+  try {
+    const { query: q, topics } = req.query;
+
+    const knowledgeService = require('../services/knowledge.service');
+
+    // List all topics
+    if (topics === 'true') {
+      return res.json({ success: true, data: { topics: knowledgeService.getTopics() } });
+    }
+
+    if (!q?.trim()) {
+      return res.status(400).json({ success: false, message: 'يرجى تحديد استعلام (query=...)' });
+    }
+
+    // Load AI client for synthesis fallback
+    let aiClient = null;
+    try {
+      aiClient = { chat: async ({ systemPrompt, userMessage, maxTokens }) =>
+        ({ content: await chat(systemPrompt, userMessage, { maxTokens }) })
+      };
+    } catch (_) {}
+
+    const result = await knowledgeService.query(q.trim(), { useAI: true, aiClient });
+
+    logger.info(`[KNOWLEDGE] user=${req.user.id} q="${q}" conf=${result.confidence}`);
+
+    res.json({
+      success:    true,
+      data:       result,
+      queried_at: new Date().toISOString(),
+    });
+  } catch (error) {
+    logger.error('[KNOWLEDGE] endpoint error:', error);
+    res.status(500).json({ success: false, message: 'فشل في الاستعلام عن المعلومة' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /ai/routines — Phase 3: Routine engine rules
+// POST /ai/routines — Add custom rule
+// POST /ai/routines/evaluate — Evaluate rules for current context
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/routines', async (req, res) => {
+  try {
+    const routineEngine = require('../services/routine.engine.service');
+    const rules = routineEngine.getRulesForUser(req.user.id);
+    res.json({ success: true, data: { rules, count: rules.length } });
+  } catch (error) {
+    logger.error('[ROUTINES] get error:', error);
+    res.status(500).json({ success: false, message: 'فشل في جلب القواعد' });
+  }
+});
+
+router.post('/routines', async (req, res) => {
+  try {
+    const routineEngine = require('../services/routine.engine.service');
+    const { name, description, trigger, action, priority } = req.body;
+
+    if (!name || !trigger || !action) {
+      return res.status(400).json({ success: false, message: 'name, trigger, action مطلوبة' });
+    }
+
+    const rule = routineEngine.addRule(req.user.id, { name, description, trigger, action, priority });
+    res.status(201).json({ success: true, data: rule, message: `تمت إضافة القاعدة "${name}"` });
+  } catch (error) {
+    logger.error('[ROUTINES] add error:', error);
+    res.status(500).json({ success: false, message: 'فشل في إضافة القاعدة' });
+  }
+});
+
+router.post('/routines/evaluate', async (req, res) => {
+  try {
+    const routineEngine = require('../services/routine.engine.service');
+    const { energy, mood, overdue_count, best_streak, last_completed_task } = req.body;
+
+    const context = {
+      energy:               energy ?? 55,
+      mood:                 mood ?? 5,
+      overdue_count:        overdue_count ?? 0,
+      best_streak:          best_streak ?? 0,
+      last_completed_task:  last_completed_task || null,
+      timezone:             req.user.timezone || 'Africa/Cairo',
+    };
+
+    const firedRules = await routineEngine.evaluateRules(req.user.id, context);
+    const actions    = routineEngine.executeActions(firedRules, context);
+
+    res.json({
+      success:      true,
+      data: {
+        fired_count: firedRules.length,
+        actions,
+        context,
+        evaluated_at: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    logger.error('[ROUTINES] evaluate error:', error);
+    res.status(500).json({ success: false, message: 'فشل في تقييم القواعد' });
+  }
+});
+
 module.exports = router;

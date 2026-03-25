@@ -151,6 +151,28 @@ function decide(proposal) {
         }
       }
 
+      // ML: Burnout risk → reduce confidence + set warning flag
+      if (learningEngine.detectBurnoutRisk) {
+        const burnoutRisk = learningEngine.detectBurnoutRisk(userId, { energy, mood });
+        if (burnoutRisk > 0.65) {
+          // High burnout risk: lower confidence for demanding actions
+          const demandingActions = ['create_task', 'schedule_exam', 'schedule_plan'];
+          if (demandingActions.includes(action)) {
+            confidence = Math.max(20, confidence - 15);
+          }
+          if (learningInsight) {
+            learningInsight.burnout_risk    = burnoutRisk;
+            learningInsight.burnout_warning = '⚠️ مستوى الإجهاد مرتفع — يُنصح بتخفيف الحمل';
+          } else {
+            learningInsight = {
+              burnout_risk   : burnoutRisk,
+              burnout_warning: '⚠️ مستوى الإجهاد مرتفع — يُنصح بتخفيف الحمل',
+            };
+          }
+          logger.info(`[DECISION-ENGINE] Burnout risk ${(burnoutRisk*100).toFixed(0)}% detected for user ${userId}`);
+        }
+      }
+
       // Record this decision for future learning
       learningEngine.recordDecision(userId, { action, risk: policy.risk, energy, mood, mode });
     } catch (err) {

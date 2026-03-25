@@ -7,7 +7,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Bell, Crown, Zap, ChevronDown, LogOut, User, Settings, X, Menu, Sun, Moon } from 'lucide-react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import useAuthStore from '../../store/authStore';
 import useThemeStore from '../../store/themeStore';
 import api from '../../utils/api';
@@ -16,6 +16,7 @@ import toast from 'react-hot-toast';
 export default function Header({ onViewChange, onMenuToggle }) {
   const { user, logout } = useAuthStore();
   const { isDark, toggleTheme } = useThemeStore();
+  const queryClient = useQueryClient();
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const notifRef = useRef(null);
@@ -52,6 +53,34 @@ export default function Header({ onViewChange, onMenuToggle }) {
   const plan          = subData?.data?.data?.plan || user?.subscription_plan || 'free';
   const isPremium     = ['premium', 'enterprise', 'trial'].includes(plan);
   const trialDays     = subData?.data?.data?.trial_days_remaining;
+
+  // Mark single notification as read
+  const markReadMutation = useMutation({
+    mutationFn: (id) => api.patch(`/notifications/${id}/read`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['header-notifications'] });
+      queryClient.invalidateQueries({ queryKey: ['notifications'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    },
+  });
+
+  // Navigate to notification action and mark as read
+  const handleNotifClick = (notif) => {
+    const typeRouteMap = {
+      task: 'tasks', reminder: 'tasks', habit: 'habits', smart_habit: 'habits',
+      mood: 'mood', insight: 'insights', coach: 'assistant', ai: 'assistant',
+      morning_check: 'assistant', achievement: 'performance',
+    };
+    const route = notif.action_url
+      || (notif.related_item_type && { task: 'tasks', habit: 'habits', mood: 'mood', insight: 'insights' }[notif.related_item_type])
+      || typeRouteMap[notif.type]
+      || null;
+    if (!notif.is_read) markReadMutation.mutate(notif.id);
+    if (route) {
+      onViewChange?.(route);
+      setShowNotifications(false);
+    }
+  };
 
   const handleLogout = async () => {
     await logout();
@@ -134,37 +163,73 @@ export default function Header({ onViewChange, onMenuToggle }) {
 
             <AnimatePresence>
               {showNotifications && (
-                <motion.div
-                  initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                  className="absolute left-0 top-full mt-2 w-80 glass-card p-4 shadow-2xl z-50"
-                >
-                  <div className="flex items-center justify-between mb-3">
-                    <h3 className="font-semibold text-white text-sm">الإشعارات</h3>
-                    <button onClick={() => setShowNotifications(false)}>
-                      <X size={16} className="text-gray-400" />
-                    </button>
-                  </div>
-                  {notifications.length === 0 ? (
-                    <p className="text-gray-400 text-sm text-center py-4">لا توجد إشعارات جديدة</p>
-                  ) : (
-                    <div className="space-y-2">
-                      {notifications.map(n => (
-                        <div key={n.id} className={`p-3 rounded-xl text-sm ${n.is_read ? 'bg-white/5' : 'bg-primary-500/10 border border-primary-500/20'}`}>
-                          <p className="text-white font-medium">{n.title}</p>
-                          <p className="text-gray-400 text-xs mt-1">{n.body}</p>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  <button
-                    onClick={() => { onViewChange?.('notifications'); setShowNotifications(false); }}
-                    className="w-full mt-3 text-xs text-primary-400 hover:text-primary-300 text-center"
+                <>
+                  {/* Backdrop overlay */}
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    className="fixed inset-0 bg-black/40 z-50"
+                    onClick={() => setShowNotifications(false)}
+                  />
+                  {/* Centered modal */}
+                  <motion.div
+                    initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                    className="fixed inset-0 z-50 flex items-start sm:items-center justify-center pt-16 sm:pt-0 pointer-events-none"
                   >
-                    عرض كل الإشعارات
-                  </button>
-                </motion.div>
+                    <div
+                      className="max-w-md w-full mx-4 glass-card p-4 shadow-2xl rounded-2xl border border-white/10 pointer-events-auto overflow-hidden"
+                      dir="rtl"
+                    >
+                      <div className="flex items-center justify-between mb-3">
+                        <h3 className="font-semibold text-white text-sm">الإشعارات</h3>
+                        <button onClick={() => setShowNotifications(false)}>
+                          <X size={16} className="text-gray-400" />
+                        </button>
+                      </div>
+                      {notifications.length === 0 ? (
+                        <p className="text-gray-400 text-sm text-center py-4">لا توجد إشعارات جديدة</p>
+                      ) : (
+                        <div className="space-y-2 max-h-72 overflow-y-auto overflow-x-hidden scrollbar-hide">
+                          {notifications.map(n => {
+                            const typeIcons = { reminder: '⏰', task: '✅', habit: '🎯', mood: '💙', insight: '💡', coach: '🧠', ai: '🤖', achievement: '🏆', morning_check: '🌅' };
+                            return (
+                              <button
+                                key={n.id}
+                                onClick={() => handleNotifClick(n)}
+                                className={`w-full text-right p-3 rounded-xl text-sm transition-all ${
+                                  !n.is_read
+                                    ? 'bg-primary-500/10 border border-primary-500/20 hover:bg-primary-500/20'
+                                    : 'bg-white/5 hover:bg-white/8 opacity-60'
+                                } cursor-pointer`}
+                              >
+                                <div className="flex items-start gap-2">
+                                  <span className="text-base flex-shrink-0">{typeIcons[n.type] || '🔔'}</span>
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-white font-medium text-xs leading-snug truncate">{n.title}</p>
+                                    {n.body && <p className="text-gray-400 text-xs mt-0.5 line-clamp-1">{n.body}</p>}
+                                    <p className="text-primary-400 text-xs mt-1">اضغط للانتقال ←</p>
+                                  </div>
+                                  {!n.is_read && (
+                                    <div className="w-2 h-2 rounded-full bg-primary-400 flex-shrink-0 mt-1" />
+                                  )}
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                      <button
+                        onClick={() => { onViewChange?.('notifications'); setShowNotifications(false); }}
+                        className="w-full mt-3 text-xs text-primary-400 hover:text-primary-300 text-center"
+                      >
+                        عرض كل الإشعارات
+                      </button>
+                    </div>
+                  </motion.div>
+                </>
               )}
             </AnimatePresence>
           </div>

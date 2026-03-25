@@ -130,7 +130,21 @@ router.get('/predictions', requireFeature('advanced_insights'), async (req, res)
   try {
     // Default simulation with no scenario changes
     const result = await lifeSimulationService.simulateLife(uid(req), {}, tz(req), 14);
-    res.json({ success: true, data: result });
+    // Phase 16: expose top-level ML fields for easier consumption
+    const baseline = result.baseline || {};
+    res.json({
+      success: true,
+      data: {
+        ...result,
+        // Promote key ML fields to top level
+        burnout_risk                 : baseline.burnout_risk ?? result.burnout_risk ?? 'low',
+        task_completion_probability  : baseline.task_completion ?? result.task_completion_probability ?? 0,
+        task_completion              : baseline.task_completion ?? result.task_completion ?? 0,
+        productivity_score           : baseline.productivity_score ?? result.productivity_score ?? 0,
+        mood_score                   : baseline.mood_score ?? result.mood_score ?? 0,
+        energy_score                 : baseline.energy_score ?? result.energy_score ?? 0,
+      },
+    });
   } catch (err) {
     logger.error('predictions error:', err.message);
     res.status(500).json({ success: false, message: 'خطأ في التنبؤات' });

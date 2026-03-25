@@ -25,5 +25,6 @@ router.post('/:id/checkin', habitController.checkIn); // alias without hyphen
 router.post('/:id/log', habitController.logValue);
 
 router.get('/:id/stats', habitController.getHabitStats);
+router.get('/:id/schedule', habitController.getHabitSchedule);
 
 module.exports = router;

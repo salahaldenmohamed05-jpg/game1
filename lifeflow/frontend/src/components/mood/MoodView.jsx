@@ -10,6 +10,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Heart, TrendingUp, Calendar, ChevronDown, ChevronUp } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { moodAPI } from '../../utils/api';
+import useSyncStore from '../../store/syncStore';
 import toast from 'react-hot-toast';
 
 const MOOD_EMOJIS = [
@@ -37,6 +38,7 @@ export default function MoodView() {
   const [note, setNote]                       = useState('');
   const [showHistory, setShowHistory]         = useState(false);
   const queryClient = useQueryClient();
+  const { invalidateAll, recordAction } = useSyncStore();
 
   const { data: todayData } = useQuery({
     queryKey: ['mood-today'],
@@ -61,9 +63,8 @@ export default function MoodView() {
       note,
     }),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['mood-today'] });
-      queryClient.invalidateQueries({ queryKey: ['mood-stats'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      invalidateAll();
+      recordAction('mood_logged');
       toast.success(data?.message || 'تم تسجيل مزاجك 💙');
       setNote('');
       setSelectedEmotions([]);
@@ -105,7 +106,7 @@ export default function MoodView() {
   const currentEmoji = MOOD_EMOJIS.find(m => m.score === selectedScore);
 
   return (
-    <div className="space-y-6 max-w-3xl mx-auto" dir="rtl">
+    <div className="space-y-5 max-w-3xl mx-auto" dir="rtl">
       {/* Header */}
       <div>
         <h2 className="text-2xl font-black text-white">تتبع المزاج</h2>

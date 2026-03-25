@@ -44,6 +44,12 @@ const Notification = sequelize.define('Notification', {
   is_sent: { type: DataTypes.BOOLEAN, defaultValue: false },
   is_read: { type: DataTypes.BOOLEAN, defaultValue: false },
   channel: { type: DataTypes.STRING(10), defaultValue: 'in_app' },
+  // Phase 16: Smart notification fields
+  reminder_before: { type: DataTypes.INTEGER, allowNull: true, comment: 'Minutes before event to send reminder' },
+  dynamic_message: { type: DataTypes.TEXT, allowNull: true, comment: 'AI-generated dynamic message content' },
+  priority: { type: DataTypes.STRING(10), defaultValue: 'medium', comment: 'low|medium|high|urgent' },
+  related_item_id: { type: DataTypes.STRING(36), allowNull: true, comment: 'task_id or habit_id' },
+  related_item_type: { type: DataTypes.STRING(10), allowNull: true, comment: 'task|habit' },
 }, { tableName: 'notifications', underscored: false });
 
 module.exports = { Insight, Notification };

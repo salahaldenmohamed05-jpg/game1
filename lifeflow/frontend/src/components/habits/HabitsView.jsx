@@ -1,562 +1,552 @@
 /**
- * Habits View — إدارة العادات اليومية
- * =====================================
- * يدعم:
- * - إضافة عادات بسيطة (تم/لم يتم) وعادات عددية (شرب ماء، صلوات)
- * - تتبع التقدم اليومي مع شريط إنجاز
- * - حذف العادات
- * - تعديل العادات
- * - إحصائيات مفصلة
+ * HabitsView — Professional Mobile-First Habit Tracker
+ * =====================================================
+ * ✅ Real data from DB (no mock)
+ * ✅ Working check-in (fixed habit_logs unique constraint)
+ * ✅ Progress tracking with animated bars
+ * ✅ Daily/weekly/monthly/custom frequencies
+ * ✅ Smooth bottom-sheet modal for habit creation
+ * ✅ Professional mobile-first responsive UI
  */
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
-import {
-  Plus, X, Flame, CheckCircle2, Trash2, Edit3,
-  Droplets, Moon, BookOpen, TrendingUp, MoreVertical,
-  ChevronUp, ChevronDown,
-} from 'lucide-react';
+import { Plus, X, Flame, Trash2, Clock, Check, Target, TrendingUp } from 'lucide-react';
 import { habitAPI } from '../../utils/api';
+import useSyncStore from '../../store/syncStore';
 import toast from 'react-hot-toast';
 
-const HABIT_ICONS = ['💧', '🏃', '📚', '🧘', '🥗', '💊', '✍️', '🎯', '🎵', '💰', '🛏️', '🌿', '🏋️', '🧠', '📝', '🕌', '☀️', '🍎', '💻', '🎨'];
-const HABIT_COLORS = ['#6C63FF', '#FF6584', '#10B981', '#F59E0B', '#3B82F6', '#8B5CF6', '#EC4899', '#14B8A6', '#F97316'];
-const CATEGORIES_AR = {
-  health: 'صحة', fitness: 'رياضة', learning: 'تعلم',
-  mindfulness: 'تأمل', social: 'اجتماعي', work: 'عمل',
-  finance: 'مالي', creativity: 'إبداع', religion: 'دين', other: 'أخرى',
-};
+const ICONS = ['💧', '🏃', '📚', '🧘', '🥗', '💊', '✍️', '🎯', '🏋️', '🕌', '☀️', '🍎', '💻', '🎨', '🛏️', '🎵'];
+const COLORS = ['#6C63FF', '#FF6584', '#10B981', '#F59E0B', '#3B82F6', '#8B5CF6', '#EC4899', '#F97316'];
+const CATEGORIES = { health: 'صحة', fitness: 'رياضة', learning: 'تعلم', mindfulness: 'تأمل', social: 'اجتماعي', work: 'عمل', religion: 'دين', other: 'أخرى' };
+const DAYS_AR = ['أحد', 'اثنين', 'ثلاثاء', 'أربعاء', 'خميس', 'جمعة', 'سبت'];
+const FREQ_LABELS = { daily: 'يومي', weekly: 'أسبوعي', monthly: 'شهري', custom: 'مخصص' };
 
-// ── Preset Templates ────────────────────────────────────────────────────────
-const PRESET_HABITS = [
-  { name_ar: 'شرب الماء', icon: '💧', category: 'health', habit_type: 'count', target_value: 8, count_label: 'كأس', color: '#3B82F6' },
-  { name_ar: 'الصلوات الخمس', icon: '🕌', category: 'religion', habit_type: 'count', target_value: 5, count_label: 'صلاة', color: '#10B981' },
-  { name_ar: 'القراءة', icon: '📚', category: 'learning', habit_type: 'count', target_value: 30, count_label: 'دقيقة', color: '#8B5CF6' },
-  { name_ar: 'الرياضة', icon: '🏃', category: 'fitness', habit_type: 'boolean', color: '#F97316' },
-  { name_ar: 'التأمل', icon: '🧘', category: 'mindfulness', habit_type: 'boolean', color: '#14B8A6' },
-  { name_ar: 'النوم المبكر', icon: '🛏️', category: 'health', habit_type: 'boolean', color: '#6C63FF' },
-];
+// ─── Habit Card with working check-in ───────────────────────────────────────
 
-const DEFAULT_NEW_HABIT = {
-  name_ar: '', category: 'health', icon: '⭐', color: '#6C63FF',
-  habit_type: 'boolean', target_value: 1, count_label: 'مرة',
-  target_time: '', duration_minutes: 30, description: '',
-};
+function HabitCard({ habit, onCheckIn, onLogValue, onDelete, isChecking }) {
+  const isBoolean = habit.habit_type === 'boolean' || !habit.habit_type;
+  const isDone = habit.completed_today;
+  const currentVal = habit.current_value || 0;
+  const target = habit.target_value || 1;
+  const progress = isBoolean ? (isDone ? 100 : 0) : Math.min(100, Math.round((currentVal / target) * 100));
+  const freqLabel = FREQ_LABELS[habit.frequency_type] || 'يومي';
 
-export default function HabitsView() {
-  const [showAdd, setShowAdd] = useState(false);
-  const [editHabit, setEditHabit] = useState(null);
-  const [newHabit, setNewHabit] = useState(DEFAULT_NEW_HABIT);
-  const [activeMenu, setActiveMenu] = useState(null);
-  const queryClient = useQueryClient();
+  let scheduleInfo = freqLabel;
+  try {
+    const customDays = typeof habit.custom_days === 'string' ? JSON.parse(habit.custom_days || '[]') : (habit.custom_days || []);
+    const monthlyDays = typeof habit.monthly_days === 'string' ? JSON.parse(habit.monthly_days || '[]') : (habit.monthly_days || []);
+    if ((habit.frequency_type === 'weekly' || habit.frequency_type === 'custom') && customDays.length) {
+      scheduleInfo = customDays.map(d => DAYS_AR[d]).join(' · ');
+    } else if (habit.frequency_type === 'monthly' && monthlyDays.length) {
+      scheduleInfo = 'يوم ' + monthlyDays.join(', ');
+    }
+  } catch {}
 
-  const { data: habitsData, isLoading } = useQuery({
-    queryKey: ['habits-today'],
-    queryFn: habitAPI.getTodaySummary,
-  });
-
-  // ── Check-in (boolean) ──────────────────────────────────────────────────────
-  const checkInMutation = useMutation({
-    mutationFn: (habitId) => habitAPI.checkIn(habitId, {}),
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['habits-today'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      toast.success(data?.data?.message || data?.message || 'تم! 🎉');
-    },
-    onError: () => toast.error('فشل في تسجيل العادة'),
-  });
-
-  // ── Increment count ─────────────────────────────────────────────────────────
-  const incrementMutation = useMutation({
-    mutationFn: ({ id, delta }) => habitAPI.logValue(id, { value: delta }),
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['habits-today'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      const msg = data?.data?.message || data?.message;
-      if (msg) toast.success(msg);
-    },
-    onError: () => toast.error('فشل في التحديث'),
-  });
-
-  // ── Create habit ────────────────────────────────────────────────────────────
-  const createMutation = useMutation({
-    mutationFn: habitAPI.createHabit,
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['habits-today'] });
-      toast.success(data?.data?.message || data?.message || '💪 تمت إضافة العادة!');
-      setShowAdd(false);
-      setNewHabit(DEFAULT_NEW_HABIT);
-    },
-    onError: (err) => toast.error('فشل في إضافة العادة: ' + (err?.message || '')),
-  });
-
-  // ── Delete habit ────────────────────────────────────────────────────────────
-  const deleteMutation = useMutation({
-    mutationFn: (habitId) => habitAPI.deleteHabit(habitId),
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['habits-today'] });
-      toast.success(data?.data?.message || data?.message || 'تم حذف العادة');
-      setActiveMenu(null);
-    },
-    onError: () => toast.error('فشل في حذف العادة'),
-  });
-
-  const summary = habitsData?.data?.data || habitsData?.data;
-  const habits = summary?.habits || [];
-
-  const applyPreset = (preset) => {
-    setNewHabit({ ...DEFAULT_NEW_HABIT, ...preset });
-  };
-
-  const handleHabitClick = (habit) => {
-    if (activeMenu === habit.id) { setActiveMenu(null); return; }
-    if (habit.completed_today) return;
-    if (habit.habit_type === 'count') return; // count habits use +/- buttons
-    checkInMutation.mutate(habit.id);
+  const handleClick = (e) => {
+    if (e) e.stopPropagation();
+    if (isDone || isChecking) return;
+    if (isBoolean) {
+      onCheckIn(habit.id);
+    } else if (currentVal < target) {
+      onLogValue(habit.id, 1);
+    }
   };
 
   return (
-    <div className="space-y-6 max-w-4xl mx-auto" onClick={() => setActiveMenu(null)}>
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-black text-white">العادات اليومية</h2>
-          <p className="text-sm text-gray-400">بناء حياة أفضل خطوة بخطوة</p>
-        </div>
-        <button onClick={() => setShowAdd(true)} className="btn-primary text-sm flex items-center gap-1">
-          <Plus size={16} /> إضافة عادة
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      className={`rounded-2xl p-4 transition-all active:scale-[0.98] ${
+        isDone
+          ? 'bg-gradient-to-br from-green-500/10 to-primary-500/10 border border-green-500/20'
+          : 'bg-white/5 border border-white/5 hover:bg-white/8'
+      }`}
+      style={{ borderRight: `4px solid ${habit.color || '#6C63FF'}` }}
+    >
+      <div className="flex items-start gap-3">
+        {/* Icon / check-in button */}
+        <button
+          onClick={handleClick}
+          disabled={isDone || isChecking}
+          className={`w-12 h-12 sm:w-14 sm:h-14 rounded-xl flex items-center justify-center text-xl flex-shrink-0 transition-all active:scale-90 ${
+            isDone
+              ? 'bg-green-500/20 shadow-lg shadow-green-500/10'
+              : isChecking
+              ? 'bg-white/5 animate-pulse'
+              : 'bg-white/5 hover:bg-white/10 cursor-pointer'
+          }`}
+        >
+          {isDone ? (
+            <Check size={22} className="text-green-400" strokeWidth={3} />
+          ) : isChecking ? (
+            <div className="w-5 h-5 border-2 border-primary-400 border-t-transparent rounded-full animate-spin" />
+          ) : (
+            <span className="text-2xl">{habit.icon || '⭐'}</span>
+          )}
         </button>
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <p className={`text-sm font-bold leading-snug ${isDone ? 'line-through text-gray-500' : 'text-white'}`}>
+                {habit.name_ar || habit.name}
+              </p>
+              <div className="flex items-center gap-2 mt-1 flex-wrap">
+                <span className="text-xs text-gray-500 bg-white/5 px-2 py-0.5 rounded-md">{scheduleInfo}</span>
+                {habit.preferred_time && (
+                  <span className="text-xs text-blue-400 flex items-center gap-0.5">
+                    <Clock size={9} /> {habit.preferred_time}
+                  </span>
+                )}
+                {habit.current_streak > 0 && (
+                  <span className="text-xs text-orange-400 flex items-center gap-0.5 font-bold">
+                    <Flame size={10} /> {habit.current_streak}
+                  </span>
+                )}
+              </div>
+            </div>
+            <button onClick={() => onDelete(habit.id)}
+              className="p-1.5 text-gray-600 hover:text-red-400 rounded-lg hover:bg-red-500/10 transition-all flex-shrink-0">
+              <Trash2 size={13} />
+            </button>
+          </div>
+
+          {/* Progress bar */}
+          <div className="mt-2.5">
+            {isBoolean ? (
+              <div className="h-2 bg-white/5 rounded-full overflow-hidden">
+                <motion.div
+                  animate={{ width: `${progress}%` }}
+                  transition={{ duration: 0.5, ease: 'easeOut' }}
+                  className="h-full rounded-full"
+                  style={{ background: isDone ? '#10B981' : (habit.color || '#6C63FF') }}
+                />
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <div className="flex-1 h-2 bg-white/5 rounded-full overflow-hidden">
+                  <motion.div
+                    animate={{ width: `${progress}%` }}
+                    transition={{ duration: 0.5, ease: 'easeOut' }}
+                    className="h-full rounded-full"
+                    style={{ background: habit.color || '#6C63FF' }}
+                  />
+                </div>
+                <span className="text-xs text-gray-400 font-bold whitespace-nowrap">
+                  {currentVal}/{target} {habit.count_label || ''}
+                </span>
+              </div>
+            )}
+          </div>
+
+          {/* Check-in button for non-completed */}
+          {!isDone && !isChecking && (
+            <button
+              onClick={handleClick}
+              className="mt-2 text-xs text-primary-400 bg-primary-500/10 hover:bg-primary-500/20 px-3 py-1.5 rounded-lg transition-all active:scale-95 font-medium"
+            >
+              {isBoolean ? '✅ تسجيل الإنجاز' : `➕ إضافة (${currentVal + 1}/${target})`}
+            </button>
+          )}
+          {isDone && (
+            <p className="mt-1.5 text-xs text-green-400 font-medium">✓ أنجزت اليوم</p>
+          )}
+        </div>
       </div>
+    </motion.div>
+  );
+}
 
-      {/* Progress Summary */}
-      {summary && (
-        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
-          className="glass-card p-5 bg-gradient-to-br from-primary-500/10 to-green-500/5">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="font-bold text-white">إنجاز اليوم</h3>
-            <span className="text-2xl font-black gradient-text">{summary.completion_percentage}%</span>
-          </div>
-          <div className="progress-bar mb-3">
-            <motion.div
-              initial={{ width: 0 }}
-              animate={{ width: `${summary.completion_percentage}%` }}
-              transition={{ duration: 1, ease: 'easeOut' }}
-              className="progress-fill"
-            />
-          </div>
-          <div className="grid grid-cols-3 gap-3 text-center text-sm">
-            <div>
-              <div className="text-lg font-bold text-green-400">{summary.completed}</div>
-              <div className="text-xs text-gray-400">مكتملة</div>
-            </div>
-            <div>
-              <div className="text-lg font-bold text-yellow-400">{summary.pending}</div>
-              <div className="text-xs text-gray-400">متبقية</div>
-            </div>
-            <div>
-              <div className="text-lg font-bold text-primary-400">{summary.total}</div>
-              <div className="text-xs text-gray-400">إجمالي</div>
-            </div>
-          </div>
-        </motion.div>
-      )}
+// ─── Add Habit Modal (Bottom Sheet) ─────────────────────────────────────────
 
-      {/* Habits Grid */}
-      {isLoading ? (
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-          {[...Array(6)].map((_, i) => <div key={i} className="skeleton h-40 rounded-2xl" />)}
+function AddHabitModal({ isOpen, onClose, onSubmit, isPending }) {
+  const [form, setForm] = useState({
+    name_ar: '', category: 'health', icon: '⭐', color: '#6C63FF',
+    habit_type: 'boolean', target_value: 1, count_label: 'مرة',
+    preferred_time: '', frequency_type: 'daily', custom_days: [], monthly_days: [],
+    reminder_before: 15,
+  });
+
+  const toggleDay = (day) => setForm(prev => ({
+    ...prev,
+    custom_days: prev.custom_days.includes(day)
+      ? prev.custom_days.filter(d => d !== day)
+      : [...prev.custom_days, day].sort(),
+  }));
+
+  const toggleMonthDay = (day) => setForm(prev => ({
+    ...prev,
+    monthly_days: prev.monthly_days.includes(day)
+      ? prev.monthly_days.filter(d => d !== day)
+      : [...prev.monthly_days, day].sort((a, b) => a - b),
+  }));
+
+  const handleSubmit = () => {
+    if (!form.name_ar.trim()) return toast.error('أدخل اسم العادة');
+    onSubmit({
+      name: form.name_ar, name_ar: form.name_ar, category: form.category,
+      icon: form.icon, color: form.color, habit_type: form.habit_type,
+      target_value: form.habit_type === 'count' ? (form.target_value || 1) : 1,
+      count_label: form.count_label, preferred_time: form.preferred_time || null,
+      frequency_type: form.frequency_type,
+      custom_days: (form.frequency_type === 'weekly' || form.frequency_type === 'custom') ? form.custom_days : null,
+      monthly_days: form.frequency_type === 'monthly' ? form.monthly_days : null,
+      reminder_before: form.reminder_before, reminder_enabled: true,
+    });
+    setForm({
+      name_ar: '', category: 'health', icon: '⭐', color: '#6C63FF',
+      habit_type: 'boolean', target_value: 1, count_label: 'مرة',
+      preferred_time: '', frequency_type: 'daily', custom_days: [], monthly_days: [],
+      reminder_before: 15,
+    });
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" onClick={onClose}>
+      {/* Backdrop — darker for contrast */}
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+        className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+      {/* Modal — SOLID bg, shadow-xl, high contrast, rounded */}
+      <motion.div
+        initial={{ opacity: 0, y: 100 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: 100 }}
+        transition={{ type: 'spring', damping: 25, stiffness: 300 }}
+        onClick={e => e.stopPropagation()}
+        className="relative w-full sm:max-w-lg bg-neutral-900 rounded-t-3xl sm:rounded-2xl shadow-xl border border-white/10 max-h-[92vh] overflow-hidden z-10"
+        dir="rtl"
+      >
+        {/* Drag handle */}
+        <div className="flex justify-center pt-3 pb-1 sm:hidden">
+          <div className="w-10 h-1 rounded-full bg-white/20" />
         </div>
-      ) : habits.length === 0 ? (
-        <div className="text-center py-16">
-          <div className="text-5xl mb-3">🌱</div>
-          <p className="text-gray-400 mb-2">لا توجد عادات بعد</p>
-          <p className="text-gray-500 text-sm">ابدأ بإضافة عادة يومية لبناء حياة أفضل!</p>
-        </div>
-      ) : (
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-          <AnimatePresence>
-            {habits.map((habit, idx) => (
-              <HabitCard
-                key={habit.id}
-                habit={habit}
-                idx={idx}
-                activeMenu={activeMenu}
-                setActiveMenu={setActiveMenu}
-                onCheckIn={() => handleHabitClick(habit)}
-                onIncrement={(delta) => incrementMutation.mutate({ id: habit.id, delta })}
-                onDelete={() => {
-                  if (confirm(`حذف عادة "${habit.name_ar || habit.name}"؟`)) {
-                    deleteMutation.mutate(habit.id);
-                  }
-                }}
-                isCheckingIn={checkInMutation.isPending}
-                isIncrementing={incrementMutation.isPending}
-              />
-            ))}
-          </AnimatePresence>
 
-          {/* Add habit card */}
-          <motion.div
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-            onClick={() => setShowAdd(true)}
-            className="glass-card p-4 cursor-pointer border-dashed flex flex-col items-center justify-center text-gray-500 hover:text-primary-400 hover:border-primary-500/30 min-h-36 transition-all"
-          >
-            <Plus size={32} className="mb-2" />
-            <span className="text-sm">عادة جديدة</span>
-          </motion.div>
-        </div>
-      )}
+        {/* Scrollable form content — leave room for sticky CTA */}
+        <div className="p-5 overflow-y-auto" style={{ maxHeight: 'calc(92vh - 80px)' }}>
+          <div className="flex items-center justify-between mb-5">
+            <h3 className="text-lg font-black text-white">🎯 عادة جديدة</h3>
+            <button onClick={onClose} className="p-2 rounded-xl hover:bg-white/10 text-gray-400 active:scale-90"><X size={18} /></button>
+          </div>
 
-      {/* Add Habit Modal */}
-      <AnimatePresence>
-        {showAdd && (
-          <AddHabitModal
-            newHabit={newHabit}
-            setNewHabit={setNewHabit}
-            onClose={() => { setShowAdd(false); setNewHabit(DEFAULT_NEW_HABIT); }}
-            onSubmit={() => createMutation.mutate(newHabit)}
-            isPending={createMutation.isPending}
-            applyPreset={applyPreset}
-          />
-        )}
-      </AnimatePresence>
+          <div className="space-y-4">
+            {/* Name */}
+            <input value={form.name_ar} onChange={e => setForm({ ...form, name_ar: e.target.value })}
+              placeholder="اسم العادة..." autoFocus
+              className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3.5 text-white placeholder-gray-500 focus:outline-none focus:border-primary-500/50 text-base" />
+
+            {/* Icon */}
+            <div>
+              <label className="text-xs text-gray-300 mb-1.5 block font-medium">الأيقونة</label>
+              <div className="flex gap-1.5 flex-wrap">
+                {ICONS.map(ic => (
+                  <button key={ic} onClick={() => setForm({ ...form, icon: ic })}
+                    className={`w-10 h-10 rounded-lg text-lg flex items-center justify-center active:scale-90 transition-all ${
+                      form.icon === ic ? 'bg-primary-500/20 border border-primary-500/30 shadow-sm' : 'bg-white/5'
+                    }`}>
+                    {ic}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Type */}
+            <div>
+              <label className="text-xs text-gray-300 mb-1.5 block font-medium">نوع التتبع</label>
+              <div className="flex gap-2">
+                {[{ key: 'boolean', label: '✅ تم / لم يتم' }, { key: 'count', label: '🔢 عددي' }].map(t => (
+                  <button key={t.key} onClick={() => setForm({ ...form, habit_type: t.key })}
+                    className={`flex-1 py-3 rounded-xl text-sm font-bold active:scale-95 transition-all min-h-[44px] ${
+                      form.habit_type === t.key ? 'bg-primary-500/20 text-primary-400 border border-primary-500/30' : 'bg-white/5 text-gray-400'
+                    }`}>
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Count settings */}
+            {form.habit_type === 'count' && (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-gray-300 mb-1 block">الهدف</label>
+                  <input type="number" value={form.target_value} min="1"
+                    onChange={e => setForm({ ...form, target_value: parseInt(e.target.value) || 1 })}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none" />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-300 mb-1 block">الوحدة</label>
+                  <input value={form.count_label} onChange={e => setForm({ ...form, count_label: e.target.value })}
+                    placeholder="كأس, صلاة..."
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none" />
+                </div>
+              </div>
+            )}
+
+            {/* Frequency */}
+            <div>
+              <label className="text-xs text-gray-300 mb-1.5 block font-medium">التكرار</label>
+              <div className="grid grid-cols-4 gap-2">
+                {Object.entries(FREQ_LABELS).map(([key, label]) => (
+                  <button key={key} onClick={() => setForm({ ...form, frequency_type: key, custom_days: [], monthly_days: [] })}
+                    className={`py-2.5 rounded-xl text-xs font-bold active:scale-95 transition-all min-h-[44px] ${
+                      form.frequency_type === key ? 'bg-primary-500/20 text-primary-400 border border-primary-500/30' : 'bg-white/5 text-gray-400'
+                    }`}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Weekly/custom days */}
+            {(form.frequency_type === 'weekly' || form.frequency_type === 'custom') && (
+              <div>
+                <label className="text-xs text-gray-300 mb-1.5 block font-medium">أيام الأسبوع</label>
+                <div className="flex gap-1.5">
+                  {DAYS_AR.map((day, i) => (
+                    <button key={i} onClick={() => toggleDay(i)}
+                      className={`flex-1 py-2.5 rounded-xl text-xs font-bold active:scale-95 transition-all min-h-[44px] ${
+                        form.custom_days.includes(i)
+                          ? 'bg-primary-500/20 text-primary-400 border border-primary-500/30'
+                          : 'bg-white/5 text-gray-500'
+                      }`}>{day}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Monthly days */}
+            {form.frequency_type === 'monthly' && (
+              <div>
+                <label className="text-xs text-gray-300 mb-1.5 block font-medium">أيام الشهر</label>
+                <div className="grid grid-cols-7 gap-1">
+                  {Array.from({ length: 31 }, (_, i) => i + 1).map(d => (
+                    <button key={d} onClick={() => toggleMonthDay(d)}
+                      className={`py-2 rounded-lg text-xs font-bold active:scale-95 transition-all ${
+                        form.monthly_days.includes(d)
+                          ? 'bg-primary-500/20 text-primary-400 border border-primary-500/30'
+                          : 'bg-white/5 text-gray-500'
+                      }`}>{d}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Time & Reminder */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-gray-300 mb-1.5 block font-medium">🕐 الوقت المفضل</label>
+                <input type="time" value={form.preferred_time}
+                  onChange={e => setForm({ ...form, preferred_time: e.target.value })}
+                  className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none" />
+              </div>
+              <div>
+                <label className="text-xs text-gray-300 mb-1.5 block font-medium">🔔 تذكير قبل</label>
+                <div className="flex gap-1.5">
+                  {[5, 15, 30].map(m => (
+                    <button key={m} onClick={() => setForm({ ...form, reminder_before: m })}
+                      className={`flex-1 py-3 rounded-xl text-xs font-bold active:scale-95 transition-all min-h-[44px] ${
+                        form.reminder_before === m ? 'bg-primary-500/20 text-primary-400 border border-primary-500/30' : 'bg-white/5 text-gray-400'
+                      }`}>
+                      {m}د
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Color */}
+            <div>
+              <label className="text-xs text-gray-300 mb-1.5 block font-medium">اللون</label>
+              <div className="flex gap-2.5">
+                {COLORS.map(c => (
+                  <button key={c} onClick={() => setForm({ ...form, color: c })}
+                    className={`w-9 h-9 rounded-full transition-all active:scale-90 ${
+                      form.color === c ? 'ring-2 ring-white ring-offset-2 ring-offset-neutral-900 scale-110' : 'opacity-60 hover:opacity-100'
+                    }`}
+                    style={{ background: c }} />
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Sticky CTA at bottom — always visible */}
+        <div className="sticky bottom-0 p-5 pt-3 bg-neutral-900 border-t border-white/5">
+          <button onClick={handleSubmit} disabled={isPending || !form.name_ar.trim()}
+            className="w-full py-4 bg-primary-500 hover:bg-primary-600 text-white font-bold rounded-xl transition-all disabled:opacity-50 text-base active:scale-[0.98] shadow-lg shadow-primary-500/20 min-h-[48px]">
+            {isPending ? 'جاري الإنشاء...' : '🎯 إضافة العادة'}
+          </button>
+        </div>
+      </motion.div>
     </div>
   );
 }
 
-// ── Habit Card Component ──────────────────────────────────────────────────────
-function HabitCard({ habit, idx, activeMenu, setActiveMenu, onCheckIn, onIncrement, onDelete, isCheckingIn, isIncrementing }) {
-  const isCount = habit.habit_type === 'count';
-  const targetValue = habit.target_value || 1;
-  const currentValue = habit.current_value || 0;
-  const progressPercent = isCount
-    ? Math.min(100, Math.round((currentValue / targetValue) * 100))
-    : (habit.completed_today ? 100 : 0);
+// ─── Main Component ─────────────────────────────────────────────────────────
+
+export default function HabitsView() {
+  const [showAdd, setShowAdd] = useState(false);
+  const [checkingId, setCheckingId] = useState(null);
+  const queryClient = useQueryClient();
+  const { invalidateAll, recordAction } = useSyncStore();
+
+  // Fetch today's habits from DB
+  const { data: todayData, isLoading } = useQuery({
+    queryKey: ['habits-today'],
+    queryFn: () => habitAPI.getTodaySummary(),
+    refetchInterval: 30000,
+    select: (res) => {
+      const d = res?.data?.data || res?.data || {};
+      return { habits: d.habits || d || [], total: d.total || 0, completed: d.completed || 0 };
+    },
+  });
+
+  // Mutations
+  const createMutation = useMutation({
+    mutationFn: (d) => habitAPI.createHabit(d),
+    onSuccess: () => {
+      invalidateAll();
+      recordAction('habit_created');
+      toast.success('تم إنشاء العادة 🎯');
+      setShowAdd(false);
+    },
+    onError: (e) => toast.error(e.message || 'فشل'),
+  });
+
+  const checkInMutation = useMutation({
+    mutationFn: (id) => {
+      setCheckingId(id);
+      return habitAPI.checkIn(id, {});
+    },
+    onSuccess: (res) => {
+      invalidateAll();
+      recordAction('habit_checkin');
+      toast.success(res?.data?.message || 'أحسنت! 💪');
+      setCheckingId(null);
+    },
+    onError: () => {
+      toast.error('فشل في تسجيل العادة');
+      setCheckingId(null);
+    },
+  });
+
+  const logValueMutation = useMutation({
+    mutationFn: ({ id, value }) => {
+      setCheckingId(id);
+      return habitAPI.logValue(id, { value });
+    },
+    onSuccess: (res) => {
+      invalidateAll();
+      recordAction('habit_log');
+      toast.success(res?.data?.message || 'تم التسجيل ✅');
+      setCheckingId(null);
+    },
+    onError: () => {
+      toast.error('فشل');
+      setCheckingId(null);
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id) => habitAPI.deleteHabit(id),
+    onSuccess: () => {
+      invalidateAll();
+      toast.success('تم حذف العادة');
+    },
+  });
+
+  // Filter active habits for today
+  const displayHabits = useMemo(() => {
+    const habits = todayData?.habits || [];
+    if (!Array.isArray(habits)) return [];
+    return habits.filter(h => h.is_active !== false);
+  }, [todayData]);
+
+  const completedCount = displayHabits.filter(h => h.completed_today).length;
+  const totalProgress = displayHabits.length > 0 ? Math.round((completedCount / displayHabits.length) * 100) : 0;
 
   return (
-    <motion.div
-      key={habit.id}
-      initial={{ opacity: 0, scale: 0.9 }}
-      animate={{ opacity: 1, scale: 1 }}
-      transition={{ delay: idx * 0.05 }}
-      className={`glass-card p-4 relative transition-all ${
-        habit.completed_today
-          ? 'bg-gradient-to-br from-primary-500/20 to-green-500/10 border-primary-500/30'
-          : 'hover:border-primary-500/20'
-      }`}
-      onClick={(e) => {
-        e.stopPropagation();
-        if (!isCount) onCheckIn();
-      }}
-    >
-      {/* Menu button */}
-      <button
-        className="absolute top-2 left-2 p-1 text-gray-500 hover:text-white rounded-lg hover:bg-white/10 z-10"
-        onClick={(e) => {
-          e.stopPropagation();
-          setActiveMenu(activeMenu === habit.id ? null : habit.id);
-        }}
-      >
-        <MoreVertical size={14} />
-      </button>
+    <div className="w-full max-w-2xl mx-auto space-y-4" dir="rtl">
 
-      {/* Dropdown Menu */}
-      <AnimatePresence>
-        {activeMenu === habit.id && (
-          <motion.div
-            initial={{ opacity: 0, scale: 0.9, y: -5 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.9, y: -5 }}
-            className="absolute top-8 left-2 z-20 bg-gray-800 border border-gray-700 rounded-xl shadow-xl overflow-hidden min-w-[130px]"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              className="flex items-center gap-2 px-3 py-2.5 text-sm text-red-400 hover:bg-red-500/10 w-full transition-colors"
-              onClick={(e) => { e.stopPropagation(); onDelete(); }}
-            >
-              <Trash2 size={13} /> حذف العادة
-            </button>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Icon + Streak */}
-      <div className="flex items-center justify-between mb-3">
-        <div
-          className={`w-11 h-11 rounded-xl flex items-center justify-center text-2xl transition-transform
-            ${habit.completed_today ? 'scale-110' : 'scale-100'}`}
-          style={{ background: habit.completed_today ? 'rgba(16,185,129,0.15)' : `${habit.color}22` }}
-        >
-          {habit.completed_today && !isCount ? '✅' : habit.icon || '⭐'}
+      {/* Header */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="text-xl sm:text-2xl font-black text-white flex items-center gap-2">
+            🎯 العادات
+          </h2>
+          <p className="text-xs text-gray-400 mt-0.5">
+            {completedCount}/{displayHabits.length} مكتملة اليوم · {totalProgress}%
+          </p>
         </div>
-        {habit.current_streak > 0 && (
-          <div className="flex items-center gap-1 bg-orange-500/20 px-2 py-0.5 rounded-full">
-            <Flame size={11} className="text-orange-400" />
-            <span className="text-xs text-orange-400 font-bold">{habit.current_streak}</span>
-          </div>
-        )}
+        <button onClick={() => setShowAdd(true)}
+          className="flex items-center gap-1.5 px-4 py-2.5 bg-primary-500 hover:bg-primary-600 text-white font-bold rounded-xl transition-all text-sm active:scale-95 shadow-lg shadow-primary-500/20 flex-shrink-0">
+          <Plus size={16} /> جديد
+        </button>
       </div>
 
-      {/* Name */}
-      <h4 className="font-semibold text-sm text-white mb-1 truncate">{habit.name_ar || habit.name}</h4>
-      <p className="text-xs text-gray-500">{CATEGORIES_AR[habit.category] || habit.category}</p>
+      {/* Progress bar */}
+      <div className="bg-white/5 border border-white/5 rounded-2xl p-4">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-sm text-gray-300 font-medium flex items-center gap-1.5">
+            <TrendingUp size={14} className="text-primary-400" />
+            تقدم اليوم
+          </span>
+          <span className="text-sm font-black text-primary-400">{totalProgress}%</span>
+        </div>
+        <div className="h-3 bg-white/5 rounded-full overflow-hidden">
+          <motion.div
+            initial={{ width: 0 }}
+            animate={{ width: `${totalProgress}%` }}
+            transition={{ duration: 0.8, ease: 'easeOut' }}
+            className="h-full rounded-full bg-gradient-to-l from-primary-500 to-green-500"
+          />
+        </div>
+        <div className="flex justify-between mt-1.5 text-xs text-gray-500">
+          <span>{completedCount} مكتملة</span>
+          <span>{displayHabits.length - completedCount} متبقية</span>
+        </div>
+      </div>
 
-      {/* Count habit progress */}
-      {isCount ? (
-        <div className="mt-3">
-          <div className="flex items-center justify-between mb-1.5">
-            <span className="text-xs text-gray-400">
-              {currentValue}/{targetValue} {habit.count_label || habit.unit || 'مرة'}
-            </span>
-            <span className="text-xs font-bold" style={{ color: progressPercent >= 100 ? '#10B981' : '#6C63FF' }}>
-              {progressPercent}%
-            </span>
-          </div>
-          <div className="h-1.5 bg-white/10 rounded-full overflow-hidden mb-2">
-            <motion.div
-              initial={{ width: 0 }}
-              animate={{ width: `${progressPercent}%` }}
-              transition={{ duration: 0.5 }}
-              className="h-full rounded-full"
-              style={{ background: progressPercent >= 100 ? '#10B981' : habit.color || '#6C63FF' }}
-            />
-          </div>
-          {/* +/- buttons */}
-          <div className="flex items-center justify-between gap-1">
-            <button
-              className="flex-1 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-gray-300 text-xs flex items-center justify-center gap-1 transition-colors"
-              onClick={(e) => { e.stopPropagation(); if (currentValue > 0) onIncrement(-1); }}
-              disabled={currentValue <= 0 || isIncrementing}
-            >
-              <ChevronDown size={12} /> سحب
-            </button>
-            <button
-              className="flex-1 py-1 rounded-lg text-white text-xs flex items-center justify-center gap-1 transition-colors disabled:opacity-50"
-              style={{ background: habit.completed_today ? '#10B981' : habit.color || '#6C63FF' }}
-              onClick={(e) => { e.stopPropagation(); onIncrement(1); }}
-              disabled={isIncrementing}
-            >
-              <ChevronUp size={12} /> أضف
-            </button>
-          </div>
+      {/* Habits list */}
+      {isLoading ? (
+        <div className="space-y-3">
+          {[...Array(3)].map((_, i) => <div key={i} className="h-24 rounded-2xl bg-white/5 animate-pulse" />)}
+        </div>
+      ) : displayHabits.length === 0 ? (
+        <div className="text-center py-16">
+          <div className="text-6xl mb-4">🎯</div>
+          <h3 className="text-lg font-semibold text-gray-400 mb-2">لا توجد عادات لليوم</h3>
+          <p className="text-sm text-gray-600 mb-4">أضف عادة جديدة لتبدأ رحلتك</p>
+          <button onClick={() => setShowAdd(true)}
+            className="px-6 py-3 bg-primary-500 text-white rounded-xl font-bold text-sm active:scale-95 shadow-lg shadow-primary-500/20">
+            <Plus size={16} className="inline ml-1" /> إضافة عادة
+          </button>
         </div>
       ) : (
-        /* Boolean habit status */
-        <div className="mt-3">
-          {habit.completed_today ? (
-            <div className="text-xs text-green-400 flex items-center gap-1">
-              <CheckCircle2 size={12} /> أنجزت اليوم ✓
-            </div>
-          ) : (
-            <div
-              className="text-xs px-2 py-1.5 rounded-lg text-center cursor-pointer transition-all hover:opacity-80"
-              style={{ background: `${habit.color}22`, color: habit.color || '#6C63FF' }}
-            >
-              {isCheckingIn ? '...' : 'اضغط للإنجاز'}
-            </div>
-          )}
-
-          {/* Completion rate bar */}
-          {habit.completion_rate > 0 && (
-            <div className="mt-2 flex items-center gap-2">
-              <div className="flex-1 h-1 bg-white/10 rounded-full overflow-hidden">
-                <div className="h-full rounded-full" style={{
-                  width: `${habit.completion_rate}%`,
-                  background: habit.color || '#6C63FF',
-                }} />
-              </div>
-              <span className="text-xs text-gray-500">{Math.round(habit.completion_rate)}%</span>
-            </div>
-          )}
+        <div className="space-y-3">
+          <AnimatePresence>
+            {displayHabits.map(h => (
+              <HabitCard key={h.id} habit={h}
+                isChecking={checkingId === h.id}
+                onCheckIn={id => checkInMutation.mutate(id)}
+                onLogValue={(id, val) => logValueMutation.mutate({ id, value: val })}
+                onDelete={id => deleteMutation.mutate(id)} />
+            ))}
+          </AnimatePresence>
         </div>
       )}
-    </motion.div>
-  );
-}
 
-// ── Add Habit Modal ───────────────────────────────────────────────────────────
-function AddHabitModal({ newHabit, setNewHabit, onClose, onSubmit, isPending, applyPreset }) {
-  const update = (field, value) => setNewHabit(prev => ({ ...prev, [field]: value }));
-
-  return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-      className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
-      onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.9, y: 20 }}
-        className="glass-card p-5 w-full sm:max-w-lg max-h-screen sm:max-h-[90vh] overflow-y-auto rounded-t-2xl sm:rounded-2xl">
-
-        <div className="flex items-center justify-between mb-5">
-          <h3 className="text-lg font-bold text-white">عادة جديدة 💪</h3>
-          <button onClick={onClose} className="p-1 text-gray-400 hover:text-white"><X size={20} /></button>
-        </div>
-
-        {/* Preset Templates */}
-        <div className="mb-4">
-          <label className="text-xs text-gray-400 block mb-2">قوالب سريعة</label>
-          <div className="flex flex-wrap gap-2">
-            {PRESET_HABITS.map((p, i) => (
-              <button key={i}
-                onClick={() => applyPreset(p)}
-                className={`text-xs px-3 py-1.5 rounded-full border transition-all flex items-center gap-1
-                  ${newHabit.name_ar === p.name_ar
-                    ? 'bg-primary-500/30 border-primary-500 text-primary-300'
-                    : 'border-white/10 text-gray-400 hover:border-white/30'}`}
-              >
-                {p.icon} {p.name_ar}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="space-y-4">
-          {/* Habit Name + Category */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs text-gray-400 block mb-1">اسم العادة *</label>
-              <input value={newHabit.name_ar}
-                onChange={e => update('name_ar', e.target.value)}
-                className="input-field" placeholder="مثال: شرب الماء" />
-            </div>
-            <div>
-              <label className="text-xs text-gray-400 block mb-1">التصنيف</label>
-              <select value={newHabit.category} onChange={e => update('category', e.target.value)} className="input-field">
-                {Object.entries(CATEGORIES_AR).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-              </select>
-            </div>
-          </div>
-
-          {/* Habit Type */}
-          <div>
-            <label className="text-xs text-gray-400 block mb-2">نوع العادة</label>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                onClick={() => update('habit_type', 'boolean')}
-                className={`p-3 rounded-xl text-sm border transition-all ${
-                  newHabit.habit_type === 'boolean'
-                    ? 'bg-primary-500/30 border-primary-500 text-white'
-                    : 'border-white/10 text-gray-400 hover:border-white/20'
-                }`}
-              >
-                ✅ تم / لم يتم
-                <div className="text-xs mt-0.5 opacity-70">مثل: النوم المبكر</div>
-              </button>
-              <button
-                onClick={() => update('habit_type', 'count')}
-                className={`p-3 rounded-xl text-sm border transition-all ${
-                  newHabit.habit_type === 'count'
-                    ? 'bg-primary-500/30 border-primary-500 text-white'
-                    : 'border-white/10 text-gray-400 hover:border-white/20'
-                }`}
-              >
-                🔢 عدد مرات
-                <div className="text-xs mt-0.5 opacity-70">مثل: شرب الماء</div>
-              </button>
-            </div>
-          </div>
-
-          {/* Count settings */}
-          {newHabit.habit_type === 'count' && (
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs text-gray-400 block mb-1">الهدف اليومي</label>
-                <input type="number" min="1" value={newHabit.target_value}
-                  onChange={e => update('target_value', parseInt(e.target.value) || 1)}
-                  className="input-field" />
-              </div>
-              <div>
-                <label className="text-xs text-gray-400 block mb-1">الوحدة</label>
-                <input value={newHabit.count_label}
-                  onChange={e => update('count_label', e.target.value)}
-                  className="input-field" placeholder="كأس، صلاة، دقيقة..." />
-              </div>
-            </div>
-          )}
-
-          {/* Icon picker */}
-          <div>
-            <label className="text-xs text-gray-400 block mb-2">الأيقونة</label>
-            <div className="flex flex-wrap gap-2">
-              {HABIT_ICONS.map(icon => (
-                <button key={icon} onClick={() => update('icon', icon)}
-                  className={`text-2xl p-2 rounded-lg transition-all ${
-                    newHabit.icon === icon
-                      ? 'bg-primary-500/30 border border-primary-500'
-                      : 'bg-white/5 hover:bg-white/10'
-                  }`}>
-                  {icon}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Color picker */}
-          <div>
-            <label className="text-xs text-gray-400 block mb-2">اللون</label>
-            <div className="flex gap-2">
-              {HABIT_COLORS.map(c => (
-                <button key={c} onClick={() => update('color', c)}
-                  className={`w-8 h-8 rounded-full transition-all ${newHabit.color === c ? 'ring-2 ring-white ring-offset-2 ring-offset-gray-800 scale-110' : ''}`}
-                  style={{ background: c }}
-                />
-              ))}
-            </div>
-          </div>
-
-          {/* Time + Description */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs text-gray-400 block mb-1">وقت الهدف</label>
-              <input type="time" value={newHabit.target_time}
-                onChange={e => update('target_time', e.target.value)}
-                className="input-field" dir="ltr" />
-            </div>
-            <div>
-              <label className="text-xs text-gray-400 block mb-1">المدة (دقيقة)</label>
-              <input type="number" value={newHabit.duration_minutes}
-                onChange={e => update('duration_minutes', parseInt(e.target.value))}
-                className="input-field" />
-            </div>
-          </div>
-
-          <div>
-            <label className="text-xs text-gray-400 block mb-1">وصف العادة</label>
-            <textarea value={newHabit.description}
-              onChange={e => update('description', e.target.value)}
-              className="input-field h-16 resize-none"
-              placeholder="لماذا تريد هذه العادة؟" />
-          </div>
-
-          {/* Preview */}
-          {newHabit.name_ar && (
-            <div className="rounded-xl p-3 border border-white/10 bg-white/5">
-              <div className="text-xs text-gray-400 mb-1">معاينة:</div>
-              <div className="flex items-center gap-2">
-                <span className="text-2xl">{newHabit.icon}</span>
-                <div>
-                  <div className="text-sm font-medium text-white">{newHabit.name_ar}</div>
-                  <div className="text-xs text-gray-400">
-                    {newHabit.habit_type === 'count'
-                      ? `هدف: ${newHabit.target_value} ${newHabit.count_label} يومياً`
-                      : 'عادة يومية (تم/لم يتم)'}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          <div className="flex gap-3 pt-2">
-            <button onClick={onClose} className="btn-secondary flex-1">إلغاء</button>
-            <button
-              onClick={onSubmit}
-              disabled={!newHabit.name_ar || isPending}
-              className="btn-primary flex-1"
-            >
-              {isPending ? '...' : 'إضافة العادة 💪'}
-            </button>
-          </div>
-        </div>
-      </motion.div>
-    </motion.div>
+      <AnimatePresence>
+        {showAdd && (
+          <AddHabitModal isOpen={showAdd} onClose={() => setShowAdd(false)}
+            onSubmit={d => createMutation.mutate(d)} isPending={createMutation.isPending} />
+        )}
+      </AnimatePresence>
+    </div>
   );
 }

@@ -11,14 +11,15 @@ import { useEffect } from 'react';
 import { io } from 'socket.io-client';
 import useAuthStore from '../store/authStore';
 import useThemeStore from '../store/themeStore';
+import useSyncStore from '../store/syncStore';
 import Head from 'next/head';
 
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       retry: 1,
-      refetchOnWindowFocus: false,
-      staleTime: 5 * 60 * 1000, // 5 minutes
+      refetchOnWindowFocus: true,
+      staleTime: 30 * 1000, // 30 seconds — responsive to mutations
     },
   },
 });
@@ -26,6 +27,12 @@ const queryClient = new QueryClient({
 export default function LifeFlowApp({ Component, pageProps }) {
   const { user, isAuthenticated } = useAuthStore();
   const { isDark, setTheme } = useThemeStore();
+  const { setQueryClient } = useSyncStore();
+
+  // Wire sync store to QueryClient
+  useEffect(() => {
+    setQueryClient(queryClient);
+  }, []);
 
   // Initialize theme on mount (hydrate from persisted store)
   useEffect(() => {
@@ -84,10 +91,7 @@ export default function LifeFlowApp({ Component, pageProps }) {
     // Proactive AI messages - shown with special styling
     socket.on('proactive_message', (msg) => {
       import('react-hot-toast').then(({ default: toast }) => {
-        toast.custom((t) => `🤖 ${msg.title}: ${msg.body}`, {
-          duration: 8000,
-        });
-        toast(`🤖 ${msg.body}`, {
+        toast(`🤖 ${msg.body || msg.title || ''}`, {
           icon: '🤖',
           duration: 8000,
           style: {
@@ -100,6 +104,8 @@ export default function LifeFlowApp({ Component, pageProps }) {
           },
         });
       });
+      queryClient.invalidateQueries({ queryKey: ['notifications'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
     });
 
     return () => { socket.disconnect(); };

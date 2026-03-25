@@ -12,7 +12,8 @@
 
 const logger = require('../utils/logger');
 const { Op }  = require('sequelize');
-const { chat } = require('../ai/ai.service');
+// Use ai.client for multi-provider retry (Groq 3 models + Gemini fallback)
+const { chat, buildIntelligentFallback } = require('./ai/ai.client');
 const {
   processConversation,
   classifyIntent,
@@ -56,6 +57,7 @@ const INTENT_SYSTEM = `أنت مساعد LifeFlow الذكي. مهمتك تحل�
     "items_to_create": [{"title":"...","priority":"...","due_date":"...","category":"..."}],
     "exam_subjects": [{"subject":"اسم المادة","exam_date":"YYYY-MM-DD","lectures_count":5,"lecture_hours":2}],
     "study_start_date": "YYYY-MM-DD",
+    "include_prayers": true,
     "schedule_title": "عنوان الجدول",
     "schedule_items": [{"title":"...","date":"YYYY-MM-DD","time":"HH:MM","duration_minutes":60,"category":"...","priority":"..."}]
   },
@@ -76,7 +78,11 @@ const INTENT_SYSTEM = `أنت مساعد LifeFlow الذكي. مهمتك تحل�
 - امتحان/اختبار/مذاكرة مع مواد → schedule_exam (needs_confirmation=true)
 - جدول/نظم لي مع تفاصيل → schedule_plan (needs_confirmation=true)
 - للجدولة الذكية: اسحب كل المعلومات من الرسالة
-- الأولوية: urgent للامتحانات، high للمهمة اليومية المهمة`;
+- الأولوية: urgent للامتحانات، high للمهمة اليومية المهمة
+- إذا ذكر المستخدم الصلاة أو صلاة أو يريد إدراج الصلوات: include_prayers = true
+- لا تضع في schedule_items أكثر من 8 ساعات دراسة يومياً (قاعدة صارمة)
+- وزّع المحاضرات بالتساوي على عدد الأيام المتاحة قبل الامتحان
+- lecture_hours هي مدة المحاضرة الواحدة (ليس إجمالي المادة)`;
 
 async function detectIntent(userMessage, context = {}) {
   const contextStr = context.recentTasks?.length
@@ -218,54 +224,86 @@ async function executeAction(intent, entities, userId, timezone = 'Africa/Cairo'
       const subjects = entities.exam_subjects || [];
       if (!subjects.length) return { success: false, message: 'لم أفهم المواد والتواريخ. مثال: "مادة X امتحانها Y وعليها Z محاضرات"' };
 
+      const MAX_STUDY_HOURS_PER_DAY = 8;  // أقصى ساعات دراسة يومية
+      const MAX_STUDY_MINS_PER_DAY  = MAX_STUDY_HOURS_PER_DAY * 60;
+
       const createdTasks = [];
       const today      = now.format('YYYY-MM-DD');
       const startDate  = entities.study_start_date ? moment.tz(entities.study_start_date, timezone) : now.clone();
 
+      // Track daily study minutes across ALL subjects to avoid overloading
+      const dailyMinutesUsed = {}; // { 'YYYY-MM-DD': totalMinsUsed }
+
       for (const subject of subjects) {
         const examDate      = moment.tz(subject.exam_date, timezone);
         const lecturesCount = parseInt(subject.lectures_count) || 5;
-        const lectureHours  = parseFloat(subject.lecture_hours) || 2;
+        const lectureHours  = Math.min(parseFloat(subject.lecture_hours) || 2, 4); // cap per lecture at 4h
+        const lectureMinutes = lectureHours * 60;
         const daysUntilExam = examDate.diff(startDate, 'days');
         if (daysUntilExam < 0) continue;
 
-        const studyDays       = Math.max(1, daysUntilExam - 1);
-        const lecturesPerDay  = Math.ceil(lecturesCount / studyDays);
+        const studyDays = Math.max(1, daysUntilExam - 1);
+        // Calculate max lectures per day respecting the daily hour cap
+        const maxLecturesPerDay = Math.max(1, Math.floor(MAX_STUDY_MINS_PER_DAY / lectureMinutes));
+        // Distribute evenly but don't exceed the daily cap
+        const lecturesPerDay = Math.min(
+          Math.ceil(lecturesCount / studyDays),
+          maxLecturesPerDay
+        );
 
         let lectureIndex = 1;
-        for (let dayOffset = 0; dayOffset < studyDays && lectureIndex <= lecturesCount; dayOffset++) {
+        let dayOffset    = 0;
+
+        while (lectureIndex <= lecturesCount && dayOffset < studyDays * 3) { // *3 overflow guard
           const studyDate    = startDate.clone().add(dayOffset, 'days');
           const studyDateStr = studyDate.format('YYYY-MM-DD');
-          if (studyDateStr < today) continue;
+          dayOffset++;
 
-          const toStudyToday = Math.min(lecturesPerDay, lecturesCount - lectureIndex + 1);
-          const endLecture   = Math.min(lectureIndex + toStudyToday - 1, lecturesCount);
+          if (studyDateStr < today) continue;
+          // Skip the exam date itself for this subject
+          if (studyDateStr === examDate.format('YYYY-MM-DD')) continue;
+
+          // How many minutes already scheduled on this day across all subjects?
+          const usedMins   = dailyMinutesUsed[studyDateStr] || 0;
+          const available  = MAX_STUDY_MINS_PER_DAY - usedMins;
+          if (available <= 0) continue; // day is full, try next
+
+          // How many lectures can we fit today?
+          const maxToday      = Math.max(1, Math.floor(available / lectureMinutes));
+          const remaining     = lecturesCount - lectureIndex + 1;
+          const toStudyToday  = Math.min(lecturesPerDay, maxToday, remaining);
+          const endLecture    = lectureIndex + toStudyToday - 1;
+          const minsToday     = toStudyToday * lectureMinutes;
 
           const task = await Task.create({
             user_id           : userId,
-            title             : `مذاكرة ${subject.subject} - محاضرات ${lectureIndex}-${endLecture}`,
+            title             : toStudyToday === 1
+              ? `📖 مذاكرة ${subject.subject} - محاضرة ${lectureIndex}`
+              : `📚 مذاكرة ${subject.subject} - محاضرات ${lectureIndex}-${endLecture}`,
             priority          : 'high',
             status            : 'pending',
             category          : 'university',
             due_date          : studyDateStr,
-            notes             : `${subject.subject} | محاضرات: ${lectureIndex} إلى ${endLecture} | الامتحان: ${subject.exam_date}`,
-            estimated_minutes : toStudyToday * lectureHours * 60,
+            notes             : `${subject.subject} | محاضرات: ${lectureIndex} إلى ${endLecture} | الامتحان: ${subject.exam_date} | المدة المقدرة: ${minsToday} دقيقة (${(minsToday/60).toFixed(1)} ساعة)`,
+            estimated_minutes : minsToday,
           });
           createdTasks.push(task);
+          dailyMinutesUsed[studyDateStr] = usedMins + minsToday;
           lectureIndex += toStudyToday;
         }
 
-        // Review task (day before)
+        // Review task (day before exam)
         const reviewDate = examDate.clone().subtract(1,'day').format('YYYY-MM-DD');
         if (reviewDate >= today) {
           const reviewTask = await Task.create({
-            user_id : userId,
-            title   : `مراجعة شاملة - ${subject.subject}`,
-            priority: 'urgent',
-            status  : 'pending',
-            category: 'university',
-            due_date: reviewDate,
-            notes   : `مراجعة نهائية قبل امتحان ${subject.subject} يوم ${subject.exam_date}`,
+            user_id           : userId,
+            title             : `🔁 مراجعة شاملة - ${subject.subject}`,
+            priority          : 'urgent',
+            status            : 'pending',
+            category          : 'university',
+            due_date          : reviewDate,
+            notes             : `مراجعة نهائية قبل امتحان ${subject.subject} يوم ${subject.exam_date}`,
+            estimated_minutes : Math.min(lecturesCount * 30, 120), // max 2hrs review
           });
           createdTasks.push(reviewTask);
         }
@@ -283,6 +321,33 @@ async function executeAction(intent, entities, userId, timezone = 'Africa/Cairo'
         createdTasks.push(examTask);
       }
 
+      // ── Add prayer tasks if requested or if schedule spans multiple days ──────
+      if (entities.include_prayers) {
+        const prayerDays = [...new Set(createdTasks.map(t => t.due_date))].filter(d => d >= today);
+        const PRAYERS = [
+          { name: '🕌 صلاة الفجر',   time: '05:00', mins: 15 },
+          { name: '🕌 صلاة الظهر',   time: '12:30', mins: 15 },
+          { name: '🕌 صلاة العصر',   time: '15:45', mins: 15 },
+          { name: '🕌 صلاة المغرب',  time: '18:15', mins: 15 },
+          { name: '🕌 صلاة العشاء',  time: '20:00', mins: 15 },
+        ];
+        for (const day of prayerDays) {
+          for (const prayer of PRAYERS) {
+            await Task.create({
+              user_id           : userId,
+              title             : prayer.name,
+              priority          : 'urgent',
+              status            : 'pending',
+              category          : 'personal',
+              due_date          : day,
+              notes             : `وقت تقريبي: ${prayer.time}`,
+              estimated_minutes : prayer.mins,
+            });
+          }
+        }
+        logger.info(`[CMD-ENGINE] Added prayers for ${prayerDays.length} study days`);
+      }
+
       logger.info(`[CMD-ENGINE] Created ${createdTasks.length} exam study tasks for user ${userId}`);
       return {
         success : true,
@@ -298,21 +363,68 @@ async function executeAction(intent, entities, userId, timezone = 'Africa/Cairo'
       const items = entities.schedule_items || [];
       if (!items.length) return { success: false, message: 'لم أفهم تفاصيل الجدول، حدد المهام والتواريخ' };
 
+      // Validate: no more than 8 study hours per day across all items
+      const MAX_STUDY_MINS_PER_DAY = 8 * 60;
+      const dailyMins = {};
       const createdTasks = [];
+
       for (const item of items) {
         if (!item.title) continue;
+        const dateKey    = resolveDate(item.date);
+        const itemMins   = item.duration_minutes || 60;
+        const isStudy    = (item.category === 'university' || item.category === 'learning' ||
+                            /مذاكر|مراجع|درس|دراس/.test(item.title));
+
+        // Skip if daily study limit exceeded
+        if (isStudy) {
+          dailyMins[dateKey] = (dailyMins[dateKey] || 0) + itemMins;
+          if (dailyMins[dateKey] > MAX_STUDY_MINS_PER_DAY) {
+            logger.warn(`[CMD-ENGINE] Skipping "${item.title}" on ${dateKey} — daily limit exceeded`);
+            continue;
+          }
+        }
+
         const task = await Task.create({
           user_id           : userId,
           title             : item.title,
           priority          : item.priority || 'medium',
           status            : 'pending',
           category          : item.category || 'personal',
-          due_date          : resolveDate(item.date),
+          due_date          : dateKey,
           notes             : item.time ? `الوقت: ${item.time}` : null,
-          estimated_minutes : item.duration_minutes || null,
+          estimated_minutes : itemMins,
         });
         createdTasks.push(task);
       }
+
+      // ── Add prayer tasks if requested ─────────────────────────────────────────
+      if (entities.include_prayers) {
+        const prayerDays = [...new Set(createdTasks.map(t => t.due_date))];
+        const today      = now.format('YYYY-MM-DD');
+        const PRAYERS    = [
+          { name: '🕌 صلاة الفجر',   time: '05:00', mins: 15 },
+          { name: '🕌 صلاة الظهر',   time: '12:30', mins: 15 },
+          { name: '🕌 صلاة العصر',   time: '15:45', mins: 15 },
+          { name: '🕌 صلاة المغرب',  time: '18:15', mins: 15 },
+          { name: '🕌 صلاة العشاء',  time: '20:00', mins: 15 },
+        ];
+        for (const day of prayerDays) {
+          if (day < today) continue;
+          for (const prayer of PRAYERS) {
+            await Task.create({
+              user_id           : userId,
+              title             : prayer.name,
+              priority          : 'urgent',
+              status            : 'pending',
+              category          : 'personal',
+              due_date          : day,
+              notes             : `وقت تقريبي: ${prayer.time}`,
+              estimated_minutes : prayer.mins,
+            });
+          }
+        }
+      }
+
       return { success: true, action: 'schedule_plan', data: createdTasks, count: createdTasks.length, title: entities.schedule_title || 'جدول جديد' };
     }
 
@@ -350,19 +462,34 @@ async function buildUserContext(userId, timezone) {
   const today  = moment().tz(timezone).format('YYYY-MM-DD');
 
   try {
-    const [tasks, todayMood, habits] = await Promise.all([
+    const [tasks, completedToday, todayMood, habits] = await Promise.all([
       Task.findAll({
         where: { user_id: userId, status: { [Op.in]: ['pending','in_progress'] } },
         order: [['due_date','ASC']],
         limit: 15,
       }),
+      Task.findAll({
+        where: {
+          user_id: userId,
+          status: 'completed',
+          due_date: { [Op.gte]: new Date(today + 'T00:00:00.000Z'), [Op.lte]: new Date(today + 'T23:59:59.999Z') },
+        },
+        limit: 10,
+      }),
       MoodEntry.findOne({ where: { user_id: userId, entry_date: today } }),
       Habit.findAll({ where: { user_id: userId, is_active: true }, limit: 10 }),
     ]);
+    const allTodayTasks = [...tasks, ...completedToday].filter(t => {
+      if (!t.due_date) return false;
+      const d = typeof t.due_date === 'string' ? t.due_date.substring(0, 10) : (t.due_date instanceof Date ? t.due_date.toISOString().substring(0, 10) : '');
+      return d === today;
+    });
     return {
-      recentTasks: tasks.map(t => ({ id: t.id, title: t.title, priority: t.priority, due_date: t.due_date, status: t.status, category: t.category })),
-      todayMood  : todayMood?.mood_score || null,
-      habits     : habits.map(h => ({ id: h.id, name: h.name_ar || h.name, category: h.category })),
+      recentTasks  : tasks.map(t => ({ id: t.id, title: t.title, priority: t.priority, due_date: t.due_date, status: t.status, category: t.category })),
+      completedToday: completedToday.length,
+      todayTasks   : allTodayTasks.length,
+      todayMood    : todayMood?.mood_score || null,
+      habits       : habits.map(h => ({ id: h.id, name: h.name_ar || h.name, category: h.category })),
       today,
     };
   } catch (e) {
@@ -385,7 +512,15 @@ function buildActionSummary(actionResult) {
       const t = a.data?.today_tasks?.length || 0;
       return `✅ خطة اليوم جاهزة: ${t} مهمة اليوم`;
     }
-    case 'schedule_exam':  return `✅ تم إنشاء ${a.count} مهمة مذاكرة للمواد: ${(a.subjects||[]).join('، ')}`;
+    case 'schedule_exam': {
+      const tasksByDay = {};
+      (a.data||[]).forEach(t => {
+        if (!tasksByDay[t.due_date]) tasksByDay[t.due_date] = 0;
+        tasksByDay[t.due_date] += (t.estimated_minutes || 0);
+      });
+      const maxDayHrs = Math.max(...Object.values(tasksByDay).map(m=>m/60), 0);
+      return `✅ تم إنشاء ${a.count} مهمة لمواد: ${(a.subjects||[]).join('، ')} | أقصى حمل يومي: ${maxDayHrs.toFixed(1)} ساعة`;
+    }
     case 'schedule_plan':  return `✅ تم إنشاء جدول "${a.title}" بـ ${a.count} مهمة`;
     case 'analyze': {
       const d = a.data || {};
@@ -446,10 +581,13 @@ async function processCommand(userId, message, timezone = 'Africa/Cairo', pendin
 
         if (intentData.intent === 'schedule_exam' && intentData.entities?.exam_subjects?.length) {
           const subjects   = intentData.entities.exam_subjects;
-          const previewLines = subjects.map(s =>
-            `📚 ${s.subject}: امتحان ${s.exam_date} | ${s.lectures_count} محاضرات × ${s.lecture_hours} ساعة`
+          const totalLectures = subjects.reduce((s,x)=> s + (parseInt(x.lectures_count)||0), 0);
+          const totalHours    = subjects.reduce((s,x)=> s + (parseInt(x.lectures_count)||0) * (parseFloat(x.lecture_hours)||2), 0);
+          const previewLines  = subjects.map(s =>
+            `📚 ${s.subject}: امتحان ${s.exam_date} | ${s.lectures_count} محاضرات × ${s.lecture_hours}ساعة = ${(parseInt(s.lectures_count||0)*parseFloat(s.lecture_hours||2)).toFixed(0)} ساعة إجمالي`
           ).join('\n');
-          previewMsg = `سأنشئ جدول مذاكرة ذكي للمواد التالية:\n${previewLines}\n\nهل تؤكد؟`;
+          const prayerNote = intentData.entities?.include_prayers ? '\n🕌 + إضافة الصلوات الخمس يومياً' : '';
+          previewMsg = `سأنشئ جدول مذاكرة ذكي (بحد أقصى 8 ساعات/يوم):\n${previewLines}\n📊 إجمالي: ${totalLectures} محاضرة = ${totalHours.toFixed(0)} ساعة موزعة على أيام${prayerNote}\n\nهل تؤكد؟`;
         } else if (intentData.intent === 'delete_task') {
           previewMsg = `هل تريد حذف "${intentData.entities.task_title}"؟ هذا الإجراء لا يمكن التراجع عنه.`;
         } else if (intentData.intent === 'schedule_plan' && intentData.entities?.schedule_items?.length) {

@@ -1,7 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: false,
-  crossOrigin: 'anonymous',
   i18n: {
     locales: ['ar', 'en'],
     defaultLocale: 'ar',
@@ -15,8 +14,8 @@ const nextConfig = {
   poweredByHeader: false,
   // Compress responses
   compress: true,
-  // Enable output standalone for better performance
-  output: 'standalone',
+  // Serve with next start (no standalone — compatible with PM2 + next start)
+  // output: 'standalone',
 };
 
 module.exports = nextConfig;
