@@ -13,6 +13,12 @@ import useThemeStore from '../../store/themeStore';
 import api from '../../utils/api';
 import toast from 'react-hot-toast';
 
+/**
+ * NAVIGATION DECISION: Hamburger menu removed from mobile header.
+ * Mobile users navigate via MobileBottomNav (5 core items) + sidebar on desktop.
+ * Hamburger was duplicating navigation items and causing UX confusion.
+ * Desktop sidebar is always visible and doesn't need a toggle in the header.
+ */
 export default function Header({ onViewChange, onMenuToggle }) {
   const { user, logout } = useAuthStore();
   const { isDark, toggleTheme } = useThemeStore();
@@ -100,16 +106,8 @@ export default function Header({ onViewChange, onMenuToggle }) {
     <header className="sticky top-0 z-40 glass-card border-b border-white/5 px-4 py-3">
       <div className="flex items-center justify-between max-w-7xl mx-auto">
 
-        {/* Left: Hamburger + Plan Badge */}
+        {/* Left: Plan Badge (hamburger removed — mobile uses bottom nav) */}
         <div className="flex items-center gap-2">
-          {onMenuToggle && (
-            <button
-              onClick={onMenuToggle}
-              className="p-2 rounded-xl hover:bg-white/5 text-gray-400 hover:text-white transition-colors md:hidden"
-            >
-              <Menu size={20} />
-            </button>
-          )}
           <div className={`flex items-center gap-1 px-3 py-1 rounded-full text-xs font-semibold ${planInfo.color}`}>
             {planInfo.icon}
             {planInfo.label}

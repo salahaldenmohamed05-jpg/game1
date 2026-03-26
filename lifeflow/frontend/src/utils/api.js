@@ -303,6 +303,11 @@ export const assistantAPI = {
   getMetrics: () => api.get('/assistant/metrics'),
   // Phase 16: Smart Scheduling + Daily Timeline
   getSmartDailyPlan: () => api.get('/assistant/daily-plan'),
+  // Smart Timeline (enriched with overdue, free slots, suggestions)
+  getSmartTimeline: () => api.get('/assistant/timeline/smart'),
+  // Interactive timeline actions
+  completeTimelineTask: (task_id) => api.post('/assistant/timeline/smart/complete', { task_id }),
+  acceptSuggestion: (suggestion_id, action) => api.post('/assistant/timeline/smart/accept-suggestion', { suggestion_id, action }),
   // Phase 16: Next Best Action
   getNextAction: () => api.get('/assistant/next-action'),
   // Phase 16: Life Feed
