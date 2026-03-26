@@ -13,13 +13,19 @@ import {
 import useAuthStore from '../../store/authStore';
 import toast from 'react-hot-toast';
 
+/**
+ * NAV_ITEMS — Sidebar Navigation Structure
+ * MERGE DECISION: 'performance' + 'insights' collapsed into single 'analytics' entry.
+ * Both old routes still work in Dashboard.jsx (they map to AnalyticsView),
+ * but the sidebar now shows one unified "analytics" item to avoid duplication.
+ */
 const NAV_ITEMS = [
   { id: 'dashboard',     icon: Home,          label: 'الرئيسية',        badge: null },
   { id: 'tasks',         icon: CheckSquare,   label: 'المهام',           badge: 'tasks' },
   { id: 'habits',        icon: Target,        label: 'العادات',          badge: null },
   { id: 'mood',          icon: Heart,         label: 'المزاج',           badge: null },
-  { id: 'performance',   icon: BarChart2,     label: 'الأداء',           badge: null,   premium: true },
-  { id: 'insights',      icon: Brain,         label: 'التحليلات',        badge: null,   premium: true },
+  // MERGED: single analytics entry replaces separate performance + insights
+  { id: 'analytics',     icon: BarChart2,     label: 'التحليلات',        badge: null,   premium: true },
   // ── Unified Personal Assistant (replaces ai_chat + copilot + adaptive + optimizer) ──
   { id: 'assistant',     icon: Sparkles,      label: 'المساعد الشخصي',  badge: null,   divider: true, highlight: true },
   { id: 'calendar',      icon: Calendar,      label: 'التقويم',          badge: null },

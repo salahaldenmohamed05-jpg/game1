@@ -1724,5 +1724,313 @@ function getActionIcon(action) {
   return icons[action] || '⚡';
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /assistant/timeline/smart
+// AI-powered Smart Timeline — enriches daily-plan with overdue tasks,
+// free time slots, and rule-based suggestions.
+//
+// Response shape:
+// {
+//   timeline:    [{ start_time, end_time, title, type, status }],
+//   overdue:     [{ id, title, due_date, priority }],
+//   freeSlots:   [{ start, end, duration_min }],
+//   suggestions: [{ id, type, title, reason, action }],
+//   generated_at
+// }
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/timeline/smart', async (req, res) => {
+  const userId   = req.user.id;
+  const timezone = req.user.timezone || 'Africa/Cairo';
+
+  try {
+    // ── 1. Reuse the scheduling engine for today's timeline ────────────
+    let schedule = [];
+    let stats = {};
+    try {
+      const scheduler = getScheduler();
+      if (scheduler) {
+        const plan = await scheduler.getDailyPlan(userId, timezone);
+        schedule = plan.timeline || plan.schedule || [];
+        stats    = plan.stats || {};
+      }
+    } catch (schedErr) {
+      logger.warn('[SMART-TIMELINE] scheduler unavailable:', schedErr.message);
+    }
+
+    // Normalize timeline items with status
+    const timeline = schedule.map(item => ({
+      start_time: item.start_time || item.time || null,
+      end_time:   item.end_time || null,
+      title:      item.title,
+      type:       item.type || 'task',
+      status:     item.completed ? 'completed' : item.missed ? 'missed' : 'pending',
+      priority:   item.priority || 'medium',
+      source_id:  item.task_id || item.habit_id || null,
+    }));
+
+    // ── 2. Find overdue tasks ──────────────────────────────────────────
+    const Task = require('../models/task.model');
+    const { Op } = require('sequelize');
+    const now = new Date();
+    const overdueTasks = await Task.findAll({
+      where: {
+        user_id: userId,
+        status: { [Op.in]: ['pending', 'in_progress'] },
+        due_date: { [Op.lt]: now },
+      },
+      order: [['due_date', 'ASC']],
+      limit: 10,
+    });
+
+    const overdue = overdueTasks.map(t => ({
+      id:       t.id,
+      title:    t.title,
+      due_date: t.due_date,
+      priority: t.priority || 'medium',
+      days_overdue: Math.ceil((now - new Date(t.due_date)) / (1000 * 60 * 60 * 24)),
+    }));
+
+    // ── 3. Detect free slots in the timeline ───────────────────────────
+    const freeSlots = [];
+    // Parse times to minutes-since-midnight for gap detection
+    function parseHHMM(str) {
+      if (!str) return null;
+      const parts = str.match(/(\d{1,2}):(\d{2})/);
+      if (!parts) return null;
+      return parseInt(parts[1]) * 60 + parseInt(parts[2]);
+    }
+    function minutesToHHMM(m) {
+      return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+    }
+
+    const sorted = timeline
+      .filter(i => i.start_time)
+      .sort((a, b) => (parseHHMM(a.start_time) || 0) - (parseHHMM(b.start_time) || 0));
+
+    const dayStart = 8 * 60;   // 08:00
+    const dayEnd   = 22 * 60;  // 22:00
+    let cursor = dayStart;
+
+    for (const item of sorted) {
+      const start = parseHHMM(item.start_time);
+      const end   = parseHHMM(item.end_time) || (start + 30); // default 30 min if no end
+      if (start == null) continue;
+      if (start > cursor + 30) { // 30+ min gap = free slot
+        freeSlots.push({
+          start:        minutesToHHMM(cursor),
+          end:          minutesToHHMM(start),
+          duration_min: start - cursor,
+        });
+      }
+      cursor = Math.max(cursor, end);
+    }
+    // Trailing free time
+    if (cursor < dayEnd - 30) {
+      freeSlots.push({
+        start:        minutesToHHMM(cursor),
+        end:          minutesToHHMM(dayEnd),
+        duration_min: dayEnd - cursor,
+      });
+    }
+
+    // ── 4. Rule-based suggestions ──────────────────────────────────────
+    const suggestions = [];
+    let sugId = 1;
+
+    // Suggestion: reschedule overdue tasks into free slots
+    for (const od of overdue.slice(0, 3)) {
+      const slot = freeSlots.find(s => s.duration_min >= 30);
+      if (slot) {
+        suggestions.push({
+          id:     `sug-${sugId++}`,
+          type:   'reschedule',
+          title:  `أعد جدولة "${od.title}" إلى ${slot.start}`,
+          reason: `متأخرة ${od.days_overdue} يوم — يوجد وقت فارغ من ${slot.start} حتى ${slot.end}`,
+          action: { type: 'reschedule_task', task_id: od.id, proposed_time: slot.start },
+        });
+      }
+    }
+
+    // Suggestion: take a break if schedule is dense
+    const totalScheduled = timeline.length;
+    if (totalScheduled >= 6 && freeSlots.length === 0) {
+      suggestions.push({
+        id:     `sug-${sugId++}`,
+        type:   'break',
+        title:  'جدولك مزدحم — خذ استراحة قصيرة',
+        reason: `لديك ${totalScheduled} مهمة اليوم بدون فترات راحة واضحة`,
+        action: { type: 'add_break' },
+      });
+    }
+
+    // Suggestion: use free time for habits
+    const Habit = require('../models/habit.model');
+    const todayHabits = await Habit.findAll({
+      where: { user_id: userId, is_active: true },
+      limit: 5,
+    });
+    const incompleteHabits = todayHabits.filter(h => !h.last_check_in || new Date(h.last_check_in).toDateString() !== now.toDateString());
+    if (incompleteHabits.length > 0 && freeSlots.length > 0) {
+      const habit = incompleteHabits[0];
+      suggestions.push({
+        id:     `sug-${sugId++}`,
+        type:   'habit_reminder',
+        title:  `لم تُكمل عادة "${habit.title}" اليوم`,
+        reason: `لديك وقت فارغ — أكمل عاداتك اليومية`,
+        action: { type: 'complete_habit', habit_id: habit.id },
+      });
+    }
+
+    // Suggestion: focus block for large free slots
+    for (const slot of freeSlots) {
+      if (slot.duration_min >= 90) {
+        suggestions.push({
+          id:     `sug-${sugId++}`,
+          type:   'focus_block',
+          title:  `فترة تركيز متاحة: ${slot.start} – ${slot.end}`,
+          reason: `${slot.duration_min} دقيقة متاحة — مثالية لعمل عميق`,
+          action: { type: 'create_focus_block', start: slot.start, end: slot.end },
+        });
+        break; // Only suggest one focus block
+      }
+    }
+
+    logger.info(`[SMART-TIMELINE] user=${userId}: ${timeline.length} items, ${overdue.length} overdue, ${freeSlots.length} free slots, ${suggestions.length} suggestions`);
+
+    res.json({
+      success: true,
+      data: {
+        timeline,
+        overdue,
+        freeSlots,
+        suggestions,
+        stats: {
+          total_scheduled: timeline.length,
+          completed:       timeline.filter(i => i.status === 'completed').length,
+          overdue_count:   overdue.length,
+          free_minutes:    freeSlots.reduce((sum, s) => sum + s.duration_min, 0),
+        },
+        generated_at: new Date().toISOString(),
+        timezone,
+      },
+    });
+  } catch (e) {
+    logger.error('[SMART-TIMELINE] error:', e.message);
+    res.json({
+      success: true,
+      data: {
+        timeline: [], overdue: [], freeSlots: [], suggestions: [],
+        stats: { error: e.message },
+        generated_at: new Date().toISOString(),
+      },
+    });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /assistant/timeline/smart/complete
+// Marks a task as completed and instantly removes it from the timeline.
+// Body: { task_id: string }
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/timeline/smart/complete', async (req, res) => {
+  const userId = req.user.id;
+  const { task_id } = req.body;
+
+  if (!task_id) {
+    return res.status(400).json({ success: false, message: 'task_id is required' });
+  }
+
+  try {
+    const Task = require('../models/task.model');
+    const task = await Task.findOne({ where: { id: task_id, user_id: userId } });
+    if (!task) {
+      return res.status(404).json({ success: false, message: 'Task not found' });
+    }
+
+    task.status = 'completed';
+    task.completed_at = new Date();
+    await task.save();
+
+    logger.info(`[SMART-TIMELINE] Task completed: ${task_id} by user ${userId}`);
+
+    res.json({
+      success: true,
+      message: 'تم إكمال المهمة بنجاح',
+      data: { task_id, status: 'completed' },
+    });
+  } catch (e) {
+    logger.error('[SMART-TIMELINE] complete error:', e.message);
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /assistant/timeline/smart/accept-suggestion
+// Accepts an AI suggestion (reschedule, break, habit, focus block).
+// Body: { suggestion_id, action: { type, task_id?, proposed_time?, ... } }
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/timeline/smart/accept-suggestion', async (req, res) => {
+  const userId = req.user.id;
+  const { suggestion_id, action } = req.body;
+
+  if (!action?.type) {
+    return res.status(400).json({ success: false, message: 'action.type is required' });
+  }
+
+  try {
+    let result = { applied: false };
+
+    switch (action.type) {
+      case 'reschedule_task': {
+        const Task = require('../models/task.model');
+        const task = await Task.findOne({ where: { id: action.task_id, user_id: userId } });
+        if (task) {
+          // Set new due_date to today at the proposed_time
+          const now = new Date();
+          const [hh, mm] = (action.proposed_time || '14:00').split(':');
+          const newDue = new Date(now.getFullYear(), now.getMonth(), now.getDate(), parseInt(hh), parseInt(mm));
+          task.due_date = newDue;
+          task.status = 'pending';
+          await task.save();
+          result = { applied: true, task_id: action.task_id, new_due: newDue };
+          logger.info(`[SMART-TIMELINE] Rescheduled task ${action.task_id} to ${action.proposed_time}`);
+        }
+        break;
+      }
+      case 'complete_habit': {
+        const Habit = require('../models/habit.model');
+        const habit = await Habit.findOne({ where: { id: action.habit_id, user_id: userId } });
+        if (habit) {
+          habit.last_check_in = new Date();
+          habit.current_streak = (habit.current_streak || 0) + 1;
+          await habit.save();
+          result = { applied: true, habit_id: action.habit_id };
+          logger.info(`[SMART-TIMELINE] Habit checked in: ${action.habit_id}`);
+        }
+        break;
+      }
+      case 'add_break':
+      case 'create_focus_block': {
+        // These don't modify DB — they're informational suggestions.
+        // Mark as accepted for analytics.
+        result = { applied: true, type: action.type };
+        logger.info(`[SMART-TIMELINE] Suggestion accepted: ${action.type}`);
+        break;
+      }
+      default:
+        result = { applied: true, type: action.type };
+    }
+
+    res.json({
+      success: true,
+      message: 'تم تنفيذ الاقتراح',
+      data: { suggestion_id, ...result },
+    });
+  } catch (e) {
+    logger.error('[SMART-TIMELINE] accept-suggestion error:', e.message);
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
 module.exports = router;
 
