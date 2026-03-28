@@ -47,7 +47,7 @@ function getScoreLabel(score) {
  */
 async function calculateDailyScores(userId, date = new Date()) {
   const Task       = require('../models/task.model');
-  const Habit      = require('../models/habit.model');
+  const { Habit }  = require('../models/habit.model');
   const MoodEntry  = require('../models/mood.model');
 
   const dateStr   = date.toISOString().split('T')[0];

@@ -1,15 +1,29 @@
 /**
- * ErrorBoundary — يلتقط أخطاء React ويعرضها بشكل جميل
- * مع إرسال تقرير الخطأ للـ backend عند وجود token
+ * ErrorBoundary — Phase H: Robust error catching & recovery
+ * ==========================================================
+ * HARDENING IMPROVEMENTS:
+ * - Auto-retry with exponential backoff (transient errors)
+ * - SSR-safe (no window/document access in constructor)
+ * - Error reporting wrapped in try/catch (fire-and-forget)
+ * - Maximum retry limit to prevent infinite loops
+ * - Inline fallback styles (works even if CSS fails to load)
+ * - Dev mode: full stack trace display
  */
 
 import React from 'react';
 
-// Client-side error reporter
+const MAX_AUTO_RETRIES = 2;
+const AUTO_RETRY_DELAY = 3000; // ms
+
+// Client-side error reporter (fire-and-forget, never throws)
 const reportError = (error, componentStack) => {
   try {
-    const token = typeof window !== 'undefined' ? localStorage.getItem('lifeflow_token') : null;
-    const BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api/v1';
+    if (typeof window === 'undefined') return;
+    const token = localStorage.getItem('lifeflow_token');
+    let BASE = 'http://localhost:5000/api/v1';
+    const h = window.location.hostname;
+    if (h.includes('.e2b.dev')) BASE = `https://${h.replace(/^\d+-/, '5000-')}/api/v1`;
+    else if (h.includes('.sandbox.novita.ai')) BASE = `https://${h.replace(/^\d+-/, '5000-')}/api/v1`;
     fetch(`${BASE}/logs/client-error`, {
       method: 'POST',
       headers: {
@@ -18,19 +32,30 @@ const reportError = (error, componentStack) => {
       },
       body: JSON.stringify({
         message: error?.message,
-        stack: error?.stack,
-        componentStack,
+        stack: error?.stack?.substring(0, 2000),
+        componentStack: componentStack?.substring(0, 2000),
         url: typeof window !== 'undefined' ? window.location.href : '',
         timestamp: new Date().toISOString(),
+        userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : '',
       }),
     }).catch(() => {});
-  } catch (_) {}
+  } catch (_) {
+    // Silently fail — error reporting should never crash the app
+  }
 };
 
 export default class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
-    this.state = { hasError: false, error: null, errorInfo: null };
+    this.state = {
+      hasError: false,
+      error: null,
+      errorInfo: null,
+      retryCount: 0,
+      autoRetryCount: 0,
+    };
+    this._mounted = true;
+    this._autoRetryTimer = null;
   }
 
   static getDerivedStateFromError(error) {
@@ -38,53 +63,183 @@ export default class ErrorBoundary extends React.Component {
   }
 
   componentDidCatch(error, errorInfo) {
-    this.setState({ errorInfo });
+    if (this._mounted) {
+      this.setState({ errorInfo });
+    }
     reportError(error, errorInfo?.componentStack);
-    console.error('[LifeFlow Error Boundary]', error, errorInfo);
+    console.error('[LifeFlow ErrorBoundary]', error, errorInfo);
+
+    // Auto-retry for transient errors (up to MAX_AUTO_RETRIES)
+    if (this._mounted && this.state.autoRetryCount < MAX_AUTO_RETRIES) {
+      this._autoRetryTimer = setTimeout(() => {
+        if (this._mounted) {
+          this.setState(prev => ({
+            hasError: false,
+            error: null,
+            errorInfo: null,
+            autoRetryCount: prev.autoRetryCount + 1,
+          }));
+        }
+      }, AUTO_RETRY_DELAY * (this.state.autoRetryCount + 1));
+    }
+  }
+
+  componentWillUnmount() {
+    this._mounted = false;
+    if (this._autoRetryTimer) {
+      clearTimeout(this._autoRetryTimer);
+    }
   }
 
   handleReset = () => {
-    this.setState({ hasError: false, error: null, errorInfo: null });
+    if (this._autoRetryTimer) clearTimeout(this._autoRetryTimer);
+    this.setState(prev => ({
+      hasError: false,
+      error: null,
+      errorInfo: null,
+      retryCount: prev.retryCount + 1,
+      autoRetryCount: 0,
+    }));
+  };
+
+  handleReload = () => {
+    try {
+      if (typeof window !== 'undefined') {
+        window.location.reload();
+      }
+    } catch {}
   };
 
   render() {
-    if (!this.state.hasError) return this.props.children;
+    if (!this.state.hasError) {
+      return this.props.children;
+    }
 
-    const { error, errorInfo } = this.state;
-    const isDev = process.env.NODE_ENV === 'development' || process.env.NEXT_PUBLIC_SHOW_ERRORS === 'true';
+    const { error, errorInfo, retryCount, autoRetryCount } = this.state;
+    const isDev = typeof process !== 'undefined' &&
+      (process.env?.NODE_ENV === 'development' || process.env?.NEXT_PUBLIC_SHOW_ERRORS === 'true');
+    const isAutoRetrying = autoRetryCount < MAX_AUTO_RETRIES;
 
+    // Compact mode for nested boundaries (e.g., inside dashboard cards)
+    if (this.props.compact) {
+      return (
+        <div
+          style={{
+            padding: '12px',
+            textAlign: 'center',
+            borderRadius: '12px',
+            background: 'rgba(239, 68, 68, 0.05)',
+            border: '1px solid rgba(239, 68, 68, 0.1)',
+            direction: 'rtl',
+          }}
+        >
+          <p style={{ fontSize: '12px', color: '#94A3B8', marginBottom: '8px' }}>
+            {isAutoRetrying ? 'جاري إعادة المحاولة...' : 'حدث خطأ في هذا القسم'}
+          </p>
+          {!isAutoRetrying && (
+            <button
+              onClick={this.handleReset}
+              style={{
+                fontSize: '12px',
+                color: '#A78BFA',
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                fontFamily: 'inherit',
+              }}
+            >
+              🔄 إعادة المحاولة
+            </button>
+          )}
+        </div>
+      );
+    }
+
+    // Full error screen with inline styles (works even if CSS fails)
     return (
       <div
-        className="flex flex-col items-center justify-center p-8 text-center min-h-[300px] bg-red-500/5 border border-red-500/20 rounded-2xl"
-        dir="rtl"
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '32px',
+          textAlign: 'center',
+          minHeight: '300px',
+          background: 'rgba(239, 68, 68, 0.05)',
+          border: '1px solid rgba(239, 68, 68, 0.2)',
+          borderRadius: '16px',
+          direction: 'rtl',
+          fontFamily: 'Cairo, Tajawal, system-ui, sans-serif',
+        }}
       >
-        <div className="text-5xl mb-4">⚠️</div>
-        <h2 className="text-xl font-bold text-red-400 mb-2">حدث خطأ غير متوقع</h2>
-        <p className="text-gray-400 text-sm mb-4 max-w-sm">
-          {error?.message || 'حدث خطأ في هذا المكوّن. تم تسجيل الخطأ تلقائياً.'}
+        <div style={{ fontSize: '48px', marginBottom: '16px' }}>⚠️</div>
+        <h2 style={{ fontSize: '20px', fontWeight: 'bold', color: '#F87171', marginBottom: '8px' }}>
+          حدث خطأ غير متوقع
+        </h2>
+        <p style={{ color: '#94A3B8', fontSize: '14px', marginBottom: '16px', maxWidth: '350px' }}>
+          {isAutoRetrying
+            ? 'جاري إعادة المحاولة تلقائياً...'
+            : (error?.message || 'حدث خطأ في هذا المكوّن. تم تسجيل الخطأ تلقائياً.')}
         </p>
 
-        <div className="flex gap-3 flex-wrap justify-center mb-4">
-          <button
-            onClick={this.handleReset}
-            className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg text-sm font-medium transition-colors"
-          >
-            🔄 إعادة المحاولة
-          </button>
-          <button
-            onClick={() => typeof window !== 'undefined' && window.location.reload()}
-            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-sm font-medium transition-colors"
-          >
-            ↺ تحديث الصفحة
-          </button>
-        </div>
+        {!isAutoRetrying && (
+          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', justifyContent: 'center', marginBottom: '16px' }}>
+            <button
+              onClick={this.handleReset}
+              style={{
+                padding: '8px 16px',
+                background: '#3B82F6',
+                color: 'white',
+                border: 'none',
+                borderRadius: '8px',
+                fontSize: '14px',
+                fontWeight: '500',
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+              }}
+            >
+              🔄 إعادة المحاولة {retryCount > 0 ? `(${retryCount})` : ''}
+            </button>
+            <button
+              onClick={this.handleReload}
+              style={{
+                padding: '8px 16px',
+                background: '#374151',
+                color: 'white',
+                border: 'none',
+                borderRadius: '8px',
+                fontSize: '14px',
+                fontWeight: '500',
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+              }}
+            >
+              ↺ تحديث الصفحة
+            </button>
+          </div>
+        )}
 
         {isDev && errorInfo && (
-          <details className="w-full max-w-2xl text-left mt-2">
-            <summary className="cursor-pointer text-xs text-gray-500 hover:text-gray-300 mb-2">
+          <details style={{ width: '100%', maxWidth: '640px', textAlign: 'left', marginTop: '8px' }}>
+            <summary style={{ cursor: 'pointer', fontSize: '12px', color: '#6B7280', marginBottom: '8px' }}>
               🔍 تفاصيل الخطأ (وضع التطوير)
             </summary>
-            <pre className="bg-black/40 rounded-lg p-4 text-xs text-red-300 overflow-auto max-h-48 whitespace-pre-wrap text-left" dir="ltr">
+            <pre style={{
+              background: 'rgba(0,0,0,0.4)',
+              borderRadius: '8px',
+              padding: '16px',
+              fontSize: '12px',
+              color: '#FCA5A5',
+              overflow: 'auto',
+              maxHeight: '200px',
+              whiteSpace: 'pre-wrap',
+              textAlign: 'left',
+              direction: 'ltr',
+            }}>
               {error?.stack}
               {'\n\nComponent Stack:'}
               {errorInfo.componentStack}

@@ -18,10 +18,11 @@ const { Op } = require('sequelize');
 exports.checkIn = async (req, res) => {
   try {
     const {
-      mood_score, emotions = [], energy_level,
+      mood_score: rawMoodScore, score, emotions = [], energy_level,
       stress_level, focus_level, factors,
       journal_entry, period,
     } = req.body;
+    const mood_score = rawMoodScore || score;  // Accept both 'mood_score' and 'score'
 
     const timezone = req.user.timezone || 'Africa/Cairo';
     const today = moment().tz(timezone).format('YYYY-MM-DD');

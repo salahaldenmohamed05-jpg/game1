@@ -1,239 +1,285 @@
 /**
- * Goal Engine Service — Phase 12
- * ================================
- * Manages long-term goals, progress monitoring, and life optimization.
+ * Goal Engine Service — Phase 7
+ * ===============================
+ * Connects Goals → Planning → Execution → Behavior
+ *
+ * Responsibilities:
+ *  1. Compute goal priority scores for daily planning
+ *  2. Map tasks to goals, compute goal progress from task completion
+ *  3. Generate goal-aware suggestions for the day planner
+ *  4. Provide goal context to the execution engine and AI orchestrator
+ *  5. Detect stale/neglected goals and trigger nudges
+ *
+ * DOES NOT replace dayplanner or execution engine — it enriches them.
  */
 
 'use strict';
 
-const { Op, DataTypes } = require('sequelize');
-const moment  = require('moment-timezone');
-const logger  = require('../utils/logger');
-
-function getGoalModel() {
-  return require('../models/goal.model');
-}
+const { Op } = require('sequelize');
+const moment = require('moment-timezone');
+const logger = require('../utils/logger');
 
 function getModels() {
-  const Task  = require('../models/task.model');
-  const { Habit } = require('../models/habit.model');
-  const ProductivityScore = require('../models/productivity_score.model');
-  return { Task, Habit, ProductivityScore };
+  const m = {};
+  try { m.Goal = require('../models/goal.model'); } catch (_) {}
+  try { m.Task = require('../models/task.model'); } catch (_) {}
+  try { m.Habit = require('../models/habit.model').Habit; } catch (_) {}
+  return m;
+}
+
+// ── Goal priority scoring ──────────────────────────────────────────────────
+// Higher score = more urgently needs daily attention
+function scoreGoal(goal, linkedTasks) {
+  let score = 50; // base
+
+  // Deadline urgency (target_date)
+  if (goal.target_date) {
+    const daysLeft = moment(goal.target_date).diff(moment(), 'days');
+    if (daysLeft < 0) score += 40;       // overdue
+    else if (daysLeft <= 3) score += 30;  // critical
+    else if (daysLeft <= 7) score += 20;  // soon
+    else if (daysLeft <= 14) score += 10; // approaching
+  }
+
+  // Progress gap: how far behind?
+  const progressGap = 100 - (goal.progress || 0);
+  score += Math.round(progressGap * 0.2); // max +20
+
+  // Category boost
+  if (goal.category === 'health') score += 5;
+  if (goal.category === 'learning') score += 3;
+
+  // Linked task pressure
+  const pendingLinked = linkedTasks.filter(t => t.status !== 'completed').length;
+  if (pendingLinked === 0 && goal.progress < 100) score += 15; // no active tasks for this goal!
+  else if (pendingLinked > 5) score -= 5; // well-covered
+
+  return Math.min(100, Math.max(0, score));
 }
 
 /**
- * getUserGoals(userId, timezone)
+ * getGoalContext(userId, timezone)
+ * Returns structured goal data for planning and execution engines.
+ *
+ * @returns {object} {
+ *   activeGoals: [...],           // sorted by priority score desc
+ *   goalTaskMap: { goalId: [...tasks] },
+ *   neglectedGoals: [...],        // goals with no recent activity
+ *   goalSuggestions: [...],       // actionable suggestions for today
+ *   summary: { total, onTrack, atRisk, neglected }
+ * }
  */
-async function getUserGoals(userId, timezone = 'Africa/Cairo') {
+async function getGoalContext(userId, timezone = 'Africa/Cairo') {
+  const { Goal, Task } = getModels();
+  if (!Goal || !Task) {
+    logger.debug('[GOAL-ENGINE] Models not available');
+    return { activeGoals: [], goalTaskMap: {}, neglectedGoals: [], goalSuggestions: [], summary: { total: 0 } };
+  }
+
   try {
-    const Goal = getGoalModel();
+    // Fetch active goals
     const goals = await Goal.findAll({
-      where: { user_id: userId },
-      order: [['target_date', 'ASC']],
-      raw: true,
+      where: { user_id: userId, status: 'active' },
+      order: [['target_date', 'ASC'], ['created_at', 'ASC']],
     });
 
-    // Enrich with progress analysis
-    const enriched = goals.map(g => ({
-      ...g,
-      days_remaining: g.target_date
-        ? Math.max(0, moment.tz(g.target_date, timezone).diff(moment.tz(timezone), 'days'))
-        : null,
-      is_overdue: g.target_date && moment.tz(g.target_date, timezone).isBefore(moment.tz(timezone)) && g.status !== 'completed',
-      progress_label: getProgressLabel(g.progress || 0),
-      momentum: getMomentum(g),
-    }));
-
-    const summary = {
-      total:    goals.length,
-      active:   goals.filter(g => g.status === 'active').length,
-      completed: goals.filter(g => g.status === 'completed').length,
-      overdue:  enriched.filter(g => g.is_overdue).length,
-    };
-
-    return { goals: enriched, summary };
-  } catch (err) {
-    logger.error('getUserGoals error:', err.message);
-    throw err;
-  }
-}
-
-/**
- * createGoal(userId, data)
- */
-async function createGoal(userId, data, timezone = 'Africa/Cairo') {
-  try {
-    const Goal = getGoalModel();
-    const goal = await Goal.create({
-      user_id:     userId,
-      title:       data.title,
-      description: data.description || null,
-      category:    data.category || 'general',
-      target_date: data.target_date || null,
-      progress:    0,
-      status:      'active',
-      milestones:  data.milestones || [],
-      tags:        data.tags || [],
-    });
-    return goal;
-  } catch (err) {
-    logger.error('createGoal error:', err.message);
-    throw err;
-  }
-}
-
-/**
- * updateGoalProgress(goalId, userId, progress, note)
- */
-async function updateGoalProgress(goalId, userId, progress, note = null) {
-  try {
-    const Goal = getGoalModel();
-    const goal = await Goal.findOne({ where: { id: goalId, user_id: userId } });
-    if (!goal) return null;
-
-    goal.progress       = Math.min(100, Math.max(0, progress));
-    goal.last_update_note = note;
-    if (goal.progress >= 100) goal.status = 'completed';
-    await goal.save();
-    return goal;
-  } catch (err) {
-    logger.error('updateGoalProgress error:', err.message);
-    throw err;
-  }
-}
-
-/**
- * getLifeOptimization(userId, timezone)
- * Returns the overall life optimization analysis.
- */
-async function getLifeOptimization(userId, timezone = 'Africa/Cairo') {
-  try {
-    const Goal = getGoalModel();
-    const { Task, Habit, ProductivityScore } = getModels();
-    const since30 = moment.tz(timezone).subtract(30, 'days').toDate();
-    const since7  = moment.tz(timezone).subtract(7, 'days').toDate();
-
-    const [goals, tasks, scores] = await Promise.all([
-      Goal.findAll({ where: { user_id: userId, status: 'active' }, raw: true }),
-      Task.findAll({ where: { user_id: userId, [Op.or]: [{ due_date: { [Op.gte]: since30 } }, { completed_at: { [Op.gte]: since30 } }] }, raw: true }),
-      ProductivityScore.findAll({ where: { user_id: userId, score_date: { [Op.gte]: since7 } }, raw: true }),
-    ]);
-
-    const avgScore = scores.length > 0
-      ? Math.round(scores.reduce((s, r) => s + (r.overall_score || 0), 0) / scores.length) : 55;
-    const taskRate = tasks.length > 0
-      ? Math.round((tasks.filter(t => t.status === 'completed').length / tasks.length) * 100) : 0;
-
-    // Optimization dimensions
-    const dimensions = [
-      { dim: 'productivity',    score: avgScore,  label: 'الإنتاجية',    icon: '📊', weight: 0.30 },
-      { dim: 'goal_progress',   score: calcGoalScore(goals), label: 'الأهداف', icon: '🎯', weight: 0.25 },
-      { dim: 'task_completion', score: taskRate,  label: 'إتمام المهام', icon: '✅', weight: 0.25 },
-      { dim: 'consistency',     score: calcConsistency(tasks, timezone), label: 'الاتساق', icon: '🔄', weight: 0.20 },
-    ];
-
-    const overallScore = Math.round(dimensions.reduce((s, d) => s + d.score * d.weight, 0));
-
-    // Optimization actions
-    const actions = buildOptimizationActions(dimensions, goals, tasks);
-
-    return {
-      user_id:       userId,
-      generated_at:  moment.tz(timezone).toISOString(),
-      overall_score: overallScore,
-      overall_label: overallScore >= 75 ? 'ممتاز' : overallScore >= 55 ? 'جيد' : 'يحتاج تحسين',
-      dimensions,
-      active_goals: goals.length,
-      optimization_actions: actions,
-      schedule_health: analyzeScheduleHealth(tasks, timezone),
-    };
-  } catch (err) {
-    logger.error('getLifeOptimization error:', err.message);
-    throw err;
-  }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function getProgressLabel(progress) {
-  if (progress >= 100) return 'مكتمل ✅';
-  if (progress >= 75)  return 'قريب من الإنجاز 🏁';
-  if (progress >= 50)  return 'في منتصف الطريق 📍';
-  if (progress >= 25)  return 'بداية جيدة 🌱';
-  return 'لم يبدأ بعد 🕐';
-}
-
-function getMomentum(goal) {
-  if (!goal.target_date) return 'normal';
-  const daysLeft = moment(goal.target_date).diff(moment(), 'days');
-  const progress = goal.progress || 0;
-  const expectedProgress = Math.max(0, 100 - (daysLeft / 90) * 100); // 90 day default
-  if (progress > expectedProgress + 10) return 'ahead';
-  if (progress < expectedProgress - 10) return 'behind';
-  return 'on_track';
-}
-
-function calcGoalScore(goals) {
-  if (goals.length === 0) return 50;
-  const avgProgress = goals.reduce((s, g) => s + (g.progress || 0), 0) / goals.length;
-  return Math.round(avgProgress);
-}
-
-function calcConsistency(tasks, timezone) {
-  if (tasks.length < 7) return 50;
-  const dayMap = {};
-  tasks.filter(t => t.status === 'completed').forEach(t => {
-    if (t.completed_at) {
-      const day = moment.tz(t.completed_at, timezone).format('YYYY-MM-DD');
-      dayMap[day] = true;
+    if (!goals.length) {
+      return { activeGoals: [], goalTaskMap: {}, neglectedGoals: [], goalSuggestions: [], summary: { total: 0 } };
     }
+
+    // Fetch all pending + recent completed tasks for this user
+    const tasks = await Task.findAll({
+      where: {
+        user_id: userId,
+        [Op.or]: [
+          { status: { [Op.in]: ['pending', 'in_progress'] } },
+          { status: 'completed', completed_at: { [Op.gte]: moment().tz(timezone).subtract(7, 'days').toDate() } },
+        ],
+      },
+    });
+
+    // Build goal-task map
+    const goalTaskMap = {};
+    const goalIds = new Set(goals.map(g => g.id));
+
+    for (const goal of goals) {
+      goalTaskMap[goal.id] = [];
+    }
+
+    for (const task of tasks) {
+      if (task.goal_id && goalIds.has(task.goal_id)) {
+        goalTaskMap[task.goal_id].push(task);
+      } else {
+        // Try to match by category or tags
+        for (const goal of goals) {
+          if (task.category && task.category === goal.category) {
+            goalTaskMap[goal.id].push(task);
+            break;
+          }
+        }
+      }
+    }
+
+    // Score and sort goals
+    const scoredGoals = goals.map(g => {
+      const linked = goalTaskMap[g.id] || [];
+      const priorityScore = scoreGoal(g, linked);
+      const completedLinked = linked.filter(t => t.status === 'completed').length;
+      const totalLinked = linked.length;
+
+      return {
+        id: g.id,
+        title: g.title,
+        category: g.category,
+        progress: g.progress || 0,
+        target_date: g.target_date,
+        status: g.status,
+        milestones: g.milestones || [],
+        priorityScore,
+        linkedTasks: totalLinked,
+        completedTasks: completedLinked,
+        pendingTasks: totalLinked - completedLinked,
+      };
+    }).sort((a, b) => b.priorityScore - a.priorityScore);
+
+    // Detect neglected goals (no task activity in 7+ days, progress < 80%)
+    const neglectedGoals = scoredGoals.filter(g => {
+      if (g.progress >= 80) return false;
+      const linked = goalTaskMap[g.id] || [];
+      const recentActivity = linked.some(t =>
+        t.completed_at && moment(t.completed_at).isAfter(moment().subtract(7, 'days'))
+      );
+      return !recentActivity && g.pendingTasks === 0;
+    });
+
+    // Generate daily suggestions based on goals
+    const goalSuggestions = [];
+    for (const goal of scoredGoals.slice(0, 5)) { // top 5 priority goals
+      const linked = goalTaskMap[goal.id] || [];
+      const pendingTasks = linked.filter(t => t.status !== 'completed');
+
+      if (pendingTasks.length === 0 && goal.progress < 100) {
+        goalSuggestions.push({
+          type: 'create_task_for_goal',
+          goal_id: goal.id,
+          goal_title: goal.title,
+          message: `هدف "${goal.title}" يحتاج مهام جديدة — التقدم الحالي ${goal.progress}%`,
+          priority: goal.priorityScore > 70 ? 'high' : 'medium',
+        });
+      } else if (pendingTasks.length > 0) {
+        const topTask = pendingTasks[0];
+        goalSuggestions.push({
+          type: 'focus_on_goal_task',
+          goal_id: goal.id,
+          goal_title: goal.title,
+          task_id: topTask.id,
+          task_title: topTask.title,
+          message: `ركّز على "${topTask.title}" لتحقيق هدف "${goal.title}"`,
+          priority: goal.priorityScore > 70 ? 'high' : 'medium',
+        });
+      }
+
+      // Deadline warning
+      if (goal.target_date) {
+        const daysLeft = moment(goal.target_date).diff(moment(), 'days');
+        if (daysLeft >= 0 && daysLeft <= 3 && goal.progress < 80) {
+          goalSuggestions.push({
+            type: 'goal_deadline_warning',
+            goal_id: goal.id,
+            goal_title: goal.title,
+            message: `⚠️ هدف "${goal.title}" ينتهي خلال ${daysLeft} يوم والتقدم ${goal.progress}% فقط!`,
+            priority: 'high',
+          });
+        }
+      }
+    }
+
+    // Summary
+    const summary = {
+      total: goals.length,
+      onTrack: scoredGoals.filter(g => g.progress >= 50 || g.priorityScore < 60).length,
+      atRisk: scoredGoals.filter(g => g.priorityScore >= 70 && g.progress < 50).length,
+      neglected: neglectedGoals.length,
+    };
+
+    return { activeGoals: scoredGoals, goalTaskMap, neglectedGoals, goalSuggestions, summary };
+  } catch (err) {
+    logger.error('[GOAL-ENGINE] getGoalContext error:', err.message);
+    return { activeGoals: [], goalTaskMap: {}, neglectedGoals: [], goalSuggestions: [], summary: { total: 0 } };
+  }
+}
+
+/**
+ * updateGoalProgress(goalId, userId)
+ * Recalculates goal progress from linked task completion.
+ */
+async function updateGoalProgress(goalId, userId) {
+  const { Goal, Task } = getModels();
+  if (!Goal || !Task || !goalId) return;
+
+  try {
+    const tasks = await Task.findAll({ where: { goal_id: goalId, user_id: userId } });
+    if (!tasks.length) return;
+
+    const completed = tasks.filter(t => t.status === 'completed').length;
+    const progress = Math.round((completed / tasks.length) * 100);
+
+    const goal = await Goal.findByPk(goalId);
+    if (goal && goal.user_id === userId) {
+      const updates = { progress };
+      if (progress >= 100 && goal.status === 'active') {
+        updates.status = 'completed';
+      }
+      await goal.update(updates);
+      logger.info(`[GOAL-ENGINE] Goal "${goal.title}" progress updated to ${progress}%`);
+    }
+  } catch (err) {
+    logger.warn('[GOAL-ENGINE] updateGoalProgress error:', err.message);
+  }
+}
+
+/**
+ * getGoalBoostForTask(task, goalContext)
+ * Returns a priority boost (0-20) for a task based on its goal alignment.
+ * Used by dayplanner to rank goal-linked tasks higher.
+ */
+function getGoalBoostForTask(task, goalContext) {
+  if (!task.goal_id || !goalContext?.activeGoals?.length) return 0;
+
+  const goal = goalContext.activeGoals.find(g => g.id === task.goal_id);
+  if (!goal) return 0;
+
+  // Scale boost from goal priority score: 100 → +20, 50 → +10, 0 → 0
+  return Math.round(goal.priorityScore * 0.2);
+}
+
+/**
+ * getGoalSummaryForAI(userId, timezone)
+ * Returns a concise text summary for inclusion in AI context prompts.
+ */
+async function getGoalSummaryForAI(userId, timezone = 'Africa/Cairo') {
+  const ctx = await getGoalContext(userId, timezone);
+  if (!ctx.activeGoals.length) return 'لا توجد أهداف نشطة حالياً.';
+
+  const lines = ctx.activeGoals.slice(0, 5).map(g => {
+    const deadline = g.target_date ? ` (ينتهي ${g.target_date})` : '';
+    return `• ${g.title}: ${g.progress}% مكتمل${deadline} — ${g.pendingTasks} مهمة متبقية`;
   });
-  const activeDays = Object.keys(dayMap).length;
-  return Math.min(100, Math.round((activeDays / 30) * 100 * 1.5));
+
+  if (ctx.summary.atRisk > 0) {
+    lines.push(`⚠️ ${ctx.summary.atRisk} أهداف في خطر التأخر`);
+  }
+  if (ctx.summary.neglected > 0) {
+    lines.push(`💤 ${ctx.summary.neglected} أهداف مهملة تحتاج اهتمام`);
+  }
+
+  return lines.join('\n');
 }
 
-function buildOptimizationActions(dimensions, goals, tasks) {
-  const actions = [];
-  const lowest  = [...dimensions].sort((a, b) => a.score - b.score)[0];
-
-  if (lowest.dim === 'productivity' && lowest.score < 60) {
-    actions.push({ priority: 1, action: 'رفع الإنتاجية', description: 'ركّز على إنجاز 3 مهام يومياً بشكل منتظم', icon: '📈' });
-  }
-  if (lowest.dim === 'goal_progress' && goals.length === 0) {
-    actions.push({ priority: 1, action: 'تحديد هدف', description: 'أضف هدفاً واحداً واضحاً لهذا الشهر', icon: '🎯' });
-  }
-  if (lowest.dim === 'task_completion' && lowest.score < 50) {
-    actions.push({ priority: 2, action: 'تحسين إتمام المهام', description: 'قلّل عدد المهام اليومية وركّز على الجودة لا الكمية', icon: '✅' });
-  }
-
-  // Schedule protection
-  const urgentCount = tasks.filter(t => t.priority === 'urgent' && t.status !== 'completed').length;
-  if (urgentCount >= 3) {
-    actions.push({ priority: 1, action: 'حماية وقت التركيز', description: 'لديك مهام عاجلة — أغلق الإشعارات وخصص ساعتين للإنجاز', icon: '🛡️' });
-  }
-
-  // Balance workload
-  actions.push({ priority: 3, action: 'توازن عبء العمل', description: 'وزّع مهامك على أيام الأسبوع بالتساوي لتجنب الإجهاد', icon: '⚖️' });
-
-  return actions.sort((a, b) => a.priority - b.priority).slice(0, 4);
-}
-
-function analyzeScheduleHealth(tasks, timezone) {
-  if (tasks.length === 0) return { score: 50, label: 'لا توجد بيانات كافية', issues: [] };
-
-  const issues = [];
-  const urgentPending = tasks.filter(t => t.priority === 'urgent' && t.status !== 'completed').length;
-  const overdueTasks  = tasks.filter(t => t.due_date && moment(t.due_date).isBefore(moment()) && t.status !== 'completed').length;
-
-  if (urgentPending >= 5) issues.push({ type: 'overload',  message: `${urgentPending} مهمة عاجلة معلقة` });
-  if (overdueTasks >= 3)  issues.push({ type: 'overdue',   message: `${overdueTasks} مهمة متأخرة` });
-
-  const score = Math.max(0, 100 - urgentPending * 8 - overdueTasks * 10);
-  return {
-    score,
-    label: score >= 70 ? 'جدول صحي' : score >= 50 ? 'يحتاج مراجعة' : 'جدول مكتظ',
-    issues,
-  };
-}
-
-module.exports = { getUserGoals, createGoal, updateGoalProgress, getLifeOptimization };
+module.exports = {
+  getGoalContext,
+  updateGoalProgress,
+  getGoalBoostForTask,
+  getGoalSummaryForAI,
+  scoreGoal,
+};

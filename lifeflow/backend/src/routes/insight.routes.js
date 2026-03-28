@@ -123,7 +123,7 @@ router.get('/plan', async (req, res) => {
     let ctx = {};
     try {
       ctx = await conversationService.buildUserContext(req.user.id, timezone);
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[INSIGHT_ROUTES] Non-critical operation failed: ${_e.message}`); }
 
     const plan = await planningEngine.generateDailyPlan(req.user.id, { ...ctx, timezone });
     res.json({ success: true, plan });

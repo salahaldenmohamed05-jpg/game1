@@ -18,7 +18,7 @@
 const logger = require('../utils/logger');
 
 // ─── Lazy loaders ─────────────────────────────────────────────────────────────
-function getAIClient() { try { return require('./ai/ai.client'); } catch (_) { return null; } }
+function getAIClient() { try { return require('./ai/ai.client'); } catch (_e) { logger.debug(`[TASK_DECOMPOSITION_SERVICE] Module './ai/ai.client' not available: ${_e.message}`); return null; } }
 
 // ─── Static patterns for common task categories ───────────────────────────────
 // Used when AI is unavailable

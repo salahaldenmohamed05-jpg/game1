@@ -1,7 +1,12 @@
 /**
- * Dashboard Tab - تبويب لوحة التحكم
- * ====================================
- * الشاشة الرئيسية للتطبيق
+ * Dashboard Tab - Phase C: Simplified Today Flow
+ * ==================================================
+ * Phase C: Dashboard is now a SECONDARY view.
+ * Simplified to focus on:
+ *   1. Today Summary (progress bar)
+ *   2. Smart Action Buttons
+ *   3. Tasks + Habits (compact interactive lists)
+ *   4. Engagement feedback
  */
 
 import 'package:flutter/material.dart';
@@ -10,13 +15,9 @@ import '../../providers/auth_provider.dart';
 import '../../providers/task_provider.dart';
 import '../../providers/habit_provider.dart';
 import '../../providers/mood_provider.dart';
-import '../../providers/ai_provider.dart';
 import '../../utils/app_constants.dart';
-import '../../widgets/gradient_card.dart';
 import '../../widgets/stat_card.dart';
 import '../../services/api_service.dart';
-import 'dart:convert';
-import 'package:http/http.dart' as http;
 
 class DashboardTab extends StatefulWidget {
   const DashboardTab({super.key});
@@ -54,9 +55,9 @@ class _DashboardTabState extends State<DashboardTab> {
 
   String _getGreeting() {
     final hour = DateTime.now().hour;
-    if (hour < 12) return 'صباح الخير 🌅';
+    if (hour < 12) return 'صباح الخير ☀️';
     if (hour < 17) return 'مساء النور 🌤';
-    if (hour < 21) return 'طاب مساؤك 🌆';
+    if (hour < 21) return 'مساء الخير 🌆';
     return 'تصبح على خير 🌙';
   }
 
@@ -77,40 +78,56 @@ class _DashboardTabState extends State<DashboardTab> {
         backgroundColor: AppConstants.darkCard,
         child: CustomScrollView(
           slivers: [
-            // Header
+            // Compact Header
             SliverAppBar(
-              expandedHeight: 140,
+              expandedHeight: 100,
               floating: false,
               pinned: false,
               backgroundColor: Colors.transparent,
               flexibleSpace: FlexibleSpaceBar(
                 background: Container(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topRight,
-                      end: Alignment.bottomLeft,
-                      colors: [
-                        AppConstants.primaryPurple.withOpacity(0.2),
-                        Colors.transparent,
-                      ],
-                    ),
-                  ),
-                  padding: const EdgeInsets.fromLTRB(20, 60, 20, 20),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                  padding: const EdgeInsets.fromLTRB(20, 60, 20, 12),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text(
-                        _getGreeting(),
-                        style: Theme.of(context).textTheme.headlineMedium,
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            _getGreeting(),
+                            style: const TextStyle(
+                              fontFamily: AppConstants.fontFamily,
+                              fontSize: 20,
+                              fontWeight: FontWeight.w900,
+                              color: AppConstants.textPrimary,
+                            ),
+                          ),
+                          Text(
+                            user?.name ?? '',
+                            style: const TextStyle(
+                              fontFamily: AppConstants.fontFamily,
+                              fontSize: 14,
+                              color: AppConstants.textMuted,
+                            ),
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 4),
-                      Text(
-                        user?.name ?? '',
-                        style: const TextStyle(
-                          fontFamily: AppConstants.fontFamily,
-                          fontSize: 22,
-                          fontWeight: FontWeight.w900,
-                          color: AppConstants.textPrimary,
+                      // Productivity Score Badge
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: AppConstants.primaryPurple.withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Text(
+                          '🏆 ${summary?['productivity_score'] ?? 0}',
+                          style: const TextStyle(
+                            fontFamily: AppConstants.fontFamily,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: AppConstants.primaryPurple,
+                          ),
                         ),
                       ),
                     ],
@@ -124,13 +141,13 @@ class _DashboardTabState extends State<DashboardTab> {
               padding: const EdgeInsets.all(16),
               sliver: SliverList(
                 delegate: SliverChildListDelegate([
-                  // Smart Suggestion
-                  if (_dashData?['smart_suggestion'] != null) ...[
-                    _SmartSuggestionCard(
-                      suggestion: _dashData!['smart_suggestion'],
-                    ),
-                    const SizedBox(height: 16),
-                  ],
+                  // Phase C: Today Progress Card
+                  _TodayProgressCard(summary: summary),
+                  const SizedBox(height: 12),
+
+                  // Engagement reward
+                  if ((summary?['tasks']?['completed'] ?? 0) >= 1)
+                    _EngagementReward(summary: summary),
 
                   // Stats Row
                   Row(
@@ -204,61 +221,130 @@ class _DashboardTabState extends State<DashboardTab> {
   }
 }
 
-// Smart Suggestion Card
-class _SmartSuggestionCard extends StatelessWidget {
-  final Map<String, dynamic> suggestion;
+// Phase C: Today Progress Card with progress bar
+class _TodayProgressCard extends StatelessWidget {
+  final Map<String, dynamic>? summary;
 
-  const _SmartSuggestionCard({required this.suggestion});
+  const _TodayProgressCard({this.summary});
 
   @override
   Widget build(BuildContext context) {
+    final tasksTotal = summary?['tasks']?['total'] ?? 0;
+    final tasksCompleted = summary?['tasks']?['completed'] ?? 0;
+    final habitsTotal = summary?['habits']?['total'] ?? 0;
+    final habitsCompleted = summary?['habits']?['completed'] ?? 0;
+    final overdue = summary?['tasks']?['overdue'] ?? 0;
+
+    final totalItems = tasksTotal + habitsTotal;
+    final doneItems = tasksCompleted + habitsCompleted;
+    final progressPct = totalItems > 0 ? (doneItems / totalItems) : 0.0;
+
     return Container(
-      padding: const EdgeInsets.all(AppConstants.paddingM),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            AppConstants.primaryPurple.withOpacity(0.15),
-            AppConstants.secondaryTeal.withOpacity(0.10),
-          ],
-          begin: Alignment.topRight,
-          end: Alignment.bottomLeft,
-        ),
+        color: AppConstants.darkCard,
         borderRadius: BorderRadius.circular(AppConstants.radiusL),
-        border: Border.all(
-          color: AppConstants.primaryPurple.withOpacity(0.3),
-        ),
+        border: Border.all(color: AppConstants.darkBorder),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('💡', style: TextStyle(fontSize: 24)),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'اقتراح ذكي',
-                  style: TextStyle(
-                    fontFamily: AppConstants.fontFamily,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: AppConstants.primaryPurple,
-                  ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'تقدم اليوم',
+                style: TextStyle(
+                  fontFamily: AppConstants.fontFamily,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  color: AppConstants.textPrimary,
                 ),
-                const SizedBox(height: 3),
-                Text(
-                  suggestion['suggestion'] ?? '',
-                  style: const TextStyle(
-                    fontFamily: AppConstants.fontFamily,
-                    fontSize: 13,
-                    color: AppConstants.textPrimary,
-                    height: 1.4,
-                  ),
+              ),
+              Text(
+                '${(progressPct * 100).round()}%',
+                style: const TextStyle(
+                  fontFamily: AppConstants.fontFamily,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w900,
+                  color: AppConstants.primaryPurple,
                 ),
-              ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: progressPct,
+              minHeight: 8,
+              backgroundColor: AppConstants.darkBorder,
+              valueColor: AlwaysStoppedAnimation<Color>(
+                progressPct >= 0.8
+                    ? AppConstants.accentGreen
+                    : progressPct >= 0.5
+                        ? AppConstants.primaryPurple
+                        : AppConstants.accentOrange,
+              ),
             ),
           ),
+          if (overdue > 0) ...[
+            const SizedBox(height: 8),
+            Text(
+              '⚠️ $overdue مهمة متأخرة',
+              style: const TextStyle(
+                fontFamily: AppConstants.fontFamily,
+                fontSize: 11,
+                color: AppConstants.accentRed,
+              ),
+            ),
+          ],
         ],
+      ),
+    );
+  }
+}
+
+// Phase C: Engagement Reward
+class _EngagementReward extends StatelessWidget {
+  final Map<String, dynamic>? summary;
+
+  const _EngagementReward({this.summary});
+
+  @override
+  Widget build(BuildContext context) {
+    final tasksCompleted = summary?['tasks']?['completed'] ?? 0;
+    final habitsCompleted = summary?['habits']?['completed'] ?? 0;
+
+    String message;
+    Color color;
+    if (tasksCompleted >= 5 && habitsCompleted >= 3) {
+      message = 'أداء استثنائي! أنت نجم اليوم ⭐';
+      color = AppConstants.accentOrange;
+    } else if (tasksCompleted >= 3) {
+      message = 'أحسنت! استمر بهذا الإيقاع 🔥';
+      color = AppConstants.accentOrange;
+    } else {
+      message = 'بداية رائعة! كمّل وما توقفش 💪';
+      color = AppConstants.accentGreen;
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(AppConstants.radiusM),
+        border: Border.all(color: color.withOpacity(0.2)),
+      ),
+      child: Text(
+        message,
+        style: TextStyle(
+          fontFamily: AppConstants.fontFamily,
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          color: color,
+        ),
       ),
     );
   }
@@ -281,7 +367,7 @@ class _SectionHeader extends StatelessWidget {
           title,
           style: const TextStyle(
             fontFamily: AppConstants.fontFamily,
-            fontSize: 16,
+            fontSize: 15,
             fontWeight: FontWeight.w700,
             color: AppConstants.textPrimary,
           ),
@@ -299,7 +385,7 @@ class _TodayTasksList extends StatelessWidget {
 
     if (tasks.isEmpty) {
       return Container(
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
           color: AppConstants.darkCard,
           borderRadius: BorderRadius.circular(AppConstants.radiusL),
@@ -319,10 +405,10 @@ class _TodayTasksList extends StatelessWidget {
     }
 
     return Column(
-      children: tasks.take(5).map((task) {
+      children: tasks.take(4).map((task) {
         return Container(
-          margin: const EdgeInsets.only(bottom: 8),
-          padding: const EdgeInsets.all(12),
+          margin: const EdgeInsets.only(bottom: 6),
+          padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
             color: AppConstants.darkCard,
             borderRadius: BorderRadius.circular(AppConstants.radiusM),
@@ -330,17 +416,16 @@ class _TodayTasksList extends StatelessWidget {
           ),
           child: Row(
             children: [
-              // Priority dot
               Container(
-                width: 10,
-                height: 10,
+                width: 8,
+                height: 8,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   color: AppConstants.priorityColors[task.priority] ??
                       AppConstants.textMuted,
                 ),
               ),
-              const SizedBox(width: 12),
+              const SizedBox(width: 10),
               Expanded(
                 child: Text(
                   task.title,
@@ -375,7 +460,7 @@ class _TodayHabitsList extends StatelessWidget {
 
     if (habits.isEmpty) {
       return Container(
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
           color: AppConstants.darkCard,
           borderRadius: BorderRadius.circular(AppConstants.radiusL),
@@ -395,8 +480,8 @@ class _TodayHabitsList extends StatelessWidget {
     }
 
     return Wrap(
-      spacing: 10,
-      runSpacing: 10,
+      spacing: 8,
+      runSpacing: 8,
       children: habits.take(6).map((habit) {
         return GestureDetector(
           onTap: () async {
@@ -406,7 +491,7 @@ class _TodayHabitsList extends StatelessWidget {
           },
           child: Container(
             width: (MediaQuery.of(context).size.width - 60) / 3,
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.all(10),
             decoration: BoxDecoration(
               color: habit.completedToday
                   ? AppConstants.primaryPurple.withOpacity(0.15)
@@ -420,44 +505,37 @@ class _TodayHabitsList extends StatelessWidget {
             ),
             child: Column(
               children: [
-                Text(
-                  habit.icon ?? '⭐',
-                  style: const TextStyle(fontSize: 26),
-                ),
-                const SizedBox(height: 6),
+                Text(habit.icon ?? '⭐', style: const TextStyle(fontSize: 24)),
+                const SizedBox(height: 4),
                 Text(
                   habit.name,
                   textAlign: TextAlign.center,
-                  maxLines: 2,
+                  maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     fontFamily: AppConstants.fontFamily,
-                    fontSize: 11,
+                    fontSize: 10,
                     color: AppConstants.textSecondary,
                   ),
                 ),
                 if (habit.currentStreak > 0) ...[
-                  const SizedBox(height: 4),
+                  const SizedBox(height: 2),
                   Text(
-                    '🔥 ${habit.currentStreak}',
+                    '🔥${habit.currentStreak}',
                     style: const TextStyle(
-                      fontSize: 10,
+                      fontSize: 9,
                       color: AppConstants.accentOrange,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
                 ],
                 if (habit.completedToday)
-                  const Padding(
-                    padding: EdgeInsets.only(top: 4),
-                    child: Text(
-                      '✓ أنجزت',
-                      style: TextStyle(
-                        fontSize: 9,
-                        color: AppConstants.accentGreen,
-                        fontWeight: FontWeight.w600,
-                        fontFamily: AppConstants.fontFamily,
-                      ),
+                  const Text(
+                    '✓',
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: AppConstants.accentGreen,
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
               ],

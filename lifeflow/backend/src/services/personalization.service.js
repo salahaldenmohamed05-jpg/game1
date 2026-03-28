@@ -19,12 +19,12 @@ const memory  = require('./memory.service');
 // ─── Model Loader ─────────────────────────────────────────────────────────────
 function getModels() {
   const models = {};
-  try { models.Task             = require('../models/task.model'); }              catch (_) {}
-  try { models.MoodEntry        = require('../models/mood.model'); }              catch (_) {}
-  try { models.Habit            = require('../models/habit.model'); }             catch (_) {}
-  try { models.HabitLog         = require('../models/habit_log.model'); }         catch (_) {}
-  try { models.ProductivityScore= require('../models/productivity_score.model'); } catch (_) {}
-  try { models.EnergyLog        = require('../models/energy_log.model'); }        catch (_) {}
+  try { models.Task = require('../models/task.model'); } catch (_e) { logger.debug(`[PERSONALIZATION_SERVICE] Model load failed: ${_e.message}`); }
+  try { models.MoodEntry = require('../models/mood.model'); } catch (_e) { logger.debug(`[PERSONALIZATION_SERVICE] Model load failed: ${_e.message}`); }
+  try { models.Habit = require('../models/habit.model').Habit; } catch (_e) { logger.debug(`[PERSONALIZATION_SERVICE] Model load failed: ${_e.message}`); }
+  try { models.HabitLog = require('../models/habit_log.model'); } catch (_e) { logger.debug(`[PERSONALIZATION_SERVICE] Model load failed: ${_e.message}`); }
+  try { models.ProductivityScore = require('../models/productivity_score.model'); } catch (_e) { logger.debug(`[PERSONALIZATION_SERVICE] Model load failed: ${_e.message}`); }
+  try { models.EnergyLog = require('../models/energy_log.model'); } catch (_e) { logger.debug(`[PERSONALIZATION_SERVICE] Model load failed: ${_e.message}`); }
   return models;
 }
 
@@ -321,11 +321,39 @@ async function buildProfile(userId, timezone = 'Africa/Cairo') {
 /**
  * Build a context string for injection into AI prompts.
  */
-function buildPersonalizationBlock(profile) {
+function buildPersonalizationBlock(profile, userContext = null) {
   if (!profile) return '';
 
   const parts = [];
 
+  // ── User profile data (from ProfileView) ──────────────────────────
+  const ctx = userContext?.profile;
+  if (ctx) {
+    const roleLabels = { student: 'طالب', employee: 'موظف', freelancer: 'عمل حر', entrepreneur: 'رائد أعمال', parent: 'والد/ة' };
+    if (ctx.role) parts.push(`👤 الدور: ${roleLabels[ctx.role] || ctx.role}`);
+    if (ctx.focus_areas?.length > 0) {
+      const areaLabels = { work: 'العمل', study: 'الدراسة', fitness: 'اللياقة', health: 'الصحة', creativity: 'الإبداع', social: 'العلاقات', finance: 'المالية' };
+      parts.push(`🎯 مجالات التركيز: ${ctx.focus_areas.map(a => areaLabels[a] || a).join(', ')}`);
+    }
+    const workTimeLabels = { early_morning: 'الفجر', morning: 'الصباح', afternoon: 'الظهر', evening: 'المساء', night: 'الليل' };
+    if (ctx.preferred_work_time) parts.push(`🕐 وقت العمل المفضل: ${workTimeLabels[ctx.preferred_work_time] || ctx.preferred_work_time}`);
+    const energyLabels = { very_low: 'منخفضة جداً', low: 'منخفضة', medium: 'متوسطة', high: 'عالية', very_high: 'عالية جداً' };
+    if (ctx.energy_level) parts.push(`🔋 مستوى الطاقة: ${energyLabels[ctx.energy_level] || ctx.energy_level}`);
+    if (ctx.weekly_goals?.length > 0) parts.push(`📌 أهداف أسبوعية: ${ctx.weekly_goals.join(' | ')}`);
+    if (ctx.monthly_goals?.length > 0) parts.push(`🗓️ أهداف شهرية: ${ctx.monthly_goals.join(' | ')}`);
+  }
+
+  // ── AI settings (from SettingsView) ───────────────────────────────
+  const settings = userContext?.settings;
+  if (settings) {
+    const interventionLabels = { low: 'منخفض (فقط عند الطلب)', medium: 'متوسط (اقتراحات ذكية)', high: 'عالي (استباقي نشط)' };
+    if (settings.ai_intervention_level) parts.push(`🤖 مستوى التدخل: ${interventionLabels[settings.ai_intervention_level] || settings.ai_intervention_level}`);
+    const styleLabels = { minimal: 'مختصر', balanced: 'متوازن', proactive: 'مفصّل' };
+    if (settings.recommendation_style) parts.push(`💡 أسلوب التوصيات: ${styleLabels[settings.recommendation_style] || settings.recommendation_style}`);
+    if (settings.auto_reschedule) parts.push('🔄 إعادة الجدولة التلقائية: مفعّل');
+  }
+
+  // ── Computed patterns (from AI analysis) ──────────────────────────
   if (profile.focusHours?.length > 0) {
     parts.push(`⏰ أفضل أوقات التركيز: ${profile.focusHours.map(h => `${h}:00`).join(', ')}`);
   }

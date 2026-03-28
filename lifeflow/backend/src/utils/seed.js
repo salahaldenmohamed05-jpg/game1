@@ -103,6 +103,7 @@ async function seed() {
         },
       });
     } catch (e) {
+    logger.error('[SEED] Seeding error:', { error: e.message });
       // Skip if exists
     }
   }

@@ -142,6 +142,7 @@ exports.verifyEmail = async (req, res) => {
     logger.info(`[AUTH] Email verified: ${email}`);
     res.json({ success: true, message: 'تم تفعيل حسابك بنجاح! 🎉' });
   } catch (e) {
+    logger.error('[AUTH] verify-email error:', { error: e.message });
     res.status(500).json({ success: false, message: 'حدث خطأ' });
   }
 };
@@ -164,6 +165,7 @@ exports.resendVerification = async (req, res) => {
     sendOTP(email, otp, 'verify');
     res.json({ success: true, message: 'تم إرسال رمز التحقق إلى بريدك الإلكتروني' });
   } catch (e) {
+    logger.error('[AUTH] Operation error:', { error: e.message });
     res.status(500).json({ success: false, message: 'حدث خطأ' });
   }
 };
@@ -356,7 +358,7 @@ exports.demoLogin = async (req, res) => {
     // Seed demo data if empty
     try {
       const Task  = require('../models/task.model');
-      const Habit = require('../models/habit.model');
+      const { Habit } = require('../models/habit.model');
       const Mood  = require('../models/mood.model');
 
       const taskCount = await Task.count({ where: { user_id: user.id } });

@@ -378,7 +378,6 @@ class ApiService {
       return {'success': false, 'error': 'تعذر تحميل مسار الأداء'};
     }
   }
-}
 
   // ─── Phase 9: Energy Score ─────────────────────────────────────────────────
 
@@ -433,6 +432,60 @@ class ApiService {
       return _handleResponse(response);
     } catch (e) {
       return {'success': false, 'error': 'تعذر بناء خطة اليوم'};
+    }
+  }
+
+  // ─── Phase B: Profile Settings ─────────────────────────────────────────────
+
+  Future<Map<String, dynamic>> getProfileSettings([String? token]) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/profile-settings/profile'),
+        headers: _headers(token),
+      ).timeout(const Duration(seconds: 15));
+      return _handleResponse(response);
+    } catch (e) {
+      return {'success': false, 'error': 'تعذر تحميل إعدادات الملف الشخصي'};
+    }
+  }
+
+  Future<Map<String, dynamic>> updateProfileSettings(Map<String, dynamic> data, [String? token]) async {
+    try {
+      final response = await http.put(
+        Uri.parse('$baseUrl/profile-settings/profile'),
+        headers: _headers(token),
+        body: jsonEncode(data),
+      ).timeout(const Duration(seconds: 15));
+      return _handleResponse(response);
+    } catch (e) {
+      return {'success': false, 'error': 'تعذر حفظ إعدادات الملف الشخصي'};
+    }
+  }
+
+  // ─── Phase B: App Settings ─────────────────────────────────────────────────
+
+  Future<Map<String, dynamic>> getAppSettings([String? token]) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/profile-settings/settings'),
+        headers: _headers(token),
+      ).timeout(const Duration(seconds: 15));
+      return _handleResponse(response);
+    } catch (e) {
+      return {'success': false, 'error': 'تعذر تحميل الإعدادات'};
+    }
+  }
+
+  Future<Map<String, dynamic>> updateAppSettings(Map<String, dynamic> data, [String? token]) async {
+    try {
+      final response = await http.put(
+        Uri.parse('$baseUrl/profile-settings/settings'),
+        headers: _headers(token),
+        body: jsonEncode(data),
+      ).timeout(const Duration(seconds: 15));
+      return _handleResponse(response);
+    } catch (e) {
+      return {'success': false, 'error': 'تعذر حفظ الإعدادات'};
     }
   }
 }

@@ -26,28 +26,38 @@ const { chat: chatFallback }               = require('../ai/ai.service'); // bac
 
 // ─── Lazy Service Loaders ─────────────────────────────────────────────────────
 function getContextSnapshot() {
-  try { return require('./context.snapshot.service'); } catch (_) { return null; }
+  try { return require('./context.snapshot.service'); } catch (_e) { logger.debug(`[ORCHESTRATOR_SERVICE] Module './context.snapshot.service' not available: ${_e.message}`); return null; }
 }
 function getLearning() {
-  try { return require('./learning.engine.service'); } catch (_) { return null; }
+  try { return require('./learning.engine.service'); } catch (_e) { logger.debug(`[ORCHESTRATOR_SERVICE] Module './learning.engine.service' not available: ${_e.message}`); return null; }
 }
 function getPrediction() {
-  try { return require('./prediction.service'); } catch (_) { return null; }
+  try { return require('./prediction.service'); } catch (_e) { logger.debug(`[ORCHESTRATOR_SERVICE] Module './prediction.service' not available: ${_e.message}`); return null; }
 }
 function getPlanning() {
-  try { return require('./planning.engine.service'); } catch (_) { return null; }
+  try { return require('./planning.engine.service'); } catch (_e) { logger.debug(`[ORCHESTRATOR_SERVICE] Module './planning.engine.service' not available: ${_e.message}`); return null; }
 }
 function getDecisionEngine() {
-  try { return require('./decision.engine.service'); } catch (_) { return null; }
+  try { return require('./decision.engine.service'); } catch (_e) { logger.debug(`[ORCHESTRATOR_SERVICE] Module './decision.engine.service' not available: ${_e.message}`); return null; }
 }
 function getExplainability() {
-  try { return require('./explainability.service'); } catch (_) { return null; }
+  try { return require('./explainability.service'); } catch (_e) { logger.debug(`[ORCHESTRATOR_SERVICE] Module './explainability.service' not available: ${_e.message}`); return null; }
 }
 function getDispatcher() {
-  try { return require('./execution.dispatcher.service'); } catch (_) { return null; }
+  try { return require('./execution.dispatcher.service'); } catch (_e) { logger.debug(`[ORCHESTRATOR_SERVICE] Module './execution.dispatcher.service' not available: ${_e.message}`); return null; }
 }
 function getPresenter() {
-  try { return require('./assistant.presenter.service'); } catch (_) { return null; }
+  try { return require('./assistant.presenter.service'); } catch (_e) { logger.debug(`[ORCHESTRATOR_SERVICE] Module './assistant.presenter.service' not available: ${_e.message}`); return null; }
+}
+// Step 1+3: Add behavior and energy service loaders
+function getBehaviorModel() {
+  try { return require('./behavior.model.service'); } catch (_e) { return null; }
+}
+function getEnergyService() {
+  try { return require('./energy.service'); } catch (_e) { return null; }
+}
+function getExecutionEngine() {
+  try { return require('./execution.engine.service'); } catch (_e) { return null; }
 }
 
 // ─── Mode Detection ───────────────────────────────────────────────────────────
@@ -148,9 +158,9 @@ function buildContextBlock(ctx, profile, historyStr, snapshot = null, learningPr
     }
   }
 
-  // Personalization
+  // Personalization (now includes profile + settings from ProfileView/SettingsView)
   if (profile) {
-    const personBlock = buildPersonalizationBlock(profile);
+    const personBlock = buildPersonalizationBlock(profile, ctx);
     if (personBlock) parts.push(personBlock);
   }
 
@@ -161,6 +171,12 @@ function buildContextBlock(ctx, profile, historyStr, snapshot = null, learningPr
   // History
   if (historyStr) {
     parts.push(`\nسياق المحادثة الأخيرة:\n${historyStr}`);
+  }
+
+  // Step 1+3: Behavior profile data
+  // (injected via userCtx.behaviorInsights by the orchestrate function)
+  if (ctx.behaviorInsights) {
+    parts.push(`\nرؤى السلوك: ${ctx.behaviorInsights}`);
   }
 
   return parts.join('\n');
@@ -193,7 +209,7 @@ async function orchestrate({
       if (ctxService) {
         snapshot = await ctxService.getOrGenerateSnapshot(userId, timezone);
       }
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[ORCHESTRATOR_SERVICE] Non-critical operation failed: ${_e.message}`); }
 
     // ── STEP 2: Learning Engine ───────────────────────────────────────────────
     let learningProfile = null;
@@ -211,7 +227,37 @@ async function orchestrate({
           intent : intentCategory,
         });
       }
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[ORCHESTRATOR_SERVICE] Non-critical operation failed: ${_e.message}`); }
+
+    // ── STEP 2b: Behavior Profile (Step 1+3 addition) ────────────────────────
+    let behaviorInsights = null;
+    try {
+      const behaviorSvc = getBehaviorModel();
+      if (behaviorSvc) {
+        const profile = await behaviorSvc.getBehaviorProfile(userId);
+        const patterns = await behaviorSvc.getBehaviorPatterns(userId);
+        if (profile || patterns.length > 0) {
+          const parts = [];
+          if (profile?.focus_peak_hours?.length > 0) {
+            parts.push(`ساعات الذروة: ${profile.focus_peak_hours.join(', ')}:00`);
+          }
+          if (profile?.data_quality) {
+            parts.push(`جودة بيانات السلوك: ${profile.data_quality}`);
+          }
+          const procPattern = patterns.find(p => p.pattern_type === 'procrastination');
+          if (procPattern && procPattern.correlation_score > 0.3) {
+            parts.push(`تأجيل: ${procPattern.insight}`);
+          }
+          const workPattern = patterns.find(p => p.pattern_type === 'working_hours');
+          if (workPattern) {
+            parts.push(`${workPattern.insight}`);
+          }
+          if (parts.length > 0) {
+            behaviorInsights = parts.join(' | ');
+          }
+        }
+      }
+    } catch (_e) { logger.debug(`[ORCHESTRATOR_SERVICE] Behavior profile load failed: ${_e.message}`); }
 
     // ── STEP 3: Probabilistic Prediction ─────────────────────────────────────
     let prediction = null;
@@ -220,7 +266,7 @@ async function orchestrate({
       if (predService) {
         prediction = await predService.getProbabilisticPrediction(userId, timezone);
       }
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[ORCHESTRATOR_SERVICE] Non-critical operation failed: ${_e.message}`); }
 
     // ── STEP 4: Planning Hint (async, non-blocking) ───────────────────────────
     let planningTip = null;
@@ -237,7 +283,7 @@ async function orchestrate({
           planningTip = plan.suggestions[0];
         }
       }
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[ORCHESTRATOR_SERVICE] Non-critical operation failed: ${_e.message}`); }
 
     // ── STEP 5: Decision Evaluation (for action enrichment) ───────────────────
     let decisionResult = null;
@@ -258,7 +304,7 @@ async function orchestrate({
           });
           confidence = decisionResult?.confidence || 70;
         }
-      } catch (_) {}
+      } catch (_e) { logger.debug(`[ORCHESTRATOR_SERVICE] Non-critical operation failed: ${_e.message}`); }
     }
 
     // ── STEP 6: Explainability ────────────────────────────────────────────────
@@ -278,16 +324,16 @@ async function orchestrate({
         explanation = explResult?.why || [];
         if (explResult?.confidence) confidence = explResult.confidence;
       }
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[ORCHESTRATOR_SERVICE] Non-critical operation failed: ${_e.message}`); }
 
     // ── STEP 7: Build Conversation Context ────────────────────────────────────
     const historyStr = memory.buildHistoryString(userId, 6);
 
     let profile = null;
-    try { profile = await buildProfile(userId, timezone); } catch (_) {}
+    try { profile = await buildProfile(userId, timezone); } catch (_e) { logger.debug(`[ORCHESTRATOR_SERVICE] Non-critical operation failed: ${_e.message}`); }
 
     const contextBlock = buildContextBlock(
-      { ...(userCtx || {}), userId },
+      { ...(userCtx || {}), userId, behaviorInsights },
       profile,
       historyStr,
       snapshot,
@@ -419,7 +465,7 @@ async function orchestrate({
             actions[0]._dispatch = { executor: dispatched.executor, auto: dispatched.auto_execute };
           }
         }
-      } catch (_) {}
+      } catch (_e) { logger.debug(`[ORCHESTRATOR_SERVICE] Non-critical operation failed: ${_e.message}`); }
     }
 
     // ── STEP 13: Store in Memory ──────────────────────────────────────────────
@@ -439,7 +485,7 @@ async function orchestrate({
             mood     : snapshot?.mood?.score   || 5,
           });
         }
-      } catch (_) {}
+      } catch (_e) { logger.debug(`[ORCHESTRATOR_SERVICE] Non-critical operation failed: ${_e.message}`); }
     }
 
     // ── STEP 15: Policy Adaptation Check ─────────────────────────────────────
@@ -448,7 +494,7 @@ async function orchestrate({
       if (totalMessages > 0 && totalMessages % 10 === 0) {
         adaptiveBehavior.adaptPolicy(userId);
       }
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[ORCHESTRATOR_SERVICE] Non-critical operation failed: ${_e.message}`); }
 
     const elapsed = Date.now() - startMs;
 

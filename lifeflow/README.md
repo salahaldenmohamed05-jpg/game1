@@ -72,6 +72,8 @@ lifeflow/
 └── docs/             # Documentation
 ```
 
+> **Note (Phase B):** React Native is **NOT supported**. The mobile client is **Flutter only** (`mobile/` directory). Any React Native references in external docs are deprecated and should be disregarded. Flutter is the sole mobile platform going forward.
+
 ---
 
 ## ✨ Core Features

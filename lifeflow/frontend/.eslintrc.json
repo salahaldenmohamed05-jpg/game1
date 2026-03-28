@@ -1,0 +1,24 @@
+{
+  "extends": ["next/core-web-vitals"],
+  "plugins": ["react-hooks"],
+  "rules": {
+    "react-hooks/rules-of-hooks": "error",
+    "react-hooks/exhaustive-deps": "warn",
+    "no-restricted-syntax": [
+      "error",
+      {
+        "selector": "CallExpression[callee.property.name='random'][callee.object.name='Math']",
+        "message": "Do not use Math.random() directly in render. Use useMemo() or useRef() for stable random values, and deterministic keys (index, id, title) for React keys."
+      }
+    ]
+  },
+  "overrides": [
+    {
+      "files": ["src/components/**/*.jsx", "src/components/**/*.js"],
+      "rules": {
+        "react-hooks/rules-of-hooks": "error",
+        "react-hooks/exhaustive-deps": "warn"
+      }
+    }
+  ]
+}

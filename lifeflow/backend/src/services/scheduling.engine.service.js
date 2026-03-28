@@ -16,8 +16,8 @@
 const logger = require('../utils/logger');
 
 // ─── Lazy loaders ────────────────────────────────────────────────────────────
-function getLearning()    { try { return require('./learning.engine.service');  } catch (_) { return null; } }
-function getModels()      { try { return require('../config/database').sequelize.models; } catch (_) { return {}; } }
+function getLearning()    { try { return require('./learning.engine.service'); } catch (_e) { logger.debug(`[SCHEDULING_ENGINE_SERVICE] Module './learning.engine.service' not available: ${_e.message}`); return null; } }
+function getModels()      { try { return require('../config/database').sequelize.models; } catch (_e) { logger.debug(`[SCHEDULING_ENGINE_SERVICE] Module not available: ${_e.message}`); return {}; } }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const DEFAULT_WORK_START  = '09:00';

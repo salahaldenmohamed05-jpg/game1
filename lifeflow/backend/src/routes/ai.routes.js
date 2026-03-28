@@ -14,10 +14,11 @@ const { aiService, chat } = require('../ai/ai.service');
 const logger = require('../utils/logger');
 const { safeAIExecute, FALLBACK_DEFAULT } = require('../services/ai/ai.safe.executor');
 
-// Lazy loaders
-function getOrchestrator()        { try { return require('../services/orchestrator.service');   } catch (_) { return null; } }
-function getConversationService() { try { return require('../services/conversation.service');   } catch (_) { return null; } }
-function getMemoryService()       { try { return require('../services/memory.service');         } catch (_) { return null; } }
+// Phase B: Use ai.core.service as single AI entry point
+const aiCore = require('../services/ai.core.service');
+
+// Lazy loaders (kept for backward-compat endpoints that need direct access)
+function getMemoryService()       { try { return require('../services/memory.service'); } catch (_e) { logger.debug(`[AI_ROUTES] Module '../services/memory.service' not available: ${_e.message}`); return null; } }
 
 // Keep backward compat
 const { DEFAULT_FALLBACK: OLD_FALLBACK } = require('../services/ai/ai.error.handler');
@@ -38,57 +39,30 @@ router.post('/chat', async (req, res) => {
   const userName = req.user.name || 'صديقي';
   const tz       = timezone || req.user.timezone || 'Africa/Cairo';
 
-  // ── Always return JSON — use safeAIExecute at the TOP LEVEL ─────────────────
+  // Phase B: Route through ai.core.service as single entry point
   const aiResult = await safeAIExecute(async () => {
-    // Step 1: Try full orchestrator pipeline
-    const orchestrator = getOrchestrator();
-    if (orchestrator) {
-      let userCtx = null;
-      try {
-        const convService = getConversationService();
-        if (convService?.fetchUserContext) {
-          userCtx = await convService.fetchUserContext(userId, tz);
-        }
-      } catch (_) {}
+    // Use unified AI core — handles orchestrator, conversation, and fallback internally
+    let userCtx = null;
+    try {
+      userCtx = await aiCore.fetchUserContext(userId, tz);
+    } catch (_e) { logger.debug(`[AI_ROUTES] Non-critical operation failed: ${_e.message}`); }
 
-      const result = await orchestrator.companionChat(userId, message, tz, userCtx);
+    const result = await aiCore.chat(userId, message, tz, userCtx);
 
-      // Return structured object — safe executor will extract .reply
-      return {
-        reply       : result.reply,
-        mode        : result.mode,
-        actions     : result.actions     || [],
-        suggestions : result.suggestions || [],
-        is_fallback : !!result.is_fallback,
-        intent      : result.intentCategory,
-        confidence  : result.confidence  || null,
-        explanation : result.explanation || [],
-        planningTip : result.planningTip || null,
-        snapshot    : result.snapshot    || null,
-        prediction  : result.prediction  || null,
-        pipeline_ms : result.pipeline_ms || null,
-      };
-    }
-
-    // Step 2: Fallback to conversation service
-    const convService = getConversationService();
-    if (convService) {
-      const r = await convService.chatWithAI(userId, message, tz);
-      return {
-        reply      : r.reply,
-        mode       : 'hybrid',
-        actions    : r.actions    || [],
-        suggestions: r.suggestions || [],
-        is_fallback: !r.ai_powered,
-        intent     : r.intent,
-      };
-    }
-
-    // Step 3: Direct chat as last resort
-    const sysPrmpt = `أنت LifeFlow AI، مساعد حياة شخصي للمستخدم ${userName}. تحدث بالعربية دائماً.`;
-    const text = await chat(sysPrmpt, message, { maxTokens: 500 });
-    return { reply: text, mode: 'hybrid', actions: [], suggestions: [], is_fallback: false };
-
+    return {
+      reply       : result.reply,
+      mode        : result.mode,
+      actions     : result.actions     || [],
+      suggestions : result.suggestions || [],
+      is_fallback : !!result.is_fallback,
+      intent      : result.intentCategory,
+      confidence  : result.confidence  || null,
+      explanation : result.explanation || [],
+      planningTip : result.planningTip || null,
+      snapshot    : result.snapshot    || null,
+      prediction  : result.prediction  || null,
+      pipeline_ms : result.pipeline_ms || null,
+    };
   }, { context: 'ai/chat', userId, userName });
 
   // ── Extract structured data (aiResult.reply is either string OR the full object) ─
@@ -119,7 +93,7 @@ router.post('/chat', async (req, res) => {
       memService.addShortTerm(userId, 'user', message);
       memService.addShortTerm(userId, 'assistant', responseData.reply);
     }
-  } catch (_) {}
+  } catch (_e) { logger.debug(`[AI_ROUTES] Non-critical operation failed: ${_e.message}`); }
 
   logger.info('[AI-ROUTES] /chat response', {
     userId,
@@ -168,9 +142,8 @@ router.post('/chat/clear', (req, res) => {
     const memService = getMemoryService();
     if (memService) memService.clearShortTerm(req.user.id);
 
-    // Also clear conversation service
-    const convService = getConversationService();
-    if (convService?.clearConversation) convService.clearConversation(req.user.id);
+    // Also clear via ai.core
+    try { aiCore.clearHistory(req.user.id); } catch (_) {}
 
     res.json({ success: true, data: { cleared: true } });
   } catch (e) {
@@ -277,7 +250,7 @@ router.get('/knowledge', async (req, res) => {
       aiClient = { chat: async ({ systemPrompt, userMessage, maxTokens }) =>
         ({ content: await chat(systemPrompt, userMessage, { maxTokens }) })
       };
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[AI_ROUTES] Non-critical operation failed: ${_e.message}`); }
 
     const result = await knowledgeService.query(q.trim(), { useAI: true, aiClient });
 

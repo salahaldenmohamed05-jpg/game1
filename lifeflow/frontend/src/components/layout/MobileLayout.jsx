@@ -30,9 +30,12 @@ export default function MobileLayout({
   maxWidth = '',
 }) {
   // fullHeight mode: flex container, no scroll, child fills height
+  // Phase H: add bottom padding for mobile navbar even in fullHeight mode
   if (fullHeight) {
     return (
-      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden"
+        style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
+      >
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -47,6 +50,7 @@ export default function MobileLayout({
   }
 
   // Default mode: single scroll container for all content
+  // Phase H: increased bottom padding to prevent navbar overlap on all devices
   return (
     <div
       className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden"
@@ -57,8 +61,8 @@ export default function MobileLayout({
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.2 }}
         className={[
-          // Bottom padding: 112px mobile (80px nav + 32px), less on desktop
-          'pb-28 sm:pb-6',
+          // Bottom padding: 96px mobile (72px nav + 24px breathing), less on desktop
+          'pb-24 md:pb-6',
           // Horizontal padding unless opted out
           !noPadding && 'px-3 sm:px-4 md:px-6',
           // Top padding
@@ -68,6 +72,7 @@ export default function MobileLayout({
           // Custom classes
           className,
         ].filter(Boolean).join(' ')}
+        style={{ paddingBottom: 'max(6rem, calc(80px + env(safe-area-inset-bottom, 0px)))' }}
         dir="rtl"
       >
         {children}

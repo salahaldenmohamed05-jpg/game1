@@ -55,12 +55,12 @@ function markChecked(userId, checkType) {
 // ─── Model Loader ─────────────────────────────────────────────────────────────
 function getModels() {
   const models = {};
-  try { models.Task             = require('../models/task.model'); }              catch (_) {}
-  try { models.Habit            = require('../models/habit.model'); }             catch (_) {}
-  try { models.MoodEntry        = require('../models/mood.model'); }              catch (_) {}
-  try { models.HabitLog         = require('../models/habit_log.model'); }         catch (_) {}
-  try { models.ProductivityScore= require('../models/productivity_score.model'); } catch (_) {}
-  try { models.EnergyLog        = require('../models/energy_log.model'); }        catch (_) {}
+  try { models.Task = require('../models/task.model'); } catch (_e) { logger.debug(`[PROACTIVE_ENGINE_SERVICE] Model load failed: ${_e.message}`); }
+  try { models.Habit = require('../models/habit.model').Habit; } catch (_e) { logger.debug(`[PROACTIVE_ENGINE_SERVICE] Model load failed: ${_e.message}`); }
+  try { models.MoodEntry = require('../models/mood.model'); } catch (_e) { logger.debug(`[PROACTIVE_ENGINE_SERVICE] Model load failed: ${_e.message}`); }
+  try { models.HabitLog = require('../models/habit_log.model'); } catch (_e) { logger.debug(`[PROACTIVE_ENGINE_SERVICE] Model load failed: ${_e.message}`); }
+  try { models.ProductivityScore = require('../models/productivity_score.model'); } catch (_e) { logger.debug(`[PROACTIVE_ENGINE_SERVICE] Model load failed: ${_e.message}`); }
+  try { models.EnergyLog = require('../models/energy_log.model'); } catch (_e) { logger.debug(`[PROACTIVE_ENGINE_SERVICE] Model load failed: ${_e.message}`); }
   return models;
 }
 
@@ -419,7 +419,7 @@ async function getProactiveMessages(userId, timezone = 'Africa/Cairo') {
 
   // Phase 15: lazy-load explainability
   let explainability = null;
-  try { explainability = require('./explainability.service'); } catch (_) {}
+  try { explainability = require('./explainability.service'); } catch (_e) { logger.debug(`[PROACTIVE_ENGINE_SERVICE] Model load failed: ${_e.message}`); }
 
   try {
     // Get user name
@@ -428,7 +428,7 @@ async function getProactiveMessages(userId, timezone = 'Africa/Cairo') {
       const User = require('../models/user.model');
       const user = await User.findByPk(userId, { raw: true });
       name = user?.name?.split(' ')[0] || 'صديقي';
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[PROACTIVE_ENGINE_SERVICE] Non-critical operation failed: ${_e.message}`); }
 
     const dailyCount = getDailyCount(userId);
     if (dailyCount >= MAX_DAILY_NOTIFICATIONS) {
@@ -464,7 +464,7 @@ async function getProactiveMessages(userId, timezone = 'Africa/Cairo') {
               );
               alert.confidence = explained.confidence;
               alert.why        = explained.why;
-            } catch (_) {}
+            } catch (_e) { logger.debug(`[PROACTIVE_ENGINE_SERVICE] Non-critical operation failed: ${_e.message}`); }
           }
 
           alerts.push(alert);

@@ -92,8 +92,8 @@ function predictEnergyCurve(currentEnergy = 60, wakeUpTime = '07:00', sleepTime 
 // ─── Model Loader ─────────────────────────────────────────────────────────────
 function getModels() {
   const models = {};
-  try { models.Task  = require('../models/task.model');  } catch (_) {}
-  try { models.Habit = require('../models/habit.model'); } catch (_) {}
+  try { models.Task = require('../models/task.model'); } catch (_e) { logger.debug(`[PLANNING_ENGINE_SERVICE] Model load failed: ${_e.message}`); }
+  try { models.Habit = require('../models/habit.model').Habit; } catch (_e) { logger.debug(`[PLANNING_ENGINE_SERVICE] Model load failed: ${_e.message}`); }
   return models;
 }
 

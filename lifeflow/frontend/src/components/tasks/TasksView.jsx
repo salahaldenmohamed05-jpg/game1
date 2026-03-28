@@ -14,7 +14,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Plus, CheckCircle, Clock, Trash2, X, ChevronDown,
   AlertCircle, Calendar, Check, Sun, List, Filter,
-  Sparkles, Zap, ArrowRight, Edit3, Star
+  Sparkles, Zap, ArrowRight, Edit3, Star, RefreshCw
 } from 'lucide-react';
 import { taskAPI } from '../../utils/api';
 import useSyncStore from '../../store/syncStore';
@@ -256,19 +256,30 @@ const SectionHeader = memo(function SectionHeader({ icon, label, count, color = 
   );
 });
 
-// ─── Add Task Modal (Bottom Sheet — solid background, sticky CTA) ──────────
+// ─── Add Task Modal (Bottom Sheet — Phase H: solid bg, high contrast, validation) ──
 
 function AddTaskModal({ isOpen, onClose, onSubmit, isPending }) {
   const [form, setForm] = useState({
     title: '', category: 'personal', priority: 'medium',
-    due_date: getTodayCairo(), start_time: '', end_time: '', reminder_before: 15,
+    due_date: getTodayCairo(), due_time: '', start_time: '', end_time: '', reminder_before: 15,
   });
+  const [errors, setErrors] = useState({});
+  const [success, setSuccess] = useState(false);
+
+  const validate = () => {
+    const errs = {};
+    if (!form.title.trim()) errs.title = 'أدخل عنوان المهمة';
+    if (form.title.trim().length > 0 && form.title.trim().length < 2) errs.title = 'العنوان قصير جداً';
+    if (form.start_time && form.end_time && form.start_time >= form.end_time) errs.end_time = 'وقت النهاية يجب أن يكون بعد البداية';
+    setErrors(errs);
+    return Object.keys(errs).length === 0;
+  };
 
   const handleSubmit = () => {
-    if (!form.title.trim()) return toast.error('أدخل عنوان المهمة');
+    if (!validate()) return;
 
     const data = {
-      title: form.title,
+      title: form.title.trim(),
       category: form.category,
       priority: form.priority,
       reminder_before: form.reminder_before,
@@ -278,37 +289,50 @@ function AddTaskModal({ isOpen, onClose, onSubmit, isPending }) {
       const date = form.due_date || getTodayCairo();
       data.start_time = `${date}T${form.start_time}:00`;
       data.due_date = date;
+      data.due_time = form.due_time || form.start_time;
       if (form.end_time) data.end_time = `${date}T${form.end_time}:00`;
     } else if (form.due_date) {
       data.due_date = form.due_date;
+      if (form.due_time) data.due_time = form.due_time;
     }
 
     onSubmit(data);
-    setForm({
-      title: '', category: 'personal', priority: 'medium',
-      due_date: getTodayCairo(), start_time: '', end_time: '', reminder_before: 15,
-    });
+    setSuccess(true);
+    setTimeout(() => {
+      setSuccess(false);
+      setForm({
+        title: '', category: 'personal', priority: 'medium',
+        due_date: getTodayCairo(), due_time: '', start_time: '', end_time: '', reminder_before: 15,
+      });
+      setErrors({});
+    }, 300);
+  };
+
+  const handleClose = () => {
+    setErrors({});
+    setSuccess(false);
+    onClose();
   };
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" onClick={onClose}>
-      {/* Backdrop */}
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" onClick={handleClose}>
+      {/* Backdrop — solid dark overlay */}
       <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+        className="absolute inset-0 bg-black/80"
       />
-      {/* Modal — SOLID bg, shadow, high contrast */}
+      {/* Modal — SOLID opaque bg, no backdrop-filter, high contrast text */}
       <motion.div
         initial={{ opacity: 0, y: 100 }}
         animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0, y: 100 }}
         transition={{ type: 'spring', damping: 25, stiffness: 300 }}
         onClick={e => e.stopPropagation()}
-        className="relative w-full sm:max-w-lg bg-neutral-900 rounded-t-3xl sm:rounded-2xl shadow-xl border border-white/10 max-h-[92vh] overflow-hidden z-10"
+        className="relative w-full sm:max-w-lg modal-solid rounded-t-3xl sm:rounded-2xl shadow-2xl border border-white/10 max-h-[90vh] overflow-hidden z-10"
         dir="rtl"
       >
         {/* Drag handle (mobile) */}
@@ -316,32 +340,52 @@ function AddTaskModal({ isOpen, onClose, onSubmit, isPending }) {
           <div className="w-10 h-1 rounded-full bg-white/20" />
         </div>
 
-        {/* Scrollable form content */}
-        <div className="p-5 overflow-y-auto" style={{ maxHeight: 'calc(92vh - 80px)' }}>
+        {/* Scrollable form content — leave room for sticky CTA */}
+        <div className="p-5 overflow-y-auto" style={{ maxHeight: 'calc(90vh - 88px)' }}>
           <div className="flex items-center justify-between mb-5">
             <h3 className="text-lg font-black text-white flex items-center gap-2">
               <Plus size={18} className="text-primary-400" />
               مهمة جديدة
             </h3>
-            <button onClick={onClose} className="p-2 rounded-xl hover:bg-white/10 text-gray-400 active:scale-90">
+            <button onClick={handleClose} className="p-2 rounded-xl hover:bg-white/10 text-gray-400 active:scale-90">
               <X size={18} />
             </button>
           </div>
 
           <div className="space-y-4">
-            <input
-              value={form.title}
-              onChange={e => setForm({ ...form, title: e.target.value })}
-              placeholder="عنوان المهمة..."
-              className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3.5 text-white placeholder-gray-500 focus:outline-none focus:border-primary-500/50 text-base"
-              autoFocus
-            />
-
+            {/* Title — with validation error */}
             <div>
-              <label className="text-xs text-gray-400 mb-1.5 block font-medium">📅 التاريخ</label>
-              <input type="date" value={form.due_date}
-                onChange={e => setForm({ ...form, due_date: e.target.value })}
-                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-primary-500/50" />
+              <input
+                value={form.title}
+                onChange={e => { setForm({ ...form, title: e.target.value }); if (errors.title) setErrors(prev => ({ ...prev, title: undefined })); }}
+                placeholder="عنوان المهمة..."
+                className={`w-full rounded-xl px-4 py-3.5 text-base focus:outline-none transition-all ${
+                  errors.title ? 'border-red-500 ring-2 ring-red-500/20' : ''
+                }`}
+                autoFocus
+                maxLength={200}
+              />
+              {errors.title && (
+                <p className="text-xs text-red-400 mt-1 flex items-center gap-1">
+                  <AlertCircle size={11} /> {errors.title}
+                </p>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-gray-400 mb-1.5 block font-medium">📅 التاريخ</label>
+                <input type="date" value={form.due_date}
+                  onChange={e => setForm({ ...form, due_date: e.target.value })}
+                  className="w-full rounded-xl px-4 py-3 focus:outline-none" />
+              </div>
+              <div>
+                <label className="text-xs text-gray-400 mb-1.5 block font-medium">⏰ الموعد النهائي</label>
+                <input type="time" value={form.due_time}
+                  onChange={e => setForm({ ...form, due_time: e.target.value })}
+                  className="w-full rounded-xl px-4 py-3 focus:outline-none"
+                  placeholder="اختياري" />
+              </div>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -349,13 +393,18 @@ function AddTaskModal({ isOpen, onClose, onSubmit, isPending }) {
                 <label className="text-xs text-gray-400 mb-1.5 block font-medium">🕐 وقت البداية</label>
                 <input type="time" value={form.start_time}
                   onChange={e => setForm({ ...form, start_time: e.target.value })}
-                  className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-primary-500/50" />
+                  className="w-full rounded-xl px-4 py-3 focus:outline-none" />
               </div>
               <div>
                 <label className="text-xs text-gray-400 mb-1.5 block font-medium">🏁 وقت النهاية</label>
                 <input type="time" value={form.end_time}
-                  onChange={e => setForm({ ...form, end_time: e.target.value })}
-                  className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-primary-500/50" />
+                  onChange={e => { setForm({ ...form, end_time: e.target.value }); if (errors.end_time) setErrors(prev => ({ ...prev, end_time: undefined })); }}
+                  className={`w-full rounded-xl px-4 py-3 focus:outline-none ${errors.end_time ? 'border-red-500 ring-2 ring-red-500/20' : ''}`} />
+                {errors.end_time && (
+                  <p className="text-xs text-red-400 mt-1 flex items-center gap-1">
+                    <AlertCircle size={11} /> {errors.end_time}
+                  </p>
+                )}
               </div>
             </div>
 
@@ -405,11 +454,25 @@ function AddTaskModal({ isOpen, onClose, onSubmit, isPending }) {
           </div>
         </div>
 
-        {/* Sticky CTA at bottom */}
-        <div className="sticky bottom-0 p-5 pt-3 bg-neutral-900 border-t border-white/5">
+        {/* Sticky CTA at bottom — solid bg to prevent blur-through */}
+        <div className="sticky bottom-0 p-5 pt-3 border-t border-white/5" style={{ background: 'inherit' }}>
           <button onClick={handleSubmit} disabled={isPending || !form.title.trim()}
-            className="w-full py-4 bg-primary-500 hover:bg-primary-600 text-white font-bold rounded-xl transition-all disabled:opacity-50 text-base active:scale-[0.98] shadow-lg shadow-primary-500/20 min-h-[48px]">
-            {isPending ? 'جاري الإنشاء...' : '✅ إضافة المهمة'}
+            className={`w-full py-4 font-bold rounded-xl transition-all text-base active:scale-[0.98] shadow-lg min-h-[48px] ${
+              success
+                ? 'bg-green-500 text-white shadow-green-500/20'
+                : 'bg-primary-500 hover:bg-primary-600 text-white shadow-primary-500/20 disabled:opacity-50'
+            }`}>
+            {isPending ? (
+              <span className="flex items-center justify-center gap-2">
+                <RefreshCw size={16} className="animate-spin" /> جاري الإنشاء...
+              </span>
+            ) : success ? (
+              <span className="flex items-center justify-center gap-2">
+                <Check size={16} /> تم الإنشاء!
+              </span>
+            ) : (
+              '✅ إضافة المهمة'
+            )}
           </button>
         </div>
       </motion.div>

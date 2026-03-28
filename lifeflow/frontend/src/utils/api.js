@@ -7,15 +7,17 @@
 import axios from 'axios';
 
 // Dynamic URL detection: supports sandbox environments, localhost, and production
+// PRIORITY: runtime detection > env var (env vars get stale in sandbox environments)
 function getBaseUrl() {
-  // If explicitly set via env var, use that (build-time injection)
-  if (process.env.NEXT_PUBLIC_API_URL) {
-    return process.env.NEXT_PUBLIC_API_URL;
-  }
   // Browser-side: detect sandbox URL from current hostname at runtime
   if (typeof window !== 'undefined') {
     const hostname = window.location.hostname;
-    // Sandbox pattern: 3000-XXXX.sandbox.novita.ai → 5000-XXXX.sandbox.novita.ai
+    // E2B sandbox pattern: portNumber-sandboxId.e2b.dev
+    if (hostname.includes('.e2b.dev')) {
+      const backendHost = hostname.replace(/^\d+-/, '5000-');
+      return `https://${backendHost}/api/v1`;
+    }
+    // Novita sandbox pattern: 3000-XXXX.sandbox.novita.ai → 5000-XXXX.sandbox.novita.ai
     if (hostname.includes('.sandbox.novita.ai')) {
       const backendHost = hostname.replace(/^\d+-/, '5000-');
       return `https://${backendHost}/api/v1`;
@@ -25,30 +27,59 @@ function getBaseUrl() {
       return 'http://localhost:5000/api/v1';
     }
   }
-  // SSR fallback (server side rendering)
+  // Env var fallback (for fixed production deployments only)
+  if (process.env.NEXT_PUBLIC_API_URL) {
+    return process.env.NEXT_PUBLIC_API_URL;
+  }
+  // SSR / default fallback
   return 'http://localhost:5000/api/v1';
 }
 
-// Use a placeholder initially; update dynamically via request interceptor
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api/v1';
+function getSocketUrl() {
+  if (typeof window !== 'undefined') {
+    const hostname = window.location.hostname;
+    if (hostname.includes('.e2b.dev')) {
+      return `https://${hostname.replace(/^\d+-/, '5000-')}`;
+    }
+    if (hostname.includes('.sandbox.novita.ai')) {
+      return `https://${hostname.replace(/^\d+-/, '5000-')}`;
+    }
+    if (hostname === 'localhost' || hostname === '127.0.0.1') {
+      return 'http://localhost:5000';
+    }
+  }
+  return process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:5000';
+}
 
-// Create axios instance
+// Create axios instance with runtime-detected base URL
 const api = axios.create({
-  baseURL: BASE_URL,
+  baseURL: getBaseUrl(),
   timeout: 30000,
   headers: { 'Content-Type': 'application/json', 'Accept-Language': 'ar' },
 });
 
-// Request interceptor — attach JWT + update baseURL dynamically for sandbox
+/**
+ * Health check utility — test backend connectivity
+ * Returns { ok, status, latency, error }
+ */
+export async function checkBackendHealth() {
+  const baseUrl = getBaseUrl();
+  const healthUrl = baseUrl.replace('/api/v1', '/health');
+  const start = Date.now();
+  try {
+    const res = await axios.get(healthUrl, { timeout: 8000 });
+    return { ok: true, status: res.data?.status, latency: Date.now() - start, baseUrl };
+  } catch (e) {
+    return { ok: false, error: e.message, latency: Date.now() - start, baseUrl };
+  }
+}
+
+// Request interceptor — attach JWT + ensure dynamic baseURL
 api.interceptors.request.use(
   (config) => {
-    // Dynamic base URL for sandbox/different environments
+    // Always re-resolve base URL (sandbox URLs can change mid-session)
     if (typeof window !== 'undefined') {
-      const dynamicUrl = getBaseUrl();
-      if (dynamicUrl !== config.baseURL) {
-        // Update the full URL if baseURL has changed
-        config.baseURL = dynamicUrl;
-      }
+      config.baseURL = getBaseUrl();
     }
     const token = typeof window !== 'undefined' ? localStorage.getItem('lifeflow_token') : null;
     if (token) config.headers.Authorization = `Bearer ${token}`;
@@ -68,7 +99,7 @@ api.interceptors.response.use(
         const refreshToken = typeof window !== 'undefined'
           ? localStorage.getItem('lifeflow_refresh_token') : null;
         if (!refreshToken) throw new Error('No refresh token');
-        const dynamicBase = typeof window !== 'undefined' ? getBaseUrl() : BASE_URL;
+        const dynamicBase = getBaseUrl();
         const { data } = await axios.post(`${dynamicBase}/auth/refresh`, { refreshToken });
         const newToken = data.data?.accessToken || data.accessToken;
         if (newToken) {
@@ -91,6 +122,7 @@ api.interceptors.response.use(
 );
 
 export default api;
+export { getSocketUrl };
 
 // ─── Auth API ─────────────────────────────────────────────────────────────────
 export const authAPI = {
@@ -148,6 +180,8 @@ export const moodAPI = {
 export const dashboardAPI = {
   getDashboard: () => api.get('/dashboard'),
   getQuickStats: () => api.get('/dashboard/stats'),
+  // Unified today-flow: nextAction + lifeFeed + burnout in ONE call
+  getTodayFlow: () => api.get('/dashboard/today-flow'),
 };
 
 // ─── Performance API (Premium) ────────────────────────────────────────────────
@@ -350,4 +384,20 @@ export const logsAPI = {
   getClientErrors:   ()            => api.get('/logs/client-errors'),
   getLogsHealth:     ()            => api.get('/logs/health'),
   reportClientError: (data)        => api.post('/logs/client-error', data),
+};
+
+// ─── Profile API (Personalization Hub) ────────────────────────────────────────
+export const profileAPI = {
+  getProfile:    ()     => api.get('/profile-settings/profile'),
+  updateProfile: (data) => api.put('/profile-settings/profile', data),
+  getAISnapshot: ()     => api.get('/profile-settings/profile/ai-snapshot'),
+};
+
+// ─── Settings API (Control Center) ────────────────────────────────────────────
+export const settingsAPI = {
+  getSettings:    ()     => api.get('/profile-settings/settings'),
+  updateSettings: (data) => api.put('/profile-settings/settings', data),
+  changePassword: (data) => api.put('/profile-settings/settings/password', data),
+  deleteAccount:  ()     => api.post('/profile-settings/settings/delete-account'),
+  exportData:     ()     => api.post('/profile-settings/settings/export-data'),
 };

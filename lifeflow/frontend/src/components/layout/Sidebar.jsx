@@ -8,7 +8,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Home, CheckSquare, Target, Heart, Brain, MessageSquare,
   Calendar, Bell, BarChart2, Crown, Settings, LogOut,
-  Menu, ChevronLeft, Zap, Bot, Rocket, Globe, Link2, Sparkles, Activity
+  Menu, ChevronLeft, Zap, Bot, Rocket, Globe, Link2, Sparkles, Activity, User,
+  TrendingUp,
 } from 'lucide-react';
 import useAuthStore from '../../store/authStore';
 import toast from 'react-hot-toast';
@@ -25,7 +26,7 @@ const NAV_ITEMS = [
   { id: 'habits',        icon: Target,        label: 'العادات',          badge: null },
   { id: 'mood',          icon: Heart,         label: 'المزاج',           badge: null },
   // MERGED: single analytics entry replaces separate performance + insights
-  { id: 'analytics',     icon: BarChart2,     label: 'التحليلات',        badge: null,   premium: true },
+  { id: 'analytics',     icon: TrendingUp,    label: 'التحليلات',        badge: null,   premium: true },
   // ── Unified Personal Assistant (replaces ai_chat + copilot + adaptive + optimizer) ──
   { id: 'assistant',     icon: Sparkles,      label: 'المساعد الشخصي',  badge: null,   divider: true, highlight: true },
   { id: 'calendar',      icon: Calendar,      label: 'التقويم',          badge: null },
@@ -114,7 +115,7 @@ export default function Sidebar({ activeView, setActiveView, isOpen, setIsOpen, 
       </AnimatePresence>
 
       {/* Navigation */}
-      <nav className="flex-1 overflow-y-auto p-2 space-y-0.5">
+      <nav className="flex-1 overflow-y-auto p-2 space-y-0.5" role="navigation" aria-label="القائمة الرئيسية">
         {NAV_ITEMS.map(({ id, icon: Icon, label, badge, premium, divider, highlight }) => {
           const isActive   = activeView === id;
           const badgeCount = badge ? getBadgeCount(badge) : 0;
@@ -131,7 +132,6 @@ export default function Sidebar({ activeView, setActiveView, isOpen, setIsOpen, 
 
               <button
                 onClick={() => setActiveView(id)}
-                title={!isOpen ? label : undefined}
                 className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all text-sm relative group ${
                   isActive
                     ? 'bg-primary-500/20 text-primary-400 border border-primary-500/30'
@@ -143,11 +143,20 @@ export default function Sidebar({ activeView, setActiveView, isOpen, setIsOpen, 
                 <div className="relative flex-shrink-0">
                   <Icon size={18} className={highlight && !isActive ? 'text-purple-400' : ''} />
                   {badgeCount > 0 && (
-                    <span className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-red-500 rounded-full text-xs text-white flex items-center justify-center font-bold leading-none">
+                    <span className="absolute -top-1.5 -end-1.5 w-4 h-4 bg-red-500 rounded-full text-xs text-white flex items-center justify-center font-bold leading-none">
                       {badgeCount > 9 ? '9+' : badgeCount}
                     </span>
                   )}
                 </div>
+
+                {/* Tooltip when sidebar is collapsed */}
+                {!isOpen && (
+                  <div className="absolute start-full ms-2 top-1/2 -translate-y-1/2 px-2.5 py-1.5 rounded-lg
+                    bg-gray-900 text-white text-xs whitespace-nowrap opacity-0 group-hover:opacity-100
+                    pointer-events-none transition-opacity duration-150 z-50 border border-white/10 shadow-lg">
+                    {label}
+                  </div>
+                )}
 
                 <AnimatePresence>
                   {isOpen && (
@@ -176,9 +185,10 @@ export default function Sidebar({ activeView, setActiveView, isOpen, setIsOpen, 
         {!isPremium && (
           <button
             onClick={() => setActiveView('subscription')}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-yellow-400 hover:bg-yellow-500/10 transition-all ${
+            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-yellow-400 hover:bg-yellow-500/10 transition-all relative group ${
               activeView === 'subscription' ? 'bg-yellow-500/10' : ''
             }`}
+            aria-label="ترقية للبريميوم"
           >
             <Crown size={18} className="flex-shrink-0" />
             <AnimatePresence>
@@ -188,11 +198,38 @@ export default function Sidebar({ activeView, setActiveView, isOpen, setIsOpen, 
                 </motion.span>
               )}
             </AnimatePresence>
+            {!isOpen && (
+              <div className="absolute start-full ms-2 top-1/2 -translate-y-1/2 px-2.5 py-1.5 rounded-lg bg-gray-900 text-white text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-150 z-50 border border-white/10 shadow-lg">ترقية للبريميوم</div>
+            )}
           </button>
         )}
 
         <button
-          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-gray-400 hover:text-white hover:bg-white/5 transition-all text-sm"
+          onClick={() => setActiveView('profile')}
+          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all text-sm relative group ${
+            activeView === 'profile' ? 'bg-primary-500/20 text-primary-400 border border-primary-500/30' : 'text-gray-400 hover:text-white hover:bg-white/5'
+          }`}
+          aria-label="الملف الشخصي"
+        >
+          <User size={18} className="flex-shrink-0" />
+          <AnimatePresence>
+            {isOpen && (
+              <motion.span initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                الملف الشخصي
+              </motion.span>
+            )}
+          </AnimatePresence>
+          {!isOpen && (
+            <div className="absolute start-full ms-2 top-1/2 -translate-y-1/2 px-2.5 py-1.5 rounded-lg bg-gray-900 text-white text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-150 z-50 border border-white/10 shadow-lg">الملف الشخصي</div>
+          )}
+        </button>
+
+        <button
+          onClick={() => setActiveView('settings')}
+          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all text-sm relative group ${
+            activeView === 'settings' ? 'bg-primary-500/20 text-primary-400 border border-primary-500/30' : 'text-gray-400 hover:text-white hover:bg-white/5'
+          }`}
+          aria-label="الإعدادات"
         >
           <Settings size={18} className="flex-shrink-0" />
           <AnimatePresence>
@@ -202,11 +239,15 @@ export default function Sidebar({ activeView, setActiveView, isOpen, setIsOpen, 
               </motion.span>
             )}
           </AnimatePresence>
+          {!isOpen && (
+            <div className="absolute start-full ms-2 top-1/2 -translate-y-1/2 px-2.5 py-1.5 rounded-lg bg-gray-900 text-white text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-150 z-50 border border-white/10 shadow-lg">الإعدادات</div>
+          )}
         </button>
 
         <button
           onClick={handleLogout}
-          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-gray-400 hover:text-red-400 hover:bg-red-500/5 transition-all text-sm"
+          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-gray-400 hover:text-red-400 hover:bg-red-500/5 transition-all text-sm relative group"
+          aria-label="تسجيل الخروج"
         >
           <LogOut size={18} className="flex-shrink-0" />
           <AnimatePresence>
@@ -216,6 +257,9 @@ export default function Sidebar({ activeView, setActiveView, isOpen, setIsOpen, 
               </motion.span>
             )}
           </AnimatePresence>
+          {!isOpen && (
+            <div className="absolute start-full ms-2 top-1/2 -translate-y-1/2 px-2.5 py-1.5 rounded-lg bg-gray-900 text-white text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-150 z-50 border border-white/10 shadow-lg">تسجيل الخروج</div>
+          )}
         </button>
       </div>
     </motion.aside>

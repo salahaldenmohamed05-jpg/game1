@@ -51,9 +51,9 @@ function getHistory(userId, limit = 20) {
 // ─── Lazy Model Loader ────────────────────────────────────────────────────────
 function getModels() {
   const m = {};
-  try { m.Task        = require('../models/task.model');       } catch (_) {}
-  try { m.Habit       = require('../models/habit.model');      } catch (_) {}
-  try { m.Notification= require('../models/notification.model'); } catch (_) {}
+  try { m.Task = require('../models/task.model'); } catch (_e) { logger.debug(`[VIRTUAL_ASSISTANT_SERVICE] Model load failed: ${_e.message}`); }
+  try { m.Habit = require('../models/habit.model').Habit; } catch (_e) { logger.debug(`[VIRTUAL_ASSISTANT_SERVICE] Model load failed: ${_e.message}`); }
+  try { m.Notification = require('../models/notification.model'); } catch (_e) { logger.debug(`[VIRTUAL_ASSISTANT_SERVICE] Model load failed: ${_e.message}`); }
   return m;
 }
 

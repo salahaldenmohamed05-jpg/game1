@@ -34,14 +34,14 @@ function markChecked(userId, checkType) {
 function getModels() {
   const User    = require('../models/user.model');
   const Task    = require('../models/task.model');
-  const Habit   = require('../models/habit.model');
+  const { Habit } = require('../models/habit.model');
   const MoodEntry = require('../models/mood.model');
 
   let HabitLog, EnergyLog, ProductivityScore, Notification;
-  try { HabitLog         = require('../models/habit_log.model'); } catch (_) {}
-  try { EnergyLog        = require('../models/energy_log.model'); } catch (_) {}
-  try { ProductivityScore= require('../models/productivity_score.model'); } catch (_) {}
-  try { Notification     = require('../models/notification.model'); } catch (_) {}
+  try { HabitLog = require('../models/habit_log.model'); } catch (_e) { logger.debug(`[MONITOR_SERVICE] Model load failed: ${_e.message}`); }
+  try { EnergyLog = require('../models/energy_log.model'); } catch (_e) { logger.debug(`[MONITOR_SERVICE] Model load failed: ${_e.message}`); }
+  try { ProductivityScore = require('../models/productivity_score.model'); } catch (_e) { logger.debug(`[MONITOR_SERVICE] Model load failed: ${_e.message}`); }
+  try { Notification = require('../models/notification.model'); } catch (_e) { logger.debug(`[MONITOR_SERVICE] Model load failed: ${_e.message}`); }
 
   return { User, Task, Habit, MoodEntry, HabitLog, EnergyLog, ProductivityScore, Notification };
 }
@@ -76,7 +76,7 @@ async function generateProactiveMessage(type, data) {
   if (hasRealKey) {
     try {
       return await chat('أنت مساعد حياة شخصي يتحدث بالعربية.', prompt, { temperature: 0.75, maxTokens: 200 });
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[MONITOR_SERVICE] Non-critical operation failed: ${_e.message}`); }
   }
 
   // Fallback messages

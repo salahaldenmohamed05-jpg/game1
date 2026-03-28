@@ -23,9 +23,11 @@ import 'screens/notifications/notifications_screen.dart';
 import 'screens/calendar/calendar_screen.dart';
 import 'screens/settings/settings_screen.dart';
 import 'screens/subscription/subscription_screen.dart';
+import 'screens/profile/profile_screen.dart';
 import 'utils/app_theme.dart';
 import 'utils/app_constants.dart';
 import 'services/notification_service.dart';
+import 'services/socket_service.dart';
 
 // Global navigator key for notifications
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
@@ -128,6 +130,7 @@ class LifeFlowApp extends StatelessWidget {
           NotificationsScreen.routeName: (_) => const NotificationsScreen(),
           CalendarScreen.routeName: (_) => const CalendarScreen(),
           SettingsScreen.routeName: (_) => const SettingsScreen(),
+          ProfileScreen.routeName: (_) => const ProfileScreen(),
           SubscriptionScreen.routeName: (_) => const SubscriptionScreen(),
         },
 

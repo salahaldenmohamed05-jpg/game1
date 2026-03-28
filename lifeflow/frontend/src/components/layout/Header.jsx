@@ -19,7 +19,7 @@ import toast from 'react-hot-toast';
  * Hamburger was duplicating navigation items and causing UX confusion.
  * Desktop sidebar is always visible and doesn't need a toggle in the header.
  */
-export default function Header({ onViewChange, onMenuToggle }) {
+export default function Header({ onViewChange }) {
   const { user, logout } = useAuthStore();
   const { isDark, toggleTheme } = useThemeStore();
   const queryClient = useQueryClient();

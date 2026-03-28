@@ -5,6 +5,8 @@ const express = require('express');
 const router = express.Router();
 const taskController = require('../controllers/task.controller');
 const { protect } = require('../middleware/auth.middleware');
+const { validateCreateTask, validateUpdateTask } = require('../middleware/validators');
+const { writeLimiter } = require('../middleware/rateLimiter');
 const logger = require('../utils/logger');
 
 router.use(protect);
@@ -19,8 +21,8 @@ router.get('/grouped', (req, res, next) => {
   req.query.grouped = 'true';
   return taskController.getTasks(req, res, next);
 });
-router.post('/', taskController.createTask);
-router.put('/:id', taskController.updateTask);
+router.post('/', writeLimiter, validateCreateTask, taskController.createTask);
+router.put('/:id', writeLimiter, validateUpdateTask, taskController.updateTask);
 router.patch('/:id/complete', taskController.completeTask);
 router.delete('/:id', taskController.deleteTask);
 router.post('/ai-breakdown', taskController.aiBreakdown);

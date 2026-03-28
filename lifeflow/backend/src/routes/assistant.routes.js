@@ -17,16 +17,26 @@
 const express = require('express');
 const router  = express.Router();
 const { protect } = require('../middleware/auth.middleware');
-const {
-  processCommand,
-  runAutonomousCheck,
-  buildUserContext,
-  getConversationHistory,
-  clearConversation,
-} = require('../services/ai.command.engine');
-const { chatWithAI, fetchUserContext } = require('../services/conversation.service');
-const { getProactiveMessages }         = require('../services/proactive.engine.service');
-const orchestrator                     = require('../services/orchestrator.service');
+const { writeLimiter } = require('../middleware/rateLimiter');
+const { body } = require('express-validator');
+const { handleValidation } = require('../middleware/validators');
+
+// ─── Assistant input validators ─────────────────────────────────────────────
+const validateMessage = [
+  body('message').trim().notEmpty().withMessage('الرسالة مطلوبة').isLength({ max: 5000 }).withMessage('الرسالة طويلة جداً'),
+  handleValidation,
+];
+// Phase B: Use ai.core.service as SINGLE AI entry point (internal modules are NOT entry points)
+const aiCore = require('../services/ai.core.service');
+const assistantSvc = require('../services/assistant.service');
+// Legacy aliases for backward compatibility within this file
+const processCommand         = (uid, msg, tz, pending) => aiCore.command(uid, msg, tz, pending);
+const runAutonomousCheck     = (uid, tz) => aiCore.autonomous(uid, tz);
+const buildUserContext       = (uid, tz) => aiCore.context(uid, tz);
+const getConversationHistory = (uid) => aiCore.history(uid);
+const clearConversation      = (uid) => aiCore.clearHistory(uid);
+const fetchUserContext       = (uid, tz) => aiCore.fetchUserContext(uid, tz);
+const getProactiveMessages   = (uid, tz) => aiCore.proactive(uid, tz);
 const memory                           = require('../services/memory.service');
 const adaptiveBehavior                 = require('../services/adaptive.behavior.service');
 const decisionEngine                   = require('../services/decision.engine.service');
@@ -35,19 +45,19 @@ const { DEFAULT_FALLBACK }             = require('../services/ai/ai.error.handle
 
 // Phase 16 — Scheduling Engine
 function getScheduler() {
-  try { return require('../services/scheduling.engine.service'); } catch (_) { return null; }
+  try { return require('../services/scheduling.engine.service'); } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Module '../services/scheduling.engine.service' not available: ${_e.message}`); return null; }
 }
 // Phase 16 — Next Best Action
 function getNextAction() {
-  try { return require('../services/next.action.service'); } catch (_) { return null; }
+  try { return require('../services/next.action.service'); } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Module '../services/next.action.service' not available: ${_e.message}`); return null; }
 }
 // Phase 16 — Life Feed
 function getLifeFeed() {
-  try { return require('../services/life.feed.service'); } catch (_) { return null; }
+  try { return require('../services/life.feed.service'); } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Module '../services/life.feed.service' not available: ${_e.message}`); return null; }
 }
 // Phase 16 — Task Decomposition
 function getDecomposer() {
-  try { return require('../services/task.decomposition.service'); } catch (_) { return null; }
+  try { return require('../services/task.decomposition.service'); } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Module '../services/task.decomposition.service' not available: ${_e.message}`); return null; }
 }
 const logger                           = require('../utils/logger');
 
@@ -61,9 +71,8 @@ router.use(protect);
 // Main entry: receive user message, classify intent, execute, conversational reply
 // Phase 16: persists messages to ChatSession/ChatMessage DB + returns confidence/explanation
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/command', async (req, res) => {
+router.post('/command', writeLimiter, validateMessage, async (req, res) => {
   const { message, pending_action, session_id } = req.body;
-  if (!message?.trim()) return res.status(400).json({ success: false, message: 'الرسالة مطلوبة' });
 
   const userId   = req.user.id;
   const timezone = req.user.timezone || 'Africa/Cairo';
@@ -71,8 +80,50 @@ router.post('/command', async (req, res) => {
   const pending  = pending_action || session.pendingAction || null;
 
   try {
-    // Run the AI command engine
-    const result = await processCommand(userId, message, timezone, pending);
+    // Step 5: Retry logic with structured error handling
+    let result = null;
+    let lastError = null;
+    const MAX_RETRIES = 2;
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        result = await processCommand(userId, message, timezone, pending);
+        break; // Success — exit retry loop
+      } catch (err) {
+        lastError = err;
+        logger.warn(`[ASSISTANT] command attempt ${attempt + 1} failed: ${err.message}`);
+        if (attempt < MAX_RETRIES) {
+          // Wait before retry (200ms, 500ms)
+          await new Promise(r => setTimeout(r, (attempt + 1) * 250));
+        }
+      }
+    }
+
+    // If all retries failed, build a meaningful fallback
+    if (!result) {
+      const errorType = lastError?.message?.includes('RATE_LIMIT') ? 'rate_limit'
+        : lastError?.message?.includes('timeout') ? 'timeout'
+        : 'internal';
+
+      const fallbackMessages = {
+        rate_limit: 'نعالج عدد كبير من الطلبات الآن. يرجى المحاولة بعد دقيقة.',
+        timeout: 'استغرق الرد وقتاً أطول من المتوقع. حاول مرة أخرى.',
+        internal: 'حدث خطأ مؤقت. جرّب إعادة صياغة رسالتك أو المحاولة لاحقاً.',
+      };
+
+      result = {
+        reply: fallbackMessages[errorType],
+        action_taken: null,
+        needs_confirmation: false,
+        pending_action: null,
+        intent: 'error_fallback',
+        suggestions: ['ابدأ يومي', 'عاداتي', 'مهامي'],
+        is_fallback: true,
+        confidence: 0,
+        error_type: errorType,
+      };
+      logger.error(`[ASSISTANT] All retries failed: ${lastError?.message}`);
+    }
 
     // Update in-memory session
     if (result.needs_confirmation && result.pending_action) {
@@ -172,7 +223,17 @@ router.post('/command', async (req, res) => {
     });
   } catch (e) {
     logger.error('[ASSISTANT] command error:', e.message);
-    res.status(500).json({ success: false, message: 'خطأ في المساعد الذكي' });
+    // Step 5: Structured error response (never silent failure)
+    res.status(500).json({
+      success: false,
+      message: 'حدث خطأ في المساعد. يرجى المحاولة مرة أخرى.',
+      data: {
+        reply: 'عذراً، حدث خطأ مؤقت. جرّب مرة أخرى أو أعد صياغة رسالتك.',
+        suggestions: ['ابدأ يومي', 'مهامي', 'عاداتي'],
+        is_fallback: true,
+        error_type: 'server_error',
+      }
+    });
   }
 });
 
@@ -181,9 +242,8 @@ router.post('/command', async (req, res) => {
 // Orchestrated AI endpoint → { reply, mode, actions, suggestions }
 // Uses full context: memory, personalization, energy/mood
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/chat', async (req, res) => {
+router.post('/chat', writeLimiter, validateMessage, async (req, res) => {
   const { message } = req.body;
-  if (!message?.trim()) return res.status(400).json({ success: false, message: 'الرسالة مطلوبة' });
 
   const userId   = req.user.id;
   const timezone = req.user.timezone || 'Africa/Cairo';
@@ -191,12 +251,12 @@ router.post('/chat', async (req, res) => {
   try {
     // Fetch user context for enriched prompts
     let userCtx = null;
-    try { userCtx = await fetchUserContext(userId, timezone); } catch (_) {}
+    try { userCtx = await fetchUserContext(userId, timezone); } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${_e.message}`); }
 
-    // Use orchestrator for full context-aware response
-    const result = await orchestrator.companionChat(userId, message, timezone, userCtx);
+    // Phase B: Route through ai.core.service for full context-aware response
+    const result = await aiCore.chat(userId, message, timezone, userCtx);
 
-    logger.info(`[ASSISTANT] chat orchestrated: user=${userId}, mode=${result.mode}, fallback=${result.is_fallback}`);
+    logger.info(`[ASSISTANT] chat via ai.core: user=${userId}, mode=${result.mode}, fallback=${result.is_fallback}`);
 
     res.json({
       success: true,
@@ -237,15 +297,14 @@ router.post('/chat', async (req, res) => {
 // POST /assistant  ← alias for /assistant/chat (Phase 16 explainability)
 // Forwards directly to the same handler so POST /api/v1/assistant also works
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/', async (req, res) => {
+router.post('/', writeLimiter, validateMessage, async (req, res) => {
   const { message } = req.body;
-  if (!message?.trim()) return res.status(400).json({ success: false, message: 'الرسالة مطلوبة' });
   const userId   = req.user.id;
   const timezone = req.user.timezone || 'Africa/Cairo';
   try {
     let userCtx = null;
-    try { userCtx = await fetchUserContext(userId, timezone); } catch (_) {}
-    const result = await orchestrator.companionChat(userId, message, timezone, userCtx);
+    try { userCtx = await fetchUserContext(userId, timezone); } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${_e.message}`); }
+    const result = await aiCore.chat(userId, message, timezone, userCtx);
     logger.info(`[ASSISTANT] / alias: user=${userId}, mode=${result.mode}`);
     res.json({
       success: true,
@@ -313,6 +372,9 @@ router.get('/context', async (req, res) => {
         habits_active : ctx.habits.length,
         recent_tasks  : ctx.recentTasks,
         completed_today: ctx.completedToday || 0,
+        // Profile & Settings data for frontend personalization
+        user_profile  : ctx.profile || null,
+        user_settings : ctx.settings || null,
       }
     });
   } catch (e) {
@@ -346,7 +408,7 @@ router.get('/history', (req, res) => {
 
     // Also try legacy conversation service
     let legacyHist = { history: [], turn_count: 0 };
-    try { legacyHist = getConversationHistory(req.user.id); } catch (_) {}
+    try { legacyHist = getConversationHistory(req.user.id); } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${_e.message}`); }
 
     // Merge: prefer new memory if available
     const history    = messages.length > 0 ? messages : legacyHist.history;
@@ -367,7 +429,7 @@ router.post('/clear', (req, res) => {
     memory.clearShortTerm(req.user.id);
 
     // Also clear legacy
-    try { clearConversation(req.user.id); } catch (_) {}
+    try { clearConversation(req.user.id); } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${_e.message}`); }
     sessions.delete(req.user.id);
 
     res.json({ success: true, data: { cleared: true } });
@@ -506,7 +568,7 @@ router.get('/decisions', async (req, res) => {
         source    : 'db',
         timestamp : new Date(Number(r.ts)).toISOString(),
       }));
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${_e.message}`); }
 
     // Merge in-memory + DB (deduplicate by latest)
     const merged = log.length > 0 ? log : dbDecisions;
@@ -611,7 +673,7 @@ router.get('/learning', async (req, res) => {
       const LO = require('../models/learning_outcome.model');
       db_total_records  = await LO.count({ where: { user_id: userId } });
       db_total_outcomes = await LO.count({ where: { user_id: userId, type: 'outcome' } });
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${_e.message}`); }
 
     res.json({
       success: true,
@@ -642,7 +704,7 @@ router.get('/plan', async (req, res) => {
     const tz = req.user.timezone || 'Africa/Cairo';
 
     let ctx = {};
-    try { ctx = await conversationService.buildUserContext(req.user.id, tz); } catch (_) {}
+    try { ctx = await conversationService.buildUserContext(req.user.id, tz); } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${_e.message}`); }
 
     const plan = await planningEngine.generateDailyPlan(req.user.id, { ...ctx, timezone: tz });
     res.json({ success: true, plan });
@@ -782,7 +844,7 @@ router.get('/timeline', async (req, res) => {
           });
         }
       });
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${_e.message}`); }
 
     // ── 2. Decision engine log ────────────────────────────────────────────────
     try {
@@ -798,7 +860,7 @@ router.get('/timeline', async (req, res) => {
           meta      : { risk: d.risk, status: d.status, confidence: d.confidence },
         });
       });
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${_e.message}`); }
 
     // ── 3. Learning engine insights ───────────────────────────────────────────
     try {
@@ -817,7 +879,7 @@ router.get('/timeline', async (req, res) => {
           });
         });
       }
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${_e.message}`); }
 
     // ── 4. Context snapshot signals ───────────────────────────────────────────
     try {
@@ -836,7 +898,7 @@ router.get('/timeline', async (req, res) => {
           });
         });
       }
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${_e.message}`); }
 
     // ── 5. Proactive monitoring alerts ────────────────────────────────────────
     try {
@@ -855,7 +917,7 @@ router.get('/timeline', async (req, res) => {
           });
         });
       }
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${_e.message}`); }
 
     // ── 6. Virtual assistant history ──────────────────────────────────────────
     try {
@@ -872,7 +934,7 @@ router.get('/timeline', async (req, res) => {
           meta      : { status: item.status, action_id: item.action_id },
         });
       });
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${_e.message}`); }
 
     // ── Sort by timestamp descending, take limit ───────────────────────────────
     timelineItems.sort((a, b) => b.timestamp - a.timestamp);
@@ -998,7 +1060,7 @@ router.get('/present', async (req, res) => {
           insights    : profile?.insights || [],
         };
       }
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${_e.message}`); }
 
     if (!orchestrated) {
       return res.json({ success: true, cards: [], count: 0 });
@@ -1073,7 +1135,7 @@ router.get('/ml-predictions', async (req, res) => {
     const learning = require('../services/learning.engine.service');
 
     // Pre-warm the learning engine — await DB load so predictions use real data
-    try { await learning.warmup(userId); } catch (_) {}
+    try { await learning.warmup(userId); } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${_e.message}`); }
 
     // Get current context for ML predictions with real user data
     let context = { energy: 55, mood: 5, overdueCount: 0 };
@@ -1108,8 +1170,8 @@ router.get('/ml-predictions', async (req, res) => {
           context.energy = snap.energy?.score || 55;
           context.mood   = snap.mood?.score   || context.mood;
         }
-      } catch (_) {}
-    } catch (_) {}
+      } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${_e.message}`); }
+    } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${_e.message}`); }
 
     const mlPredictions = learning.getMLPredictions(userId, context);
     const profile       = learning.getUserLearningProfile(userId);
@@ -1194,7 +1256,7 @@ router.get('/next-action', async (req, res) => {
             energy_required: t.energy_required,
           };
         }
-      } catch (_) {}
+      } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${_e.message}`); }
     }
 
     logger.info(`[ASSISTANT] next-action: user=${userId}, action=${action.action}, urgency=${action.urgency}`);
@@ -1237,7 +1299,7 @@ router.get('/next-action', async (req, res) => {
           generated_at: new Date().toISOString(),
         }});
       }
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${_e.message}`); }
     res.json({
       success: true,
       data   : {
@@ -1365,7 +1427,7 @@ router.get('/burnout-status', async (req, res) => {
 
       const profile = learning.getUserLearningProfile(userId);
       insights = profile?.insights?.slice(0, 3) || [];
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${_e.message}`); }
 
     const riskLevel = burnoutRisk >= 0.7 ? 'high' : burnoutRisk >= 0.45 ? 'medium' : 'low';
     const riskPercent = Math.round(burnoutRisk * 100);
@@ -1429,7 +1491,7 @@ router.get('/chat-summary', async (req, res) => {
         sessions      = sessRows.map(s => s.toJSON());
         totalMessages = msgCount;
       }
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${_e.message}`); }
 
     // Also include in-memory memory stats
     const memStats = memory.getShortTermStats(userId);
@@ -1479,7 +1541,7 @@ router.post('/smart-notify', async (req, res) => {
         const h = await db.models.Habit.findOne({ where: { id: item_id, user_id: userId } });
         if (h) item = h.toJSON();
       }
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${_e.message}`); }
 
     if (!item) {
       return res.status(404).json({ success: false, message: 'العنصر غير موجود' });
@@ -1833,12 +1895,30 @@ router.get('/timeline/smart', async (req, res) => {
       });
     }
 
-    // ── 4. Rule-based suggestions ──────────────────────────────────────
+    // ── 4. Load user settings to control suggestion behavior ───────────
+    let userSettings = null;
+    let userProfile = null;
+    try {
+      const UserSettings = require('../models/user_settings.model');
+      const UserProfile  = require('../models/user_profile.model');
+      [userSettings, userProfile] = await Promise.all([
+        UserSettings.findOne({ where: { user_id: userId } }),
+        UserProfile.findOne({ where: { user_id: userId } }),
+      ]);
+    } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${_e.message}`); }
+
+    // Settings-driven behavior
+    const interventionLevel  = userSettings?.ai_intervention_level || 'medium';
+    const autoReschedule     = userSettings?.auto_reschedule ?? false;
+    const deepWorkDuration   = userProfile?.deep_work_duration || 90;
+
+    // ── 5. Rule-based suggestions (respects intervention level) ────────
     const suggestions = [];
     let sugId = 1;
 
     // Suggestion: reschedule overdue tasks into free slots
-    for (const od of overdue.slice(0, 3)) {
+    // If auto_reschedule is ON, mark suggestions as auto-accepted
+    for (const od of overdue.slice(0, interventionLevel === 'low' ? 1 : 3)) {
       const slot = freeSlots.find(s => s.duration_min >= 30);
       if (slot) {
         suggestions.push({
@@ -1847,13 +1927,14 @@ router.get('/timeline/smart', async (req, res) => {
           title:  `أعد جدولة "${od.title}" إلى ${slot.start}`,
           reason: `متأخرة ${od.days_overdue} يوم — يوجد وقت فارغ من ${slot.start} حتى ${slot.end}`,
           action: { type: 'reschedule_task', task_id: od.id, proposed_time: slot.start },
+          auto_apply: autoReschedule,
         });
       }
     }
 
-    // Suggestion: take a break if schedule is dense
+    // Suggestion: take a break if schedule is dense (medium+ intervention)
     const totalScheduled = timeline.length;
-    if (totalScheduled >= 6 && freeSlots.length === 0) {
+    if (interventionLevel !== 'low' && totalScheduled >= 6 && freeSlots.length === 0) {
       suggestions.push({
         id:     `sug-${sugId++}`,
         type:   'break',
@@ -1863,32 +1944,34 @@ router.get('/timeline/smart', async (req, res) => {
       });
     }
 
-    // Suggestion: use free time for habits
-    const Habit = require('../models/habit.model');
-    const todayHabits = await Habit.findAll({
-      where: { user_id: userId, is_active: true },
-      limit: 5,
-    });
-    const incompleteHabits = todayHabits.filter(h => !h.last_check_in || new Date(h.last_check_in).toDateString() !== now.toDateString());
-    if (incompleteHabits.length > 0 && freeSlots.length > 0) {
-      const habit = incompleteHabits[0];
-      suggestions.push({
-        id:     `sug-${sugId++}`,
-        type:   'habit_reminder',
-        title:  `لم تُكمل عادة "${habit.title}" اليوم`,
-        reason: `لديك وقت فارغ — أكمل عاداتك اليومية`,
-        action: { type: 'complete_habit', habit_id: habit.id },
+    // Suggestion: use free time for habits (medium+ intervention)
+    if (interventionLevel !== 'low') {
+      const { Habit } = require('../models/habit.model');
+      const todayHabits = await Habit.findAll({
+        where: { user_id: userId, is_active: true },
+        limit: 5,
       });
+      const incompleteHabits = todayHabits.filter(h => !h.last_check_in || new Date(h.last_check_in).toDateString() !== now.toDateString());
+      if (incompleteHabits.length > 0 && freeSlots.length > 0) {
+        const habit = incompleteHabits[0];
+        suggestions.push({
+          id:     `sug-${sugId++}`,
+          type:   'habit_reminder',
+          title:  `لم تُكمل عادة "${habit.title}" اليوم`,
+          reason: `لديك وقت فارغ — أكمل عاداتك اليومية`,
+          action: { type: 'complete_habit', habit_id: habit.id },
+        });
+      }
     }
 
-    // Suggestion: focus block for large free slots
+    // Suggestion: focus block for large free slots (use user's deep work duration)
     for (const slot of freeSlots) {
-      if (slot.duration_min >= 90) {
+      if (slot.duration_min >= deepWorkDuration) {
         suggestions.push({
           id:     `sug-${sugId++}`,
           type:   'focus_block',
           title:  `فترة تركيز متاحة: ${slot.start} – ${slot.end}`,
-          reason: `${slot.duration_min} دقيقة متاحة — مثالية لعمل عميق`,
+          reason: `${slot.duration_min} دقيقة متاحة — مثالية لعمل عميق (إعدادك: ${deepWorkDuration} دقيقة)`,
           action: { type: 'create_focus_block', start: slot.start, end: slot.end },
         });
         break; // Only suggest one focus block
@@ -1998,7 +2081,7 @@ router.post('/timeline/smart/accept-suggestion', async (req, res) => {
         break;
       }
       case 'complete_habit': {
-        const Habit = require('../models/habit.model');
+        const { Habit } = require('../models/habit.model');
         const habit = await Habit.findOne({ where: { id: action.habit_id, user_id: userId } });
         if (habit) {
           habit.last_check_in = new Date();
@@ -2033,4 +2116,49 @@ router.post('/timeline/smart/accept-suggestion', async (req, res) => {
 });
 
 module.exports = router;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /assistant/run-loop — Step 2+6: Trigger execution loop on demand
+// ─────────────────────────────────────────────────────────────────────────────
+// Note: This is added AFTER module.exports to avoid breaking existing routes.
+// Re-export after adding route.
+router.post('/run-loop', async (req, res) => {
+  try {
+    const executionEngine = require('../services/execution.engine.service');
+    const userId   = req.user.id;
+    const timezone = req.user.timezone || 'Africa/Cairo';
+    const result = await executionEngine.triggerLoop(userId, timezone);
+    res.json({
+      success: true,
+      data: result,
+    });
+  } catch (e) {
+    logger.error('[ASSISTANT] run-loop error:', e.message);
+    res.status(500).json({ success: false, message: 'فشل في تشغيل الحلقة التنفيذية' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /assistant/behavior — Step 1+6: Get user behavior profile + patterns
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/behavior', async (req, res) => {
+  try {
+    const behaviorSvc = require('../services/behavior.model.service');
+    const userId = req.user.id;
+    const [profile, patterns] = await Promise.all([
+      behaviorSvc.getBehaviorProfile(userId),
+      behaviorSvc.getBehaviorPatterns(userId),
+    ]);
+    res.json({
+      success: true,
+      data: {
+        profile: profile?.toJSON ? profile.toJSON() : profile,
+        patterns,
+      },
+    });
+  } catch (e) {
+    logger.error('[ASSISTANT] behavior error:', e.message);
+    res.status(500).json({ success: false, message: 'فشل في جلب بيانات السلوك' });
+  }
+});
 
