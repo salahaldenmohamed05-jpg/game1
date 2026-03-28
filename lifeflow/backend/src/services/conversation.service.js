@@ -133,11 +133,11 @@ async function fetchUserContext(userId, timezone) {
     const User              = require('../models/user.model');
     const Task              = require('../models/task.model');
     const MoodEntry         = require('../models/mood.model');
-    const Habit             = require('../models/habit.model');
+    const { Habit }         = require('../models/habit.model');
     
     let ProductivityScore, EnergyLog;
-    try { ProductivityScore = require('../models/productivity_score.model'); } catch(_) {}
-    try { EnergyLog         = require('../models/energy_log.model'); } catch(_) {}
+    try { ProductivityScore = require('../models/productivity_score.model'); } catch (_e) { logger.debug(`[CONVERSATION_SERVICE] Model load failed: ${_e.message}`); }
+    try { EnergyLog = require('../models/energy_log.model'); } catch (_e) { logger.debug(`[CONVERSATION_SERVICE] Model load failed: ${_e.message}`); }
 
     const now     = moment.tz(timezone);
     const today   = now.format('YYYY-MM-DD');
@@ -206,7 +206,7 @@ async function fetchUserContext(userId, timezone) {
         where: { user_id: userId, status: 'completed', completed_at: { [Op.gte]: `${today}T00:00:00` } },
         limit: 10, raw: true,
       });
-    } catch(_) {}
+    } catch (_e) { logger.debug(`[CONVERSATION_SERVICE] Non-critical operation failed: ${_e.message}`); }
 
     // Phase 6: Get today's habit logs for AI context
     let habitLogs = [];
@@ -216,7 +216,7 @@ async function fetchUserContext(userId, timezone) {
         where: { user_id: userId, log_date: today },
         raw: true,
       });
-    } catch(_) {}
+    } catch (_e) { logger.debug(`[CONVERSATION_SERVICE] Non-critical operation failed: ${_e.message}`); }
 
     return {
       name, greeting, hour, today, timezone,

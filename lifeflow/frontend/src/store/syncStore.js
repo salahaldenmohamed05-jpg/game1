@@ -50,10 +50,12 @@ const useSyncStore = create((set, get) => ({
     qc.invalidateQueries({ queryKey: ['habits-all'] });
     // Dashboard & widgets
     qc.invalidateQueries({ queryKey: ['dashboard'] });
+    qc.invalidateQueries({ queryKey: ['today-flow'] });
     qc.invalidateQueries({ queryKey: ['next-action-dash'] });
     qc.invalidateQueries({ queryKey: ['next-action-assist'] });
     qc.invalidateQueries({ queryKey: ['daily-plan-dash'] });
     qc.invalidateQueries({ queryKey: ['timeline-assist'] });
+    qc.invalidateQueries({ queryKey: ['smart-timeline'] });
     qc.invalidateQueries({ queryKey: ['life-feed-dash'] });
     qc.invalidateQueries({ queryKey: ['burnout-dash'] });
     // Notifications

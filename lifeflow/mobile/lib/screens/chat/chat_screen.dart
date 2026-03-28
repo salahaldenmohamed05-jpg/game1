@@ -1,7 +1,12 @@
 /**
- * Chat Screen - شاشة المحادثة مع المساعد الذكي
- * ================================================
- * المحادثة مع LifeFlow AI Assistant
+ * Chat Screen - Phase C: Assistant-First Experience
+ * ====================================================
+ * Phase C: The primary screen of LifeFlow.
+ * Features:
+ *   - Smart action buttons (Arabic) matching web UX
+ *   - Quick command suggestions
+ *   - Daily flow integration
+ *   - Non-robotic, proactive personality
  */
 
 import 'package:flutter/material.dart';
@@ -20,14 +25,14 @@ class _ChatScreenState extends State<ChatScreen> {
   final _messageController = TextEditingController();
   final _scrollController = ScrollController();
 
-  // Quick suggestion messages
-  final List<String> _quickMessages = [
-    'ما هي أهم مهامي اليوم؟',
-    'كيف أحسّن إنتاجيتي؟',
-    'اقترح عادات صحية',
-    'تحليل مزاجي هذا الأسبوع',
-    'نصائح للتركيز والتحفيز',
-    'ما العادة التالية المطلوبة منّي؟',
+  // Phase C: Smart action buttons matching web UX
+  static const List<Map<String, String>> _smartActions = [
+    {'icon': '☀️', 'label': 'ابدأ يومي', 'command': 'ابدأ يومي وخطط لي جدولي'},
+    {'icon': '⚡', 'label': 'ايه أهم حاجة دلوقتي؟', 'command': 'ايه أهم حاجة المفروض أعملها دلوقتي؟'},
+    {'icon': '💙', 'label': 'سجّل مزاجي', 'command': 'عايز أسجل مزاجي'},
+    {'icon': '📋', 'label': 'أضف مهمة', 'command': 'عايز أضيف مهمة جديدة'},
+    {'icon': '🔥', 'label': 'عاداتي', 'command': 'فكرني بعاداتي'},
+    {'icon': '🌙', 'label': 'تقييم يومي', 'command': 'كيف كان يومي؟ عايز أعمل تقييم'},
   ];
 
   @override
@@ -44,7 +49,6 @@ class _ChatScreenState extends State<ChatScreen> {
     context.read<AIProvider>().sendMessage(text);
     _messageController.clear();
 
-    // Scroll to bottom
     Future.delayed(const Duration(milliseconds: 200), () {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
@@ -63,6 +67,8 @@ class _ChatScreenState extends State<ChatScreen> {
     return Scaffold(
       backgroundColor: AppConstants.darkBackground,
       appBar: AppBar(
+        backgroundColor: AppConstants.darkSurface,
+        elevation: 0,
         title: Row(
           children: [
             Container(
@@ -81,7 +87,7 @@ class _ChatScreenState extends State<ChatScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'LifeFlow AI',
+                  'LifeFlow',
                   style: TextStyle(
                     fontFamily: AppConstants.fontFamily,
                     fontSize: 16,
@@ -90,7 +96,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
                 ),
                 Text(
-                  'مساعدك الشخصي الذكي',
+                  'صاحبك الذكي لإدارة حياتك',
                   style: TextStyle(
                     fontFamily: AppConstants.fontFamily,
                     fontSize: 11,
@@ -116,7 +122,6 @@ class _ChatScreenState extends State<ChatScreen> {
             child: aiProvider.messages.isEmpty
                 ? _WelcomeScreen(
                     onQuickMessage: _sendMessage,
-                    quickMessages: _quickMessages,
                   )
                 : ListView.builder(
                     controller: _scrollController,
@@ -137,12 +142,9 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
           ),
 
-          // Quick suggestions
-          if (aiProvider.messages.length > 0 && !aiProvider.isLoading)
-            _QuickSuggestions(
-              suggestions: _quickMessages.take(3).toList(),
-              onTap: _sendMessage,
-            ),
+          // Phase C: Smart Action Buttons (always visible when chatting)
+          if (aiProvider.messages.isNotEmpty && !aiProvider.isLoading)
+            _SmartActionBar(onTap: _sendMessage),
 
           // Input Area
           _ChatInput(
@@ -156,15 +158,62 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 }
 
-// Welcome Screen (before first message)
+// Phase C: Smart Action Buttons Bar
+class _SmartActionBar extends StatelessWidget {
+  final Function(String) onTap;
+
+  const _SmartActionBar({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 44,
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        itemCount: _ChatScreenState._smartActions.length,
+        itemBuilder: (_, index) {
+          final action = _ChatScreenState._smartActions[index];
+          return GestureDetector(
+            onTap: () => onTap(action['command']!),
+            child: Container(
+              margin: const EdgeInsets.only(left: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: AppConstants.darkCard,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: AppConstants.primaryPurple.withOpacity(0.2),
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(action['icon']!, style: const TextStyle(fontSize: 14)),
+                  const SizedBox(width: 6),
+                  Text(
+                    action['label']!,
+                    style: const TextStyle(
+                      fontFamily: AppConstants.fontFamily,
+                      fontSize: 11,
+                      color: AppConstants.textSecondary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+// Phase C: Welcome Screen — assistant-first with smart actions
 class _WelcomeScreen extends StatelessWidget {
   final Function(String) onQuickMessage;
-  final List<String> quickMessages;
 
-  const _WelcomeScreen({
-    required this.onQuickMessage,
-    required this.quickMessages,
-  });
+  const _WelcomeScreen({required this.onQuickMessage});
 
   @override
   Widget build(BuildContext context) {
@@ -174,8 +223,8 @@ class _WelcomeScreen extends StatelessWidget {
         children: [
           const SizedBox(height: 20),
           Container(
-            width: 80,
-            height: 80,
+            width: 72,
+            height: 72,
             decoration: BoxDecoration(
               gradient: AppConstants.primaryGradient,
               shape: BoxShape.circle,
@@ -188,12 +237,12 @@ class _WelcomeScreen extends StatelessWidget {
               ],
             ),
             child: const Center(
-              child: Text('✨', style: TextStyle(fontSize: 40)),
+              child: Text('✨', style: TextStyle(fontSize: 36)),
             ),
           ),
           const SizedBox(height: 16),
           const Text(
-            'مرحباً! أنا LifeFlow AI',
+            'أهلاً! أنا LifeFlow',
             style: TextStyle(
               fontFamily: AppConstants.fontFamily,
               fontSize: 22,
@@ -201,9 +250,9 @@ class _WelcomeScreen extends StatelessWidget {
               color: AppConstants.textPrimary,
             ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 6),
           const Text(
-            'مساعدك الشخصي لإدارة الوقت والإنتاجية\nكيف يمكنني مساعدتك اليوم؟',
+            'صاحبك الذكي لإدارة يومك\nايه اللي عايز تعمله دلوقتي؟',
             textAlign: TextAlign.center,
             style: TextStyle(
               fontFamily: AppConstants.fontFamily,
@@ -212,119 +261,49 @@ class _WelcomeScreen extends StatelessWidget {
               height: 1.5,
             ),
           ),
-          const SizedBox(height: 32),
+          const SizedBox(height: 28),
 
-          // Feature Grid
-          const _FeatureGrid(),
-          const SizedBox(height: 32),
-
-          const Align(
-            alignment: Alignment.centerRight,
-            child: Text(
-              'اقتراحات سريعة',
-              style: TextStyle(
-                fontFamily: AppConstants.fontFamily,
-                fontSize: 13,
-                color: AppConstants.textMuted,
-              ),
-            ),
-          ),
-          const SizedBox(height: 10),
-
-          ...quickMessages.map((msg) => _QuickMessageButton(
-                message: msg,
-                onTap: () => onQuickMessage(msg),
-              )),
-        ],
-      ),
-    );
-  }
-}
-
-class _FeatureGrid extends StatelessWidget {
-  const _FeatureGrid();
-
-  @override
-  Widget build(BuildContext context) {
-    final features = [
-      {'icon': '📋', 'label': 'إدارة المهام'},
-      {'icon': '🏃', 'label': 'تتبع العادات'},
-      {'icon': '💭', 'label': 'تحليل المزاج'},
-      {'icon': '💡', 'label': 'نصائح ذكية'},
-    ];
-
-    return GridView.count(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      crossAxisCount: 2,
-      mainAxisSpacing: 12,
-      crossAxisSpacing: 12,
-      childAspectRatio: 2.5,
-      children: features.map((f) => Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: AppConstants.darkCard,
-          borderRadius: BorderRadius.circular(AppConstants.radiusM),
-          border: Border.all(color: AppConstants.darkBorder),
-        ),
-        child: Row(
-          children: [
-            Text(f['icon']!, style: const TextStyle(fontSize: 20)),
-            const SizedBox(width: 8),
-            Text(
-              f['label']!,
-              style: const TextStyle(
-                fontFamily: AppConstants.fontFamily,
-                fontSize: 12,
-                color: AppConstants.textSecondary,
-              ),
-            ),
-          ],
-        ),
-      )).toList(),
-    );
-  }
-}
-
-class _QuickMessageButton extends StatelessWidget {
-  final String message;
-  final VoidCallback onTap;
-
-  const _QuickMessageButton({required this.message, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        width: double.infinity,
-        margin: const EdgeInsets.only(bottom: 8),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        decoration: BoxDecoration(
-          color: AppConstants.darkCard,
-          borderRadius: BorderRadius.circular(AppConstants.radiusM),
-          border: Border.all(color: AppConstants.darkBorder),
-        ),
-        child: Row(
-          children: [
-            const Icon(
-              Icons.arrow_forward_ios,
-              size: 12,
-              color: AppConstants.primaryPurple,
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                message,
-                style: const TextStyle(
-                  fontFamily: AppConstants.fontFamily,
-                  fontSize: 13,
-                  color: AppConstants.textSecondary,
+          // Phase C: Smart Action Grid
+          GridView.count(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            crossAxisCount: 2,
+            mainAxisSpacing: 10,
+            crossAxisSpacing: 10,
+            childAspectRatio: 2.8,
+            children: _ChatScreenState._smartActions.map((action) {
+              return GestureDetector(
+                onTap: () => onQuickMessage(action['command']!),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: AppConstants.darkCard,
+                    borderRadius: BorderRadius.circular(AppConstants.radiusM),
+                    border: Border.all(color: AppConstants.darkBorder),
+                  ),
+                  child: Row(
+                    children: [
+                      Text(action['icon']!, style: const TextStyle(fontSize: 20)),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          action['label']!,
+                          style: const TextStyle(
+                            fontFamily: AppConstants.fontFamily,
+                            fontSize: 12,
+                            color: AppConstants.textSecondary,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ),
-          ],
-        ),
+              );
+            }).toList(),
+          ),
+        ],
       ),
     );
   }
@@ -478,50 +457,6 @@ class _TypingIndicatorState extends State<_TypingIndicator>
   }
 }
 
-// Quick Suggestions (inline in chat)
-class _QuickSuggestions extends StatelessWidget {
-  final List<String> suggestions;
-  final Function(String) onTap;
-
-  const _QuickSuggestions({required this.suggestions, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: 40,
-      child: ListView.builder(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        itemCount: suggestions.length,
-        itemBuilder: (_, index) {
-          return GestureDetector(
-            onTap: () => onTap(suggestions[index]),
-            child: Container(
-              margin: const EdgeInsets.only(left: 8),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              decoration: BoxDecoration(
-                color: AppConstants.primaryPurple.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(
-                  color: AppConstants.primaryPurple.withOpacity(0.3),
-                ),
-              ),
-              child: Text(
-                suggestions[index],
-                style: const TextStyle(
-                  fontFamily: AppConstants.fontFamily,
-                  fontSize: 11,
-                  color: AppConstants.primaryPurple,
-                ),
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
-}
-
 // Chat Input
 class _ChatInput extends StatelessWidget {
   final TextEditingController controller;
@@ -564,7 +499,7 @@ class _ChatInput extends StatelessWidget {
                 fontSize: 14,
               ),
               decoration: InputDecoration(
-                hintText: 'اكتب رسالة...',
+                hintText: 'اكتب رسالة أو اختر إجراء...',
                 filled: true,
                 fillColor: AppConstants.darkCard,
                 contentPadding: const EdgeInsets.symmetric(
@@ -590,40 +525,37 @@ class _ChatInput extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 10),
-          AnimatedContainer(
-            duration: AppConstants.animFast,
-            child: GestureDetector(
-              onTap: isLoading ? null : onSend,
-              child: Container(
-                width: 44,
-                height: 44,
-                decoration: BoxDecoration(
-                  gradient: AppConstants.primaryGradient,
-                  shape: BoxShape.circle,
-                  boxShadow: isLoading
-                      ? null
-                      : [
-                          BoxShadow(
-                            color: AppConstants.primaryPurple.withOpacity(0.4),
-                            blurRadius: 10,
-                            spreadRadius: 2,
-                          ),
-                        ],
-                ),
-                child: isLoading
-                    ? const Padding(
-                        padding: EdgeInsets.all(12),
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Colors.white,
+          GestureDetector(
+            onTap: isLoading ? null : onSend,
+            child: Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                gradient: AppConstants.primaryGradient,
+                shape: BoxShape.circle,
+                boxShadow: isLoading
+                    ? null
+                    : [
+                        BoxShadow(
+                          color: AppConstants.primaryPurple.withOpacity(0.4),
+                          blurRadius: 10,
+                          spreadRadius: 2,
                         ),
-                      )
-                    : const Icon(
-                        Icons.send_rounded,
-                        color: Colors.white,
-                        size: 20,
-                      ),
+                      ],
               ),
+              child: isLoading
+                  ? const Padding(
+                      padding: EdgeInsets.all(12),
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(
+                      Icons.send_rounded,
+                      color: Colors.white,
+                      size: 20,
+                    ),
             ),
           ),
         ],

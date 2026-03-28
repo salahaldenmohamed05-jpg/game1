@@ -28,11 +28,11 @@ const store = new Map();
 // ─── Lazy Model Loader ────────────────────────────────────────────────────────
 function getModels() {
   const m = {};
-  try { m.Task      = require('../models/task.model');       } catch (_) {}
-  try { m.Habit     = require('../models/habit.model');      } catch (_) {}
-  try { m.HabitLog  = require('../models/habit_log.model');  } catch (_) {}
-  try { m.MoodEntry = require('../models/mood.model');       } catch (_) {}
-  try { m.User      = require('../models/user.model');       } catch (_) {}
+  try { m.Task = require('../models/task.model'); } catch (_e) { logger.debug(`[CONTEXT_SNAPSHOT_SERVICE] Model load failed: ${_e.message}`); }
+  try { m.Habit = require('../models/habit.model').Habit; } catch (_e) { logger.debug(`[CONTEXT_SNAPSHOT_SERVICE] Model load failed: ${_e.message}`); }
+  try { m.HabitLog = require('../models/habit_log.model'); } catch (_e) { logger.debug(`[CONTEXT_SNAPSHOT_SERVICE] Model load failed: ${_e.message}`); }
+  try { m.MoodEntry = require('../models/mood.model'); } catch (_e) { logger.debug(`[CONTEXT_SNAPSHOT_SERVICE] Model load failed: ${_e.message}`); }
+  try { m.User = require('../models/user.model'); } catch (_e) { logger.debug(`[CONTEXT_SNAPSHOT_SERVICE] Model load failed: ${_e.message}`); }
   return m;
 }
 

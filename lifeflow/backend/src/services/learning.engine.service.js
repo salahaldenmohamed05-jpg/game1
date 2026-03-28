@@ -21,11 +21,7 @@ const logger = require('../utils/logger');
 
 // ─── DB Model (lazy-loaded to avoid circular dependency) ─────────────────────
 function getLearningOutcomeModel() {
-  try {
-    return require('../models/learning_outcome.model');
-  } catch (_) {
-    return null;
-  }
+  try { return require('../models/learning_outcome.model'); } catch (_e) { logger.debug(`[LEARNING_ENGINE_SERVICE] Module '../models/learning_outcome.model' not available: ${_e.message}`); return null; }
 }
 
 // ─── Async DB Persistence (fire-and-forget) ───────────────────────────────────

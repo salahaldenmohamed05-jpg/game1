@@ -1,7 +1,10 @@
 /**
- * Home Screen - الشاشة الرئيسية
- * ================================
- * شاشة التنقل الرئيسية مع Bottom Navigation
+ * Home Screen - Phase C: Assistant-First Design
+ * ================================================
+ * Phase C UX: Assistant is the DEFAULT tab (index 0).
+ * Bottom nav: [ المساعد | المهام | العادات | المزاج | الرئيسية ]
+ * 
+ * Every screen answers: "What should I do now?"
  */
 
 import 'package:flutter/material.dart';
@@ -29,20 +32,20 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  // Phase C: Assistant-first — default tab is ChatScreen (index 0)
   int _currentIndex = 0;
 
   final List<Widget> _screens = const [
-    DashboardTab(),
+    ChatScreen(),      // Phase C: Assistant is FIRST
     TasksScreen(),
     HabitsScreen(),
     MoodScreen(),
-    ChatScreen(),
+    DashboardTab(),    // Dashboard moved to last — secondary view
   ];
 
   @override
   void initState() {
     super.initState();
-    // Load initial data
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadData();
     });
@@ -94,11 +97,13 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
+              // Phase C: Assistant is FIRST tab with highlight
               _NavItem(
-                icon: Icons.home_rounded,
-                label: 'الرئيسية',
+                icon: Icons.auto_awesome_rounded,
+                label: 'المساعد',
                 isActive: _currentIndex == 0,
                 onTap: () => setState(() => _currentIndex = 0),
+                isHighlighted: true,
               ),
               _NavItem(
                 icon: Icons.check_box_rounded,
@@ -120,8 +125,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 onTap: () => setState(() => _currentIndex = 3),
               ),
               _NavItem(
-                icon: Icons.auto_awesome_rounded,
-                label: 'مساعد',
+                icon: Icons.home_rounded,
+                label: 'الرئيسية',
                 isActive: _currentIndex == 4,
                 onTap: () => setState(() => _currentIndex = 4),
               ),
@@ -139,6 +144,7 @@ class _NavItem extends StatelessWidget {
   final bool isActive;
   final VoidCallback onTap;
   final int badge;
+  final bool isHighlighted;
 
   const _NavItem({
     required this.icon,
@@ -146,6 +152,7 @@ class _NavItem extends StatelessWidget {
     required this.isActive,
     required this.onTap,
     this.badge = 0,
+    this.isHighlighted = false,
   });
 
   @override
@@ -161,6 +168,10 @@ class _NavItem extends StatelessWidget {
               ? AppConstants.primaryPurple.withOpacity(0.15)
               : Colors.transparent,
           borderRadius: BorderRadius.circular(AppConstants.radiusM),
+          // Phase C: highlighted assistant tab gets a subtle glow
+          border: isHighlighted && !isActive
+              ? Border.all(color: AppConstants.primaryPurple.withOpacity(0.15))
+              : null,
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -173,7 +184,9 @@ class _NavItem extends StatelessWidget {
                   size: 24,
                   color: isActive
                       ? AppConstants.primaryPurple
-                      : AppConstants.textMuted,
+                      : isHighlighted
+                          ? AppConstants.primaryPurple.withOpacity(0.6)
+                          : AppConstants.textMuted,
                 ),
                 if (badge > 0)
                   Positioned(
@@ -210,7 +223,9 @@ class _NavItem extends StatelessWidget {
                     isActive ? FontWeight.w600 : FontWeight.w400,
                 color: isActive
                     ? AppConstants.primaryPurple
-                    : AppConstants.textMuted,
+                    : isHighlighted
+                        ? AppConstants.primaryPurple.withOpacity(0.5)
+                        : AppConstants.textMuted,
               ),
             ),
           ],

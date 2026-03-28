@@ -258,7 +258,7 @@ async function syncIntegration(userId, integrationType, eventsData = []) {
           },
         });
         imported++;
-      } catch (e) { /* skip duplicates */ }
+      } catch (e) { logger.debug('[LIFE-CONTEXT] Duplicate detection skipped:', e.message); }
     }
 
     return {

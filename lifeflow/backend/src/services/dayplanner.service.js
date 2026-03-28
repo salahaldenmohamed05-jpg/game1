@@ -25,7 +25,13 @@ const getModels = () => ({
   EnergyProfile: require('../models/energy_profile.model'),
   MoodEntry:     require('../models/mood.model'),
   User:          require('../models/user.model'),
+  DayPlan:       require('../models/day_plan.model'),
 });
+
+// Lazy-load Goal Engine (optional — graceful if missing)
+function getGoalEngine() {
+  try { return require('./goal.engine.service'); } catch (_) { return null; }
+}
 
 // ─── Priority weights ────────────────────────────────────────────────────────
 const PRIORITY_SCORE = { urgent: 4, high: 3, medium: 2, low: 1 };
@@ -87,8 +93,17 @@ async function buildDayPlan(userId, timezone = 'Africa/Cairo', targetDate = null
     // ── Build energy curve for today ──────────────────────────────────────────
     const energyCurve = buildEnergyCurve(energyProfile, wakeHour, sleepHour);
 
-    // ── Sort tasks by combined score ──────────────────────────────────────────
-    const rankedTasks = rankTasks(tasks, today, tz);
+    // ── Fetch goal context (optional — enriches task ranking) ──────────────
+    let goalContext = null;
+    const goalEngine = getGoalEngine();
+    if (goalEngine) {
+      try {
+        goalContext = await goalEngine.getGoalContext(userId, tz);
+      } catch (e) { logger.debug('[DAY-PLANNER] Goal context fetch failed:', e.message); }
+    }
+
+    // ── Sort tasks by combined score (goal-boosted) ────────────────────────
+    const rankedTasks = rankTasks(tasks, today, tz, goalContext);
 
     // ── Build habit blocks ────────────────────────────────────────────────────
     const habitBlocks = buildHabitBlocks(habits, habitLogs, today, wakeHour, workEnd);
@@ -108,7 +123,17 @@ async function buildDayPlan(userId, timezone = 'Africa/Cairo', targetDate = null
     // ── Break suggestions ─────────────────────────────────────────────────────
     const breakSuggestions = getBreakSuggestions(schedule, energyCurve, workStart, workEnd);
 
-    return {
+    const planStats = {
+      ...stats,
+      total_tasks: rankedTasks.length,
+      scheduled_tasks: schedule.filter(b => b.type === 'task').length,
+      total_habits: habits.length,
+      completed_habits: habitLogs.filter(l => l.completed).length,
+      estimated_work_minutes: rankedTasks.reduce((s, t) => s + (t.estimated_duration || 30), 0),
+      peak_energy_hour: getPeakHour(energyCurve, workStart, workEnd),
+    };
+
+    const planResult = {
       date: today,
       generated_at: new Date().toISOString(),
       schedule,
@@ -116,19 +141,50 @@ async function buildDayPlan(userId, timezone = 'Africa/Cairo', targetDate = null
       break_suggestions: breakSuggestions,
       mood_adjustments: moodAdjustments,
       warnings,
-      stats: {
-        ...stats,
-        total_tasks: rankedTasks.length,
-        scheduled_tasks: schedule.filter(b => b.type === 'task').length,
-        total_habits: habits.length,
-        completed_habits: habitLogs.filter(l => l.completed).length,
-        estimated_work_minutes: rankedTasks.reduce((s, t) => s + (t.estimated_duration || 30), 0),
-        peak_energy_hour: getPeakHour(energyCurve, workStart, workEnd),
-      },
+      stats: planStats,
+      goals: goalContext ? {
+        active: goalContext.activeGoals.slice(0, 5),
+        suggestions: goalContext.goalSuggestions.slice(0, 3),
+        summary: goalContext.summary,
+      } : null,
       energy_curve: Object.entries(energyCurve)
         .filter(([h]) => h >= wakeHour && h <= sleepHour)
         .map(([hour, level]) => ({ hour: Number(hour), level, label: hourLabel(Number(hour)) })),
     };
+
+    // ── Persist to DB (upsert by user_id + plan_date) ────────────────────────
+    try {
+      const { DayPlan } = getModels();
+      const [record, created] = await DayPlan.findOrCreate({
+        where: { user_id: userId, plan_date: today },
+        defaults: {
+          schedule,
+          focus_windows: focusWindows,
+          warnings,
+          stats: planStats,
+          total_blocks: schedule.length,
+          energy_match_score: planStats.energy_match_score || 0,
+        },
+      });
+      if (!created) {
+        await record.update({
+          schedule,
+          focus_windows: focusWindows,
+          warnings,
+          stats: planStats,
+          total_blocks: schedule.length,
+          energy_match_score: planStats.energy_match_score || 0,
+        });
+      }
+      planResult.persisted = true;
+      planResult.plan_id = record.id;
+      logger.info(`[DAY-PLANNER] Plan ${created ? 'created' : 'updated'} for user ${userId} date ${today}`);
+    } catch (persistErr) {
+      logger.warn('[DAY-PLANNER] Failed to persist plan to DB:', persistErr.message);
+      planResult.persisted = false;
+    }
+
+    return planResult;
   } catch (err) {
     logger.error('buildDayPlan error:', err.message);
     throw err;
@@ -136,9 +192,10 @@ async function buildDayPlan(userId, timezone = 'Africa/Cairo', targetDate = null
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// RANK TASKS
+// RANK TASKS (goal-aware)
 // ─────────────────────────────────────────────────────────────────────────────
-function rankTasks(tasks, today, tz) {
+function rankTasks(tasks, today, tz, goalContext) {
+  const goalEngine = getGoalEngine();
   return tasks.map(t => {
     const priorityScore = PRIORITY_SCORE[t.priority] || 2;
     const aiScore       = t.ai_priority_score || 0;
@@ -151,8 +208,13 @@ function rankTasks(tasks, today, tz) {
     // Reschedule penalty
     const reschedulePenalty = Math.min(2, (t.reschedule_count || 0) * 0.5);
 
-    const totalScore = priorityScore * 2 + aiScore / 20 + urgencyBonus - reschedulePenalty;
-    return { ...t.toJSON(), _score: totalScore, _energyDemand: TASK_ENERGY_DEMAND[t.priority] || 5 };
+    // Goal boost: tasks linked to high-priority goals get ranked higher
+    const goalBoost = (goalEngine && goalContext)
+      ? goalEngine.getGoalBoostForTask(t, goalContext)
+      : 0;
+
+    const totalScore = priorityScore * 2 + aiScore / 20 + urgencyBonus - reschedulePenalty + goalBoost;
+    return { ...t.toJSON(), _score: totalScore, _energyDemand: TASK_ENERGY_DEMAND[t.priority] || 5, _goalBoost: goalBoost };
   }).sort((a, b) => b._score - a._score);
 }
 

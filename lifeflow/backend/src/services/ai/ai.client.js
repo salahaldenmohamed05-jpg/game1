@@ -36,6 +36,72 @@ const GROQ_MODEL_CHAIN = [
   'gemma2-9b-it',              // smallest, rarely rate limited
 ];
 
+// ─── AI Status Tracking ─────────────────────────────────────────────────────
+const _aiStatus = {
+  gemini:  { available: false, lastError: null, lastErrorTime: null, successCount: 0, failCount: 0 },
+  groq:    { available: false, lastError: null, lastErrorTime: null, successCount: 0, failCount: 0 },
+  lastCall: null,
+  lastFailureReport: null,
+  totalCalls: 0,
+  totalFailures: 0,
+};
+
+function recordSuccess(provider) {
+  _aiStatus[provider].available = true;
+  _aiStatus[provider].successCount++;
+  _aiStatus[provider].lastError = null;
+  _aiStatus.lastCall = new Date().toISOString();
+  _aiStatus.totalCalls++;
+}
+
+function recordFailure(provider, error) {
+  _aiStatus[provider].failCount++;
+  _aiStatus[provider].lastError = error;
+  _aiStatus[provider].lastErrorTime = new Date().toISOString();
+  _aiStatus.lastCall = new Date().toISOString();
+  _aiStatus.totalCalls++;
+  _aiStatus.totalFailures++;
+  if (error.includes('KEY_MISSING')) _aiStatus[provider].available = false;
+
+  // Classify error type for observability
+  let errorCategory = 'unknown';
+  if (error.includes('KEY_MISSING') || error.includes('NO_API_KEYS')) errorCategory = 'missing_api_key';
+  else if (error.includes('RATE_LIMIT') || error.includes('429')) errorCategory = 'rate_limit';
+  else if (error.includes('TIMEOUT') || error.includes('timeout')) errorCategory = 'timeout';
+  else if (error.includes('PARSE_FAIL')) errorCategory = 'parse_failure';
+  else if (error.includes('HTTP')) errorCategory = 'http_error';
+
+  logger.warn(`[AI-STATUS] Provider ${provider} failure`, {
+    provider,
+    errorCategory,
+    error,
+    successCount: _aiStatus[provider].successCount,
+    failCount: _aiStatus[provider].failCount,
+  });
+}
+
+function getAIStatus() {
+  const geminiKey = getGeminiKey();
+  const groqKey = getGroqKey();
+  return {
+    gemini: { keyPresent: !!geminiKey, ..._aiStatus.gemini },
+    groq:   { keyPresent: !!groqKey,   ..._aiStatus.groq },
+    lastCall: _aiStatus.lastCall,
+    healthy: !!geminiKey || !!groqKey,
+    totalCalls: _aiStatus.totalCalls,
+    totalFailures: _aiStatus.totalFailures,
+    failureRate: _aiStatus.totalCalls > 0
+      ? parseFloat((_aiStatus.totalFailures / _aiStatus.totalCalls * 100).toFixed(1))
+      : 0,
+    lastFailureReport: _aiStatus.lastFailureReport,
+    keySummary: {
+      gemini: geminiKey ? 'configured' : 'MISSING',
+      groq: groqKey ? 'configured' : 'MISSING',
+      anyAvailable: !!(geminiKey || groqKey),
+    },
+  };
+}
+
 // ─── Key Validators ───────────────────────────────────────────────────────────
 function isValidKey(key) {
   return key
@@ -447,10 +513,12 @@ async function sendPrompt(provider, systemPrompt, userPrompt, opts = {}) {
       // Cache successful result
       cache.set(p, systemPrompt, userPrompt, validated);
 
+      recordSuccess(p);
       logger.info(`[AI-CLIENT] Success with provider: ${p}`);
       return validated;
 
     } catch (err) {
+      recordFailure(p, err.message);
       logger.warn(`[AI-CLIENT] Provider ${p} failed: ${err.message}`);
       lastError = err;
 
@@ -461,11 +529,20 @@ async function sendPrompt(provider, systemPrompt, userPrompt, opts = {}) {
     }
   }
 
-  // All providers failed
+  // All providers failed — STRUCTURED FAILURE REPORT
   const errorType = allRateLimited ? 'RATE_LIMIT_ALL' : 'ALL_PROVIDERS_FAILED';
-  logger.error(`[AI-CLIENT] All providers failed (${errorType})`, {
+  const failureReport = {
+    errorType,
+    providers_tried: providerOrder,
     lastError: lastError?.message,
-  });
+    gemini_key_present: !!getGeminiKey(),
+    groq_key_present: !!getGroqKey(),
+    fallback_used: true,
+    timestamp: new Date().toISOString(),
+    promptPreview: (userPrompt || '').slice(0, 80),
+  };
+  _aiStatus.lastFailureReport = failureReport;
+  logger.error(`[AI-CLIENT] ⚠️ ALL PROVIDERS FAILED`, failureReport);
 
   // For JSON mode, return a structured fallback but mark it
   if (opts.jsonMode) {
@@ -495,8 +572,13 @@ async function chat(systemPrompt, userMessage, opts = {}) {
   const provider = groqKey ? 'groq' : geminiKey ? 'gemini' : null;
 
   if (!provider) {
-    logger.warn('[AI-CLIENT] No valid API keys — returning fallback');
-    throw new Error('GROQ_KEY_MISSING');
+    logger.error('[AI-CLIENT] 🔴 NO VALID API KEYS — All AI features disabled', {
+      gemini_key_present: !!geminiKey,
+      groq_key_present: !!groqKey,
+      env_keys_checked: ['GEMINI_API_KEY', 'GROQ_API_KEY', 'OPENAI_API_KEY'],
+      timestamp: new Date().toISOString(),
+    });
+    throw new Error('NO_API_KEYS');
   }
 
   // Will throw RATE_LIMIT_ALL or ALL_PROVIDERS_FAILED if everything fails
@@ -523,10 +605,28 @@ async function measureLatency(provider) {
       await callGroqModel(getGroqKey(), GROQ_MODEL_CHAIN[0], sys, user, { maxTokens: 20, temperature: 0, jsonMode: true });
     }
     return Date.now() - start;
-  } catch {
+  } catch (err) {
+    logger.debug(`[AI-CLIENT] Latency probe failed for ${provider}: ${err.message}`);
     return Infinity;
   }
 }
+
+// ─── Startup Key Validation ──────────────────────────────────────────────────
+// Log API key availability once on module load for immediate visibility
+(function startupCheck() {
+  const gemini = !!getGeminiKey();
+  const groq   = !!getGroqKey();
+  if (!gemini && !groq) {
+    logger.error('[AI-CLIENT] 🔴 STARTUP: No valid AI API keys found. AI features will be unavailable.', {
+      checked: ['GEMINI_API_KEY', 'GROQ_API_KEY', 'OPENAI_API_KEY'],
+    });
+  } else {
+    logger.info('[AI-CLIENT] ✅ STARTUP: AI keys validated', {
+      gemini: gemini ? 'OK' : 'MISSING',
+      groq: groq ? 'OK' : 'MISSING',
+    });
+  }
+})();
 
 module.exports = {
   sendPrompt,
@@ -537,6 +637,7 @@ module.exports = {
   isValidKey,
   getGeminiKey,
   getGroqKey,
+  getAIStatus,
   buildIntelligentFallback,
   GROQ_MODEL_CHAIN,
 };

@@ -329,8 +329,28 @@ function buildWarnings(energy, pendingCount) {
   return warnings;
 }
 
+// ── CONSOLIDATION NOTE (Phase 5) ─────────────────────────────────────────
+// dayplanner.service.js is the single planning authority.
+// This module delegates to it when available, falling back to its own logic.
+async function generateAdaptivePlanUnified(userId, timezone = 'Africa/Cairo', date = null) {
+  try {
+    const dayPlanner = require('./dayplanner.service');
+    const plan = await dayPlanner.buildDayPlan(userId, timezone, date);
+    // Transform to match the generateAdaptivePlan output shape
+    return {
+      ...plan,
+      // Compat fields for adaptive.routes
+      explanation: plan.mood_adjustments?.recommendation || 'خطة يومية محسّنة',
+      goals_tracked: plan.goals?.active || [],
+    };
+  } catch (_e) {
+    // Fallback to original implementation
+    return generateAdaptivePlan(userId, timezone, date);
+  }
+}
+
 module.exports = {
-  generateAdaptivePlan,
+  generateAdaptivePlan: generateAdaptivePlanUnified,
   BLOCK_TYPES,
   ENERGY_CURVE,
 };

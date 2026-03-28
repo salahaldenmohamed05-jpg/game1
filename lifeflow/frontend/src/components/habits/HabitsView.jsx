@@ -160,7 +160,7 @@ function HabitCard({ habit, onCheckIn, onLogValue, onDelete, isChecking }) {
   );
 }
 
-// ─── Add Habit Modal (Bottom Sheet) ─────────────────────────────────────────
+// ─── Add Habit Modal (Bottom Sheet — Phase H: solid bg, high contrast) ──────
 
 function AddHabitModal({ isOpen, onClose, onSubmit, isPending }) {
   const [form, setForm] = useState({
@@ -169,6 +169,7 @@ function AddHabitModal({ isOpen, onClose, onSubmit, isPending }) {
     preferred_time: '', frequency_type: 'daily', custom_days: [], monthly_days: [],
     reminder_before: 15,
   });
+  const [error, setError] = useState('');
 
   const toggleDay = (day) => setForm(prev => ({
     ...prev,
@@ -185,7 +186,9 @@ function AddHabitModal({ isOpen, onClose, onSubmit, isPending }) {
   }));
 
   const handleSubmit = () => {
-    if (!form.name_ar.trim()) return toast.error('أدخل اسم العادة');
+    if (!form.name_ar.trim()) { setError('أدخل اسم العادة'); return; }
+    if (form.name_ar.trim().length < 2) { setError('اسم العادة قصير جداً'); return; }
+    setError('');
     onSubmit({
       name: form.name_ar, name_ar: form.name_ar, category: form.category,
       icon: form.icon, color: form.color, habit_type: form.habit_type,
@@ -208,17 +211,17 @@ function AddHabitModal({ isOpen, onClose, onSubmit, isPending }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" onClick={onClose}>
-      {/* Backdrop — darker for contrast */}
+      {/* Backdrop — solid dark overlay */}
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-        className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
-      {/* Modal — SOLID bg, shadow-xl, high contrast, rounded */}
+        className="absolute inset-0 bg-black/80" />
+      {/* Modal — SOLID opaque bg via modal-solid class */}
       <motion.div
         initial={{ opacity: 0, y: 100 }}
         animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0, y: 100 }}
         transition={{ type: 'spring', damping: 25, stiffness: 300 }}
         onClick={e => e.stopPropagation()}
-        className="relative w-full sm:max-w-lg bg-neutral-900 rounded-t-3xl sm:rounded-2xl shadow-xl border border-white/10 max-h-[92vh] overflow-hidden z-10"
+        className="relative w-full sm:max-w-lg modal-solid rounded-t-3xl sm:rounded-2xl shadow-2xl border border-white/10 max-h-[90vh] overflow-hidden z-10"
         dir="rtl"
       >
         {/* Drag handle */}
@@ -227,17 +230,22 @@ function AddHabitModal({ isOpen, onClose, onSubmit, isPending }) {
         </div>
 
         {/* Scrollable form content — leave room for sticky CTA */}
-        <div className="p-5 overflow-y-auto" style={{ maxHeight: 'calc(92vh - 80px)' }}>
+        <div className="p-5 overflow-y-auto" style={{ maxHeight: 'calc(90vh - 88px)' }}>
           <div className="flex items-center justify-between mb-5">
             <h3 className="text-lg font-black text-white">🎯 عادة جديدة</h3>
             <button onClick={onClose} className="p-2 rounded-xl hover:bg-white/10 text-gray-400 active:scale-90"><X size={18} /></button>
           </div>
 
           <div className="space-y-4">
-            {/* Name */}
-            <input value={form.name_ar} onChange={e => setForm({ ...form, name_ar: e.target.value })}
-              placeholder="اسم العادة..." autoFocus
-              className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3.5 text-white placeholder-gray-500 focus:outline-none focus:border-primary-500/50 text-base" />
+            {/* Name — with validation */}
+            <div>
+              <input value={form.name_ar} onChange={e => { setForm({ ...form, name_ar: e.target.value }); setError(''); }}
+                placeholder="اسم العادة..." autoFocus maxLength={120}
+                className={`w-full rounded-xl px-4 py-3.5 text-base focus:outline-none transition-all ${
+                  error ? 'border-red-500 ring-2 ring-red-500/20' : ''
+                }`} />
+              {error && <p className="text-xs text-red-400 mt-1">{error}</p>}
+            </div>
 
             {/* Icon */}
             <div>
@@ -276,13 +284,13 @@ function AddHabitModal({ isOpen, onClose, onSubmit, isPending }) {
                   <label className="text-xs text-gray-300 mb-1 block">الهدف</label>
                   <input type="number" value={form.target_value} min="1"
                     onChange={e => setForm({ ...form, target_value: parseInt(e.target.value) || 1 })}
-                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none" />
+                    className="w-full rounded-xl px-4 py-3 focus:outline-none" />
                 </div>
                 <div>
                   <label className="text-xs text-gray-300 mb-1 block">الوحدة</label>
                   <input value={form.count_label} onChange={e => setForm({ ...form, count_label: e.target.value })}
                     placeholder="كأس, صلاة..."
-                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none" />
+                    className="w-full rounded-xl px-4 py-3 focus:outline-none" />
                 </div>
               </div>
             )}
@@ -342,7 +350,7 @@ function AddHabitModal({ isOpen, onClose, onSubmit, isPending }) {
                 <label className="text-xs text-gray-300 mb-1.5 block font-medium">🕐 الوقت المفضل</label>
                 <input type="time" value={form.preferred_time}
                   onChange={e => setForm({ ...form, preferred_time: e.target.value })}
-                  className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none" />
+                  className="w-full rounded-xl px-4 py-3 focus:outline-none" />
               </div>
               <div>
                 <label className="text-xs text-gray-300 mb-1.5 block font-medium">🔔 تذكير قبل</label>
@@ -366,7 +374,7 @@ function AddHabitModal({ isOpen, onClose, onSubmit, isPending }) {
                 {COLORS.map(c => (
                   <button key={c} onClick={() => setForm({ ...form, color: c })}
                     className={`w-9 h-9 rounded-full transition-all active:scale-90 ${
-                      form.color === c ? 'ring-2 ring-white ring-offset-2 ring-offset-neutral-900 scale-110' : 'opacity-60 hover:opacity-100'
+                      form.color === c ? 'ring-2 ring-white ring-offset-2 ring-offset-[#0f0f1e] scale-110' : 'opacity-60 hover:opacity-100'
                     }`}
                     style={{ background: c }} />
                 ))}
@@ -375,8 +383,8 @@ function AddHabitModal({ isOpen, onClose, onSubmit, isPending }) {
           </div>
         </div>
 
-        {/* Sticky CTA at bottom — always visible */}
-        <div className="sticky bottom-0 p-5 pt-3 bg-neutral-900 border-t border-white/5">
+        {/* Sticky CTA at bottom — solid bg inherited from modal-solid */}
+        <div className="sticky bottom-0 p-5 pt-3 border-t border-white/5" style={{ background: 'inherit' }}>
           <button onClick={handleSubmit} disabled={isPending || !form.name_ar.trim()}
             className="w-full py-4 bg-primary-500 hover:bg-primary-600 text-white font-bold rounded-xl transition-all disabled:opacity-50 text-base active:scale-[0.98] shadow-lg shadow-primary-500/20 min-h-[48px]">
             {isPending ? 'جاري الإنشاء...' : '🎯 إضافة العادة'}

@@ -7,7 +7,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
-import { ChevronRight, ChevronLeft, Calendar, Clock, CheckCircle } from 'lucide-react';
+import { ChevronRight, ChevronLeft, Calendar, Clock, CheckCircle, AlertTriangle, RefreshCw } from 'lucide-react';
 import api from '../../utils/api';
 
 const DAYS_AR = ['أحد', 'اثنين', 'ثلاثاء', 'أربعاء', 'خميس', 'جمعة', 'سبت'];
@@ -29,9 +29,10 @@ export default function CalendarView() {
   const daysInMonth = endOfMonth.getDate();
 
   // Fetch tasks for the month
-  const { data: tasksData } = useQuery({
+  const { data: tasksData, isLoading, isError, refetch } = useQuery({
     queryKey: ['calendar-tasks', year, month],
     queryFn: () => api.get(`/tasks?month=${year}-${String(month+1).padStart(2,'0')}&limit=100`),
+    retry: 1,
   });
 
   // tasksData = Axios response: { data: { success, data: { tasks: [...] } } }
@@ -67,7 +68,18 @@ export default function CalendarView() {
           <Calendar size={22} />
           التقويم
         </h2>
+        {isLoading && <RefreshCw size={14} className="text-gray-500 animate-spin" />}
       </div>
+
+      {isError && (
+        <div className="glass-card p-4 text-center" role="alert">
+          <AlertTriangle size={20} className="text-amber-400 mx-auto mb-2" />
+          <p className="text-sm text-gray-400 mb-2">فشل في تحميل بيانات التقويم</p>
+          <button onClick={() => refetch()} className="text-xs text-primary-400 hover:text-primary-300 flex items-center gap-1 mx-auto">
+            <RefreshCw size={10} /> إعادة المحاولة
+          </button>
+        </div>
+      )}
 
       <div className="glass-card p-5">
         {/* Month Navigation */}

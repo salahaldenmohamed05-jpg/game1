@@ -1,13 +1,21 @@
 /**
  * Proactive Monitor Service — LifeFlow AI Companion
  * ====================================================
- * يراقب التطبيق المستخدمين تلقائياً ويرسل رسائل ذكية بدون فتح التطبيق.
+ * @deprecated Phase B: This service is DEPRECATED. Use proactive.engine.service for
+ * on-demand proactive checks. This file is kept ONLY for its cron scheduling and
+ * Socket.IO notification delivery (initProactiveMonitor, sendToUser, triggerNow).
  *
- * Features:
+ * Overlap with proactive.engine.service:
+ *   - Both check: overdue tasks, mood drops, energy levels, burnout risk, habit streaks
+ *   - proactive.engine.service is the PRIMARY service for on-demand proactive alerts
+ *   - proactive.monitor.service handles SCHEDULED cron jobs + Socket.IO delivery
+ *
+ * Future: Merge cron scheduling into proactive.engine.service or a scheduler layer.
+ *
+ * Features (kept):
  *  - Real-time AI monitoring via cron + Socket.IO
  *  - Detects: low energy, overdue tasks, missed habits, mood drops, burnout risk
  *  - Sends AI-generated personalized Arabic messages
- *  - Asks proactive questions to engage users
  *  - Smart cooldown: no spam (min 2h between messages per user)
  *  - All via WebSocket + Notification DB (no FCM required)
  */

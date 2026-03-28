@@ -5,6 +5,9 @@
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/auth.middleware');
+const { writeLimiter } = require('../middleware/rateLimiter');
+const { body } = require('express-validator');
+const { handleValidation } = require('../middleware/validators');
 const logger = require('../utils/logger');
 
 router.use(protect);
@@ -80,7 +83,7 @@ router.get('/', async (req, res) => {
           color: '#10B981',
         }));
       }
-    } catch (e) {}
+    } catch (e) { logger.debug('[CALENDAR] External events load failed:', e.message); }
 
     // Add some AI-generated suggestions as pseudo-events
     const moment = require('moment-timezone');
@@ -130,10 +133,16 @@ router.get('/', async (req, res) => {
   }
 });
 
-router.post('/', async (req, res) => {
+const validateCalendarEvent = [
+  body('title').trim().notEmpty().withMessage('عنوان الحدث مطلوب').isLength({ max: 500 }).withMessage('العنوان طويل جداً'),
+  body('start').notEmpty().withMessage('تاريخ البداية مطلوب'),
+  body('type').optional().isIn(['personal', 'work', 'meeting', 'other']).withMessage('نوع الحدث غير صالح'),
+  handleValidation,
+];
+
+router.post('/', writeLimiter, validateCalendarEvent, async (req, res) => {
   try {
     const { title, start, end, description, type = 'personal' } = req.body;
-    if (!title || !start) return res.status(400).json({ success: false, message: 'العنوان والتاريخ مطلوبان' });
 
     // Create as task with due_date
     const Task = require('../models/task.model');

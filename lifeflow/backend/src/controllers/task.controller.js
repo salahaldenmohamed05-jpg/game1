@@ -13,6 +13,11 @@ const logger = require('../utils/logger');
 const moment = require('moment-timezone');
 const { getNow, toUTC, todayString } = require('../utils/time.util');
 
+// Step 1: Wire behavior events into task lifecycle
+function getBehaviorService() {
+  try { return require('../services/behavior.model.service'); } catch (_) { return null; }
+}
+
 /* ─── Smart Notification Helper ────────────────────────────────── */
 async function createTaskReminder(task, user) {
   try {
@@ -425,6 +430,11 @@ exports.updateTask = async (req, res) => {
 
     if (req.body.status === 'completed' && task.status !== 'completed') {
       req.body.completed_at = new Date();
+      // Step 1: Notify behavior system
+      const behaviorSvc = getBehaviorService();
+      if (behaviorSvc) {
+        behaviorSvc.onTaskEvent(req.user.id, 'task_completed', { taskId: task.id }, req.user?.timezone).catch(() => {});
+      }
     }
 
     // Normalize times to UTC strings
@@ -466,6 +476,12 @@ exports.completeTask = async (req, res) => {
       completed_at:   new Date(),
       completion_mood: req.body.mood || null,
     });
+
+    // Step 1: Notify behavior system of task completion
+    const behaviorSvc = getBehaviorService();
+    if (behaviorSvc) {
+      behaviorSvc.onTaskEvent(req.user.id, 'task_completed', { taskId: task.id, priority: task.priority }, req.user.timezone).catch(() => {});
+    }
 
     if (task.is_recurring && task.recurrence_pattern) {
       await createNextRecurringTask(task);

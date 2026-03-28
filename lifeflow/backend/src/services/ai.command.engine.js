@@ -29,7 +29,7 @@ function getModels() {
     const db  = require('../config/database');
     const seq = db.sequelize;
     Task         = seq.models.Task        || require('../models/task.model');
-    Habit        = seq.models.Habit       || require('../models/habit.model');
+    Habit        = seq.models.Habit       || require('../models/habit.model').Habit;
     MoodEntry    = seq.models.MoodEntry   || require('../models/mood.model');
     Notification = seq.models.Notification;
     sequelizeInst = seq;
@@ -461,6 +461,17 @@ async function buildUserContext(userId, timezone) {
   const moment = require('moment-timezone');
   const today  = moment().tz(timezone).format('YYYY-MM-DD');
 
+  // Load profile & settings for AI-aware context
+  let userProfile = null, userSettings = null;
+  try {
+    const UserProfile  = require('../models/user_profile.model');
+    const UserSettings = require('../models/user_settings.model');
+    [userProfile, userSettings] = await Promise.all([
+      UserProfile.findOne({ where: { user_id: userId } }),
+      UserSettings.findOne({ where: { user_id: userId } }),
+    ]);
+  } catch (_) { /* models may not exist yet */ }
+
   try {
     const [tasks, completedToday, todayMood, habits] = await Promise.all([
       Task.findAll({
@@ -491,6 +502,25 @@ async function buildUserContext(userId, timezone) {
       todayMood    : todayMood?.mood_score || null,
       habits       : habits.map(h => ({ id: h.id, name: h.name_ar || h.name, category: h.category })),
       today,
+      // ── Profile & Settings for AI personalization ──────────────
+      profile: userProfile ? {
+        role: userProfile.role,
+        focus_areas: userProfile.focus_areas,
+        preferred_work_time: userProfile.preferred_work_time,
+        energy_level: userProfile.energy_level,
+        deep_work_duration: userProfile.deep_work_duration,
+        weekly_goals: userProfile.weekly_goals,
+        monthly_goals: userProfile.monthly_goals,
+      } : null,
+      settings: userSettings ? {
+        ai_intervention_level: userSettings.ai_intervention_level,
+        recommendation_style: userSettings.recommendation_style,
+        auto_reschedule: userSettings.auto_reschedule,
+        ai_coaching_tone: userSettings.ai_coaching_tone,
+        smart_reminders: userSettings.smart_reminders,
+        quiet_hours_start: userSettings.quiet_hours_start,
+        quiet_hours_end: userSettings.quiet_hours_end,
+      } : null,
     };
   } catch (e) {
     logger.error('[CMD-ENGINE] buildUserContext error:', e.message);

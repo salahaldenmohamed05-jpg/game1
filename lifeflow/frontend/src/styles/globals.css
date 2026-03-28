@@ -336,6 +336,19 @@ html.light .glass-card:hover {
   padding-bottom: env(safe-area-inset-bottom, 0);
 }
 
+/* ========================
+   Safe-Area & Navbar Overlap Prevention — Phase H
+   Content containers must never be hidden behind the fixed bottom nav.
+   Bottom nav height ~72px + safe-area + breathing room = ~96px min padding.
+   ======================== */
+
+/* Every scrollable content area on mobile gets navbar clearance */
+@media (max-width: 768px) {
+  .safe-bottom {
+    padding-bottom: calc(88px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+}
+
 @media (max-width: 768px) {
   .glass-card { border-radius: 14px; }
   .glass-card:hover { transform: none; } /* Disable hover lift on mobile */
@@ -400,10 +413,12 @@ html.light .glass-card:hover {
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border-top: 1px solid var(--border);
-  padding: 6px 0 max(6px, env(safe-area-inset-bottom));
+  padding: 6px 0 max(8px, env(safe-area-inset-bottom));
   display: flex;
   align-items: center;
   justify-content: space-around;
+  /* Phase H: ensure bottom-nav is always visible above content */
+  min-height: 64px;
 }
 
 .bottom-nav-item {
@@ -456,6 +471,71 @@ html.light .glass-card:hover {
     max-height: 90vh;
     overflow-y: auto;
   }
+}
+
+/* ========================
+   Modal & Overlay Fixes — Phase H
+   Ensure solid, opaque backgrounds for all modals.
+   Fix blurred/low-contrast text by removing backdrop-filter on modal body.
+   ======================== */
+
+.modal-solid {
+  background: #0f0f1e !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* Dark mode modal inputs: solid background, white text, high contrast */
+.modal-solid input,
+.modal-solid textarea,
+.modal-solid select {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  color: #E2E8F0 !important;
+  caret-color: var(--primary) !important;
+}
+.modal-solid input::placeholder,
+.modal-solid textarea::placeholder {
+  color: rgba(255, 255, 255, 0.35) !important;
+}
+.modal-solid input:focus,
+.modal-solid textarea:focus,
+.modal-solid select:focus {
+  border-color: var(--primary) !important;
+  box-shadow: 0 0 0 2px rgba(108, 99, 255, 0.15) !important;
+}
+
+/* Light mode modal overrides */
+html.light .modal-solid {
+  background: #ffffff !important;
+}
+html.light .modal-solid input,
+html.light .modal-solid textarea,
+html.light .modal-solid select {
+  background: rgba(108, 99, 255, 0.05) !important;
+  border: 1px solid rgba(108, 99, 255, 0.2) !important;
+  color: #1E293B !important;
+}
+html.light .modal-solid input::placeholder,
+html.light .modal-solid textarea::placeholder {
+  color: #94A3B8 !important;
+}
+html.light .modal-solid label {
+  color: #475569 !important;
+}
+html.light .modal-solid h3,
+html.light .modal-solid h2 {
+  color: #1E293B !important;
+}
+html.light .modal-solid .text-white {
+  color: #1E293B !important;
+}
+html.light .modal-solid .text-gray-400,
+html.light .modal-solid .text-gray-300 {
+  color: #64748B !important;
+}
+html.light .modal-solid .text-gray-500 {
+  color: #94A3B8 !important;
 }
 
 /* ========================

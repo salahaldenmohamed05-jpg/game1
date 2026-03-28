@@ -5,23 +5,24 @@
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/auth.middleware');
-const { chat } = require('../ai/ai.service');
-const { processCommand } = require('../services/ai.command.engine');
+const { writeLimiter } = require('../middleware/rateLimiter');
 const logger = require('../utils/logger');
+// Phase B: Use ai.core.service as single AI entry point
+const aiCore = require('../services/ai.core.service');
 
 router.use(protect);
 
 /**
  * @route   POST /api/v1/voice/command
- * @desc    Process voice command text via the AI command engine
+ * @desc    Process voice command text via the unified AI core
  */
-router.post('/command', async (req, res) => {
+router.post('/command', writeLimiter, async (req, res) => {
   try {
     const { text, timezone = 'Africa/Cairo' } = req.body;
     if (!text) return res.status(400).json({ success: false, message: 'النص مطلوب' });
 
-    // Use the unified AI command engine
-    const result = await processCommand(req.user.id, text, timezone, null);
+    // Phase B: Route through ai.core.service
+    const result = await aiCore.command(req.user.id, text, timezone, null);
     res.json({ success: true, data: result });
   } catch (error) {
     logger.error('Voice command error: ' + error.message);
@@ -35,7 +36,7 @@ router.post('/command', async (req, res) => {
  * Note: Browser Web Speech API handles transcription client-side.
  * This endpoint accepts already-transcribed text for processing.
  */
-router.post('/transcribe', async (req, res) => {
+router.post('/transcribe', writeLimiter, async (req, res) => {
   try {
     const { text, language = 'ar' } = req.body;
 
@@ -65,7 +66,7 @@ router.post('/transcribe', async (req, res) => {
  * @route   POST /api/v1/voice/speak
  * @desc    Convert text to speech (client-side Web Speech Synthesis)
  */
-router.post('/speak', async (req, res) => {
+router.post('/speak', writeLimiter, async (req, res) => {
   try {
     const { text, voice = 'ar-SA', speed = 1.0 } = req.body;
     if (!text) return res.status(400).json({ success: false, message: 'النص مطلوب' });

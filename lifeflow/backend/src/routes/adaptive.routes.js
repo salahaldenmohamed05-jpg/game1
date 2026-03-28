@@ -45,12 +45,19 @@ const uid = (req) => req.user.id;
 /**
  * GET /api/v1/adaptive/behavior-profile
  * Returns the user's behavioral model (productivity, focus windows, stress triggers).
+ * NOTE: Computed on-the-fly from existing data — NOT persisted to behavior_profiles table.
+ * Status: EXPERIMENTAL — data quality depends on user activity volume.
  */
 router.get('/behavior-profile', requireFeature('behavioral_flags'), async (req, res) => {
   try {
     const { days = 30 } = req.query;
     const profile = await behaviorModelService.buildBehaviorModel(uid(req), tz(req), parseInt(days));
-    res.json({ success: true, data: { model: profile, ...profile } });
+    res.json({
+      success: true,
+      _experimental: true,
+      _note: 'البيانات محسوبة آنياً وغير محفوظة — قد تتغير بين الطلبات',
+      data: { model: profile, ...profile },
+    });
   } catch (err) {
     logger.error('behavior-profile error:', err.message);
     res.status(500).json({ success: false, message: 'خطأ في بناء النموذج السلوكي' });
@@ -60,12 +67,19 @@ router.get('/behavior-profile', requireFeature('behavioral_flags'), async (req, 
 /**
  * GET /api/v1/adaptive/patterns
  * Returns detected behavioral patterns with confidence scores.
+ * NOTE: Computed on-the-fly — NOT persisted to behavior_patterns table.
+ * Status: EXPERIMENTAL — patterns are re-detected on every request.
  */
 router.get('/patterns', requireFeature('behavioral_flags'), async (req, res) => {
   try {
     const { days = 60 } = req.query;
     const patterns = await patternLearningService.detectPatterns(uid(req), tz(req), parseInt(days));
-    res.json({ success: true, data: patterns });
+    res.json({
+      success: true,
+      _experimental: true,
+      _note: 'الأنماط محسوبة آنياً وغير محفوظة — تُعاد حسابتها مع كل طلب',
+      data: patterns,
+    });
   } catch (err) {
     logger.error('patterns error:', err.message);
     res.status(500).json({ success: false, message: 'خطأ في اكتشاف الأنماط السلوكية' });
@@ -103,7 +117,12 @@ router.get('/simulate-life', requireFeature('advanced_insights'), async (req, re
     }
 
     const result = await lifeSimulationService.simulateLife(uid(req), scenario, tz(req), parseInt(window));
-    res.json({ success: true, data: result });
+    res.json({
+      success: true,
+      _experimental: true,
+      _note: 'نتائج المحاكاة تقديرية وغير محفوظة في قاعدة البيانات',
+      data: result,
+    });
   } catch (err) {
     logger.error('simulate-life error:', err.message);
     res.status(500).json({ success: false, message: 'خطأ في محاكاة الحياة' });

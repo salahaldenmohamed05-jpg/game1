@@ -17,6 +17,25 @@ const express = require('express');
 const router  = express.Router();
 const logger  = require('../utils/logger');
 const { protect } = require('../middleware/auth.middleware');
+const { writeLimiter } = require('../middleware/rateLimiter');
+const { body } = require('express-validator');
+const { handleValidation } = require('../middleware/validators');
+
+// ─── Chat validators ─────────────────────────────────────────────────────────
+const validateChatMessage = [
+  body('message').trim().notEmpty().withMessage('الرسالة مطلوبة').isLength({ max: 5000 }).withMessage('الرسالة طويلة جداً'),
+  body('session_id').optional().trim(),
+  handleValidation,
+];
+const validateSessionCreate = [
+  body('title').optional().trim().isLength({ max: 200 }).withMessage('عنوان الجلسة طويل جداً'),
+  body('mode').optional().isIn(['manager', 'companion', 'coach', 'planner']).withMessage('وضع المحادثة غير صالح'),
+  handleValidation,
+];
+const validateSessionRename = [
+  body('title').trim().notEmpty().withMessage('العنوان مطلوب').isLength({ max: 200 }).withMessage('العنوان طويل جداً'),
+  handleValidation,
+];
 
 // ─── Lazy model loaders ───────────────────────────────────────────────────────
 function getModels() {
@@ -30,7 +49,7 @@ function getModels() {
 }
 
 function getOrchestrator() {
-  try { return require('../services/orchestrator.service'); } catch (_) { return null; }
+  try { return require('../services/orchestrator.service'); } catch (_e) { logger.debug(`[CHAT_ROUTES] Module '../services/orchestrator.service' not available: ${_e.message}`); return null; }
 }
 
 router.use(protect);
@@ -39,7 +58,7 @@ router.use(protect);
 // POST /chat/session  —  Create a new chat session
 // Body: { title?, mode? }
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/session', async (req, res) => {
+router.post('/session', writeLimiter, validateSessionCreate, async (req, res) => {
   try {
     const { ChatSession } = getModels();
     if (!ChatSession) return res.status(503).json({ success: false, message: 'Chat not ready' });
@@ -206,7 +225,7 @@ router.get('/session/:id/messages', async (req, res) => {
 // POST /chat/message  —  Send a message within a session
 // Body: { session_id?, message, timezone? }
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/message', async (req, res) => {
+router.post('/message', writeLimiter, validateChatMessage, async (req, res) => {
   const { session_id, message, timezone } = req.body;
 
   if (!message?.trim()) {
@@ -342,7 +361,7 @@ router.post('/message', async (req, res) => {
 // PATCH /chat/session/:id/rename  —  Rename a session
 // Body: { title }
 // ─────────────────────────────────────────────────────────────────────────────
-router.patch('/session/:id/rename', async (req, res) => {
+router.patch('/session/:id/rename', writeLimiter, validateSessionRename, async (req, res) => {
   try {
     const { ChatSession } = getModels();
     if (!ChatSession) return res.status(503).json({ success: false, message: 'Chat not ready' });
@@ -372,7 +391,7 @@ router.patch('/session/:id/rename', async (req, res) => {
 // PATCH /chat/session/:id/pin  —  Pin or unpin a session
 // Body: { pinned: true|false } (optional, toggles if not provided)
 // ─────────────────────────────────────────────────────────────────────────────
-router.patch('/session/:id/pin', async (req, res) => {
+router.patch('/session/:id/pin', writeLimiter, async (req, res) => {
   try {
     const { ChatSession } = getModels();
     if (!ChatSession) return res.status(503).json({ success: false, message: 'Chat not ready' });
@@ -399,7 +418,7 @@ router.patch('/session/:id/pin', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // DELETE /chat/session/:id  —  Soft-delete a session
 // ─────────────────────────────────────────────────────────────────────────────
-router.delete('/session/:id', async (req, res) => {
+router.delete('/session/:id', writeLimiter, async (req, res) => {
   try {
     const { ChatSession } = getModels();
     if (!ChatSession) return res.json({ success: true });
@@ -421,7 +440,7 @@ router.delete('/session/:id', async (req, res) => {
 // PUT /chat/session/:id  — Alias: rename session (title in body)
 // PUT /chat/session/:id/pin — Alias: pin/unpin session
 // ─────────────────────────────────────────────────────────────────────────────
-router.put('/session/:id', async (req, res) => {
+router.put('/session/:id', writeLimiter, async (req, res) => {
   try {
     const { ChatSession } = getModels();
     if (!ChatSession) return res.status(503).json({ success: false, message: 'Chat not ready' });
@@ -446,7 +465,7 @@ router.put('/session/:id', async (req, res) => {
   }
 });
 
-router.put('/session/:id/pin', async (req, res) => {
+router.put('/session/:id/pin', writeLimiter, async (req, res) => {
   try {
     const { ChatSession } = getModels();
     if (!ChatSession) return res.status(503).json({ success: false, message: 'Chat not ready' });

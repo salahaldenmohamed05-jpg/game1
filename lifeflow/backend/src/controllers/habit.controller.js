@@ -11,6 +11,11 @@ const { aiService } = require('../ai/ai.service');
 const logger = require('../utils/logger');
 const moment = require('moment-timezone');
 
+// Step 1: Wire behavior events into habit lifecycle
+function getBehaviorService() {
+  try { return require('../services/behavior.model.service'); } catch (_) { return null; }
+}
+
 /* ─── Frequency helpers ────────────────────────────────────────── */
 
 /**
@@ -339,6 +344,12 @@ exports.checkIn = async (req, res) => {
 
     await updateHabitStreak(habit);
     const encouragement = getEncouragementMessage(habit.current_streak + 1);
+
+    // Step 1: Notify behavior system of habit completion
+    const behaviorSvc = getBehaviorService();
+    if (behaviorSvc) {
+      behaviorSvc.onHabitEvent(req.user.id, 'habit_completed', { habitId: habit.id }, req.user.timezone).catch(() => {});
+    }
 
     res.json({
       success: true,

@@ -18,7 +18,38 @@ function getModels() {
   const ProductivityScore = require('../models/productivity_score.model');
   const BehavioralFlag    = require('../models/behavioral_flag.model');
   const EnergyLog         = require('../models/energy_log.model');
-  return { Task, Habit, MoodEntry, ProductivityScore, BehavioralFlag, EnergyLog };
+  let LifePrediction      = null;
+  try { LifePrediction = require('../models/life_prediction.model'); } catch (_) {}
+  return { Task, Habit, MoodEntry, ProductivityScore, BehavioralFlag, EnergyLog, LifePrediction };
+}
+
+/**
+ * Persist a prediction result to the LifePrediction table.
+ * Non-blocking: failure to persist does not affect the returned result.
+ */
+async function persistPrediction(userId, type, data, confidence = 0.5) {
+  try {
+    const { LifePrediction } = getModels();
+    if (!LifePrediction) return null;
+    const record = await LifePrediction.create({
+      user_id: userId,
+      prediction_type: type,
+      scenario_label: type.replace(/_/g, ' '),
+      prediction_data: data,
+      confidence_score: confidence,
+      prediction_window: data.prediction_window || 14,
+      baseline: data.factors || data.based_on || {},
+      projected: {
+        main_value: data.completion_probability || data.predicted_score || data.risk_score || data.projected_30d || null,
+        trend: data.trend || data.trajectory || null,
+      },
+    });
+    logger.debug(`[PREDICTION] Persisted ${type} prediction ${record.id} for user ${userId}`);
+    return record.id;
+  } catch (err) {
+    logger.warn(`[PREDICTION] Failed to persist ${type}:`, err.message);
+    return null;
+  }
 }
 
 /**
@@ -47,7 +78,7 @@ async function predictTaskCompletion(userId, taskId, timezone = 'Africa/Cairo') 
       ? Math.max(0, moment.tz(task.due_date, timezone).diff(moment.tz(timezone), 'days'))
       : null;
 
-    return {
+    const result = {
       task_id: taskId,
       task_title: task.title,
       completion_probability: probability,
@@ -62,6 +93,12 @@ async function predictTaskCompletion(userId, taskId, timezone = 'Africa/Cairo') 
         ? 'هذه المهمة تحتاج اهتماماً — جدولها في وقت الطاقة العالية'
         : 'من المرجح إنجاز هذه المهمة في الموعد',
     };
+
+    // Persist prediction
+    const predId = await persistPrediction(userId, 'task_completion', result, probability / 100);
+    if (predId) result.prediction_id = predId;
+
+    return result;
   } catch (err) {
     logger.error('predict task error:', err.message);
     throw err;
@@ -195,7 +232,7 @@ async function predictBurnoutRisk(userId, timezone = 'Africa/Cairo') {
     const risk_level = riskScore >= 70 ? 'high' : riskScore >= 40 ? 'medium' : 'low';
     const urgent = riskScore >= 70;
 
-    return {
+    const result = {
       risk_score: riskScore,
       risk_level,
       urgent,
@@ -213,6 +250,12 @@ async function predictBurnoutRisk(userId, timezone = 'Africa/Cairo') {
         ? '⚠️ مؤشرات طفيفة للضغط — راقب نمط عملك'
         : '✅ لا توجد مؤشرات مقلقة للاحتراق الوظيفي',
     };
+
+    // Persist prediction
+    const predId = await persistPrediction(userId, 'burnout_risk', result, (100 - riskScore) / 100);
+    if (predId) result.prediction_id = predId;
+
+    return result;
   } catch (err) {
     logger.error('predict burnout error:', err.message);
     throw err;
@@ -359,7 +402,7 @@ async function getProbabilisticPrediction(userId, timezone = 'Africa/Cairo') {
         overdueCount: 0,  // will be enhanced later
         recentMoods : moods7d.map(m => m.mood_score || m.overall_mood || 5),
       });
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[PREDICTION_SERVICE] Non-critical operation failed: ${_e.message}`); }
 
     // ── Compute base probabilities ────────────────────────────────────────────
     const avgScore = scores7d.length > 0
@@ -436,7 +479,7 @@ async function getProbabilisticPrediction(userId, timezone = 'Africa/Cairo') {
     const trajectory = recentAvg > avgScore + 3 ? 'ascending'
       : recentAvg < avgScore - 3 ? 'descending' : 'stable';
 
-    return {
+    const result = {
       task_completion_probability: parseFloat(taskProb.toFixed(3)),
       burnout_risk               : parseFloat(burnoutRisk.toFixed(3)),
       focus_score                : focusScore,
@@ -458,6 +501,12 @@ async function getProbabilisticPrediction(userId, timezone = 'Africa/Cairo') {
       },
       generated_at: new Date().toISOString(),
     };
+
+    // Persist unified prediction
+    const predId = await persistPrediction(userId, 'probabilistic_unified', result, confidence / 100);
+    if (predId) result.prediction_id = predId;
+
+    return result;
 
   } catch (err) {
     logger.error('probabilistic prediction error:', err.message);

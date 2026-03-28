@@ -40,9 +40,10 @@ export default function MoodView() {
   const queryClient = useQueryClient();
   const { invalidateAll, recordAction } = useSyncStore();
 
-  const { data: todayData } = useQuery({
+  const { data: todayData, isError: todayError, refetch: refetchToday } = useQuery({
     queryKey: ['mood-today'],
     queryFn:  () => moodAPI.getTodayMood(),
+    retry: 1,
   });
 
   const { data: statsData } = useQuery({
@@ -112,6 +113,14 @@ export default function MoodView() {
         <h2 className="text-2xl font-black text-white">تتبع المزاج</h2>
         <p className="text-sm text-gray-400">كيف حالك اليوم؟</p>
       </div>
+
+      {/* Error fallback */}
+      {todayError && (
+        <div className="glass-card p-4 text-center" role="alert">
+          <p className="text-sm text-amber-400 mb-2">⚠️ فشل في تحميل بيانات المزاج</p>
+          <button onClick={() => refetchToday()} className="text-xs text-primary-400">إعادة المحاولة</button>
+        </div>
+      )}
 
       {/* Today logged OR entry form */}
       {todayMood?.logged_today ? (

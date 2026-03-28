@@ -54,6 +54,7 @@ const Task = sequelize.define('Task', {
   estimated_duration: { type: DataTypes.INTEGER, allowNull: true },
   actual_duration: { type: DataTypes.INTEGER, allowNull: true },
   parent_task_id: { type: DataTypes.STRING(36), allowNull: true },
+  goal_id: { type: DataTypes.STRING(36), allowNull: true, comment: 'linked goal for goal-driven planning' },
   notes: { type: DataTypes.TEXT, allowNull: true },
   ai_suggestions: {
     type: DataTypes.TEXT, defaultValue: '[]',

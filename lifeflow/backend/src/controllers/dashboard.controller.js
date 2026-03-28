@@ -71,9 +71,23 @@ exports.getDashboard = async (req, res) => {
 
     const completedHabits = habitLogs.filter(l => l.completed).length;
     const completedTasks = todayTasks.filter(t => t.status === 'completed').length;
-    const overdueTasks = todayTasks.filter(t =>
-      t.status !== 'completed' && t.due_date && new Date(t.due_date) < new Date()
-    ).length;
+    // Timezone-aware overdue calculation (uses user's timezone, not server UTC)
+    const nowInTz = moment().tz(timezone);
+    const overdueTasks = todayTasks.filter(t => {
+      if (t.status === 'completed') return false;
+      if (!t.due_date) return false;
+      // Parse due_date in the user's timezone
+      let dueMoment = moment.tz(t.due_date, 'YYYY-MM-DD', timezone);
+      // If due_time exists (e.g. "14:30"), set the time on the due date
+      if (t.due_time) {
+        const [h, m] = t.due_time.split(':').map(Number);
+        dueMoment = dueMoment.hour(h || 0).minute(m || 0).second(0);
+      } else {
+        // No specific time — overdue only if date has fully passed
+        dueMoment = dueMoment.endOf('day');
+      }
+      return dueMoment.isBefore(nowInTz);
+    }).length;
 
     // Productivity score
     const productivityScore = calculateScore(todayTasks, habitLogs, todayMood);

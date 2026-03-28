@@ -6,7 +6,8 @@
     "dev": "next dev -p 3000",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "lint:hooks": "node scripts/hook-safety-lint.js"
   },
   "dependencies": {
     "next": "14.0.4",

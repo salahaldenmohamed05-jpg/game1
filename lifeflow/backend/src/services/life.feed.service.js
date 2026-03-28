@@ -24,9 +24,9 @@
 const logger = require('../utils/logger');
 
 // ─── Lazy loaders ─────────────────────────────────────────────────────────────
-function getModels()   { try { return require('../config/database').sequelize.models; } catch (_) { return {}; } }
-function getLearning() { try { return require('./learning.engine.service'); } catch (_) { return null; } }
-function getScheduler(){ try { return require('./scheduling.engine.service'); } catch (_) { return null; } }
+function getModels()   { try { return require('../config/database').sequelize.models; } catch (_e) { logger.debug(`[LIFE_FEED_SERVICE] Module not available: ${_e.message}`); return {}; } }
+function getLearning() { try { return require('./learning.engine.service'); } catch (_e) { logger.debug(`[LIFE_FEED_SERVICE] Module './learning.engine.service' not available: ${_e.message}`); return null; } }
+function getScheduler(){ try { return require('./scheduling.engine.service'); } catch (_e) { logger.debug(`[LIFE_FEED_SERVICE] Module './scheduling.engine.service' not available: ${_e.message}`); return null; } }
 
 // ─── Date normalizer ──────────────────────────────────────────────────────────
 function normDate(val) {
@@ -298,14 +298,13 @@ async function getHabitFeedItems(userId, { HabitLog, Habit, Op, todayStr }) {
               habit_id: habit.id,
               user_id : userId,
               [Op.or]: [
-                { logged_at : { [Op.gte]: new Date(todayStr) } },
+                { log_date  : todayStr },
                 { createdAt : { [Op.gte]: new Date(todayStr) } },
-                { created_at: { [Op.gte]: new Date(todayStr) } },
               ],
             },
           });
           logged = !!logEntry;
-        } catch (_) {}
+        } catch (_e) { logger.debug(`[LIFE_FEED_SERVICE] Non-critical operation failed: ${_e.message}`); }
       }
 
       if (logged) {

@@ -16,6 +16,7 @@ const { Habit, HabitLog } = require('../models/habit.model');
 const MoodEntry = require('../models/mood.model');
 const { Notification } = require('../models/insight.model');
 const { aiService } = require('../ai/ai.service');
+const weeklyAuditService = require('./weekly-audit.service');
 const logger = require('../utils/logger');
 const moment = require('moment-timezone');
 
@@ -40,8 +41,11 @@ function initScheduler(io) {
   // Evening daily summary - 9:00 PM
   cron.schedule('0 21 * * *', () => sendEveningSummary(), { timezone: 'Africa/Cairo' });
 
-  // Weekly report - Sunday 9:00 AM
+  // Weekly report + audit generation - Sunday 9:00 AM
   cron.schedule('0 9 * * 0', () => generateWeeklyReports(), { timezone: 'Africa/Cairo' });
+
+  // Weekly audit data generation - Monday 2:00 AM (generates audit for previous week)
+  cron.schedule('0 2 * * 1', () => generateAllWeeklyAudits(), { timezone: 'Africa/Cairo' });
 
   // Overdue tasks check - every 2 hours during work hours
   cron.schedule('0 9,11,13,15,17 * * *', () => checkOverdueTasks(), { timezone: 'Africa/Cairo' });
@@ -51,6 +55,12 @@ function initScheduler(io) {
 
   // Smart suggestions - every 3 hours
   cron.schedule('0 9,12,15,18 * * *', () => sendSmartSuggestions(), { timezone: 'Africa/Cairo' });
+
+  // Step 1: Rebuild behavior profiles daily at 3:00 AM
+  cron.schedule('0 3 * * *', () => rebuildAllBehaviorProfiles(), { timezone: 'Africa/Cairo' });
+
+  // Step 2: Run daily execution loop at 8:00 AM
+  cron.schedule('0 8 * * *', () => runDailyExecutionLoop(), { timezone: 'Africa/Cairo' });
 
   logger.info('✅ All schedulers initialized');
 }
@@ -258,12 +268,41 @@ async function sendEveningSummary() {
 async function checkOverdueTasks() {
   try {
     const now = new Date();
-    const overdueTasks = await Task.findAll({
+    const todayStr = moment().tz('Africa/Cairo').format('YYYY-MM-DD');
+
+    // Fetch pending/in_progress tasks with due_date up to today
+    const candidateTasks = await Task.findAll({
       where: {
         status: { [Op.in]: ['pending', 'in_progress'] },
-        due_date: { [Op.lt]: now },
+        due_date: { [Op.lte]: `${todayStr}T23:59:59` },
       },
-      include: [{ model: User, attributes: ['id', 'name', 'notifications_enabled'] }],
+    });
+
+    // Apply time-aware overdue check: combine due_date + due_time, timezone-aware
+    const overdueTasks = candidateTasks.filter(task => {
+      if (!task.due_date) return false;
+      // Get user's timezone (default Cairo)
+      const tz = 'Africa/Cairo';
+      let dueMoment;
+      try {
+        const moment = require('moment-timezone');
+        dueMoment = moment.tz(task.due_date, 'YYYY-MM-DD', tz);
+        if (task.due_time) {
+          const [h, m] = task.due_time.split(':').map(Number);
+          dueMoment = dueMoment.hour(h || 0).minute(m || 0).second(0);
+        } else {
+          dueMoment = dueMoment.endOf('day');
+        }
+        return dueMoment.isBefore(moment().tz(tz));
+      } catch {
+        // Fallback to UTC comparison
+        const dueDate = new Date(task.due_date);
+        if (task.due_time) {
+          const [h, m] = task.due_time.split(':').map(Number);
+          dueDate.setHours(h || 0, m || 0, 0, 0);
+        }
+        return dueDate < now;
+      }
     });
 
     const userGroups = {};
@@ -440,6 +479,91 @@ function getContextualSuggestion(hour, tasks, user) {
     };
   }
   return null;
+}
+
+/**
+ * Generate weekly audits for all premium users
+ * Runs Monday 2 AM — creates audit for the previous week
+ */
+async function generateAllWeeklyAudits() {
+  try {
+    logger.info('📊 Generating weekly audits for all premium users...');
+    const users = await User.findAll({ where: { is_active: true } });
+
+    let success = 0;
+    let skipped = 0;
+    for (const user of users) {
+      try {
+        // Check if user has premium/trial/enterprise plan
+        const plan = user.subscription_plan || 'free';
+        if (!['premium', 'enterprise', 'trial'].includes(plan)) {
+          skipped++;
+          continue;
+        }
+        const timezone = user.timezone || 'Africa/Cairo';
+        await weeklyAuditService.generateWeeklyAudit(user.id, null, timezone);
+        success++;
+      } catch (err) {
+        logger.warn(`Weekly audit generation failed for user ${user.id}:`, err.message);
+      }
+    }
+    logger.info(`✅ Weekly audits generated: ${success} success, ${skipped} skipped (non-premium)`);
+  } catch (error) {
+    logger.error('Weekly audit generation cron error:', error);
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Step 1: Rebuild Behavior Profiles for All Users (daily at 3 AM)
+// ──────────────────────────────────────────────────────────────────────────────
+async function rebuildAllBehaviorProfiles() {
+  logger.info('🧠 [CRON] Starting daily behavior profile rebuild...');
+  try {
+    const behaviorService = require('./behavior.model.service');
+    const users = await User.findAll({ where: { is_active: true }, attributes: ['id', 'timezone'] });
+
+    let built = 0, failed = 0;
+    for (const user of users) {
+      try {
+        const tz = user.timezone || 'Africa/Cairo';
+        await behaviorService.buildBehaviorModel(user.id, tz, 30);
+        built++;
+      } catch (err) {
+        failed++;
+        logger.debug(`[CRON] Behavior profile build failed for user ${user.id}: ${err.message}`);
+      }
+    }
+    logger.info(`🧠 [CRON] Behavior profiles rebuilt: ${built} success, ${failed} failed`);
+  } catch (error) {
+    logger.error('Behavior profile cron error:', error.message);
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Step 2: Daily Execution Loop (8 AM) — Observe → Decide → Act → Track → Learn
+// ──────────────────────────────────────────────────────────────────────────────
+async function runDailyExecutionLoop() {
+  logger.info('🔄 [CRON] Starting daily execution loop...');
+  try {
+    let executionEngine;
+    try { executionEngine = require('./execution.engine.service'); } catch (_) { return; }
+
+    const users = await User.findAll({ where: { is_active: true }, attributes: ['id', 'timezone'] });
+
+    let processed = 0;
+    for (const user of users) {
+      try {
+        const tz = user.timezone || 'Africa/Cairo';
+        await executionEngine.runDailyLoop(user.id, tz, ioInstance);
+        processed++;
+      } catch (err) {
+        logger.debug(`[CRON] Execution loop failed for user ${user.id}: ${err.message}`);
+      }
+    }
+    logger.info(`🔄 [CRON] Daily execution loop complete: ${processed} users processed`);
+  } catch (error) {
+    logger.error('Daily execution loop cron error:', error.message);
+  }
 }
 
 module.exports = { initScheduler };

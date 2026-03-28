@@ -5,6 +5,8 @@ const express = require('express');
 const router = express.Router();
 const habitController = require('../controllers/habit.controller');
 const { protect } = require('../middleware/auth.middleware');
+const { validateCreateHabit, validateUpdateHabit } = require('../middleware/validators');
+const { writeLimiter } = require('../middleware/rateLimiter');
 
 router.use(protect);
 
@@ -14,8 +16,8 @@ router.get('/today-summary', habitController.getTodaySummary);
 // GET /habits/today — alias for today-summary
 router.get('/today', habitController.getTodaySummary);
 
-router.post('/', habitController.createHabit);
-router.put('/:id', habitController.updateHabit);
+router.post('/', writeLimiter, validateCreateHabit, habitController.createHabit);
+router.put('/:id', writeLimiter, validateUpdateHabit, habitController.updateHabit);
 router.delete('/:id', habitController.deleteHabit);
 
 router.post('/:id/check-in', habitController.checkIn);

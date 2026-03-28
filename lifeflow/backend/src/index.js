@@ -18,6 +18,11 @@ const { Server } = require('socket.io');
 const { connectDB } = require('./config/database');
 const { setupRedis } = require('./config/redis');
 const logger = require('./utils/logger');
+const { handleError, registerProcessHandlers } = require('./utils/errorHandler');
+const { authLimiter, aiLimiter, writeLimiter, globalLimiter } = require('./middleware/rateLimiter');
+
+// Register process-level error handlers (uncaughtException, unhandledRejection)
+registerProcessHandlers();
 
 // Import routes
 const authRoutes = require('./routes/auth.routes');
@@ -39,6 +44,7 @@ const aiCentralRoutes    = require('./routes/ai.central.routes');
 const assistantRoutes    = require('./routes/assistant.routes');
 const chatRoutes         = require('./routes/chat.routes');        // Phase 16: chat sessions
 const { router: logsRoutes } = require('./routes/logs.routes');
+const profileRoutes      = require('./routes/profile.routes');   // Profile & Settings system
 
 // Import scheduler
 const { initScheduler } = require('./services/scheduler.service');
@@ -92,6 +98,9 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+// ── Global Rate Limiter (lenient — 300 req/min) ────────────────────────────
+app.use(globalLimiter);
+
 // Ensure UTF-8 charset on all JSON responses
 app.use((req, res, next) => {
   const originalJson = res.json.bind(res);
@@ -107,7 +116,8 @@ app.use((req, res, next) => {
 // ============================================
 const API = '/api/v1';
 
-app.use(`${API}/auth`, authRoutes);
+// ── Rate limiters per tier ──────────────────────────────────────────────────
+app.use(`${API}/auth`, authLimiter, authRoutes);
 app.use(`${API}/users`, userRoutes);
 app.use(`${API}/tasks`, taskRoutes);
 app.use(`${API}/habits`, habitRoutes);
@@ -116,27 +126,39 @@ app.use(`${API}/insights`, insightRoutes);
 app.use(`${API}/notifications`, notificationRoutes);
 app.use(`${API}/calendar`, calendarRoutes);
 app.use(`${API}/voice`, voiceRoutes);
-app.use(`${API}/ai/v2`,        aiCentralRoutes);  // Centralized AI layer (Gemini/Groq) — registered BEFORE old ai routes
-app.use(`${API}/ai`, aiRoutes);
+app.use(`${API}/ai/v2`,        aiLimiter, aiCentralRoutes);  // Centralized AI layer (Gemini/Groq) — registered BEFORE old ai routes
+app.use(`${API}/ai`, aiLimiter, aiRoutes);
 app.use(`${API}/dashboard`, dashboardRoutes);
 app.use(`${API}/performance`, performanceRoutes);
 app.use(`${API}/subscription`, subscriptionRoutes);
 app.use(`${API}/intelligence`, intelligenceRoutes);
 app.use(`${API}/adaptive`,     adaptiveRoutes);
-app.use(`${API}/assistant`,    assistantRoutes);  // New: AI Personal Assistant
-app.use(`${API}/chat`,         chatRoutes);        // Phase 16: Persistent chat sessions
+app.use(`${API}/assistant`,    aiLimiter, assistantRoutes);  // New: AI Personal Assistant
+app.use(`${API}/chat`,         aiLimiter, chatRoutes);        // Phase 16: Persistent chat sessions
 app.use(`${API}/logs`,         logsRoutes);        // Error & activity logging
+app.use(`${API}/profile-settings`, profileRoutes);   // Profile & Settings core system
 
 // ============================================
 // Health Check
 // ============================================
 const healthHandler = (req, res) => {
+  let aiStatus = { healthy: false, error: 'AI module not loaded' };
+  try {
+    const aiClient = require('./services/ai/ai.client');
+    aiStatus = aiClient.getAIStatus();
+  } catch (e) {
+    logger.warn('[HEALTH] AI status unavailable:', e.message);
+    aiStatus = { healthy: false, error: e.message };
+  }
   res.json({
     status: 'ok',
     app: 'LifeFlow API',
     version: '1.0.0',
     timestamp: new Date().toISOString(),
-    timezone: process.env.DEFAULT_TIMEZONE,
+    timezone: process.env.DEFAULT_TIMEZONE || 'Africa/Cairo',
+    ai: aiStatus,
+    uptime: Math.round(process.uptime()),
+    memory: Math.round(process.memoryUsage().rss / 1024 / 1024) + 'MB',
   });
 };
 app.get('/health', healthHandler);
@@ -152,21 +174,15 @@ app.get('/', (req, res) => {
 });
 
 // ============================================
-// Error Handler
+// Error Handler (Phase A — structured error middleware)
 // ============================================
-app.use((err, req, res, next) => {
-  logger.error('Unhandled error:', err);
-  res.status(err.status || 500).json({
-    success: false,
-    message: err.message || 'حدث خطأ في الخادم، يرجى المحاولة لاحقاً',
-    ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
-  });
-});
+app.use(handleError);
 
 // 404 handler
 app.use((req, res) => {
   res.status(404).json({
     success: false,
+    errorCode: 'NOT_FOUND',
     message: 'المسار غير موجود',
   });
 });

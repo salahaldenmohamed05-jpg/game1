@@ -1,12 +1,14 @@
 /**
  * Settings Screen - شاشة الإعدادات
  * =====================================
- * إعدادات الحساب والتطبيق
+ * Phase B: Full API integration with /profile-settings/settings
  */
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../providers/auth_provider.dart';
+import '../../services/api_service.dart';
 import '../../utils/app_constants.dart';
+import '../profile/profile_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   static const routeName = '/settings';
@@ -17,10 +19,79 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  bool _loading = true;
+  bool _saving = false;
   bool _notificationsEnabled = true;
   bool _dailyReminder = true;
   bool _weeklyReport = true;
+  bool _smartReminders = true;
+  bool _autoReschedule = false;
+  String _aiInterventionLevel = 'balanced';
+  String _recommendationStyle = 'contextual';
+  String _aiCoachingTone = 'supportive';
+  String _quietHoursStart = '23:00';
+  String _quietHoursEnd = '07:00';
   TimeOfDay _reminderTime = const TimeOfDay(hour: 9, minute: 0);
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSettings();
+  }
+
+  Future<void> _loadSettings() async {
+    try {
+      final api = ApiService.instance;
+      final result = await api.getAppSettings();
+      if (result['success'] == true && result['data'] != null) {
+        final data = result['data'];
+        setState(() {
+          _notificationsEnabled = data['notifications_enabled'] ?? true;
+          _dailyReminder = data['daily_reminder'] ?? true;
+          _weeklyReport = data['weekly_report'] ?? true;
+          _smartReminders = data['smart_reminders'] ?? true;
+          _autoReschedule = data['auto_reschedule'] ?? false;
+          _aiInterventionLevel = data['ai_intervention_level'] ?? 'balanced';
+          _recommendationStyle = data['recommendation_style'] ?? 'contextual';
+          _aiCoachingTone = data['ai_coaching_tone'] ?? 'supportive';
+          _quietHoursStart = data['quiet_hours_start'] ?? '23:00';
+          _quietHoursEnd = data['quiet_hours_end'] ?? '07:00';
+        });
+      }
+    } catch (_) {}
+    setState(() => _loading = false);
+  }
+
+  Future<void> _saveSettings() async {
+    setState(() => _saving = true);
+    try {
+      final api = ApiService.instance;
+      await api.updateAppSettings({
+        'notifications_enabled': _notificationsEnabled,
+        'daily_reminder': _dailyReminder,
+        'weekly_report': _weeklyReport,
+        'smart_reminders': _smartReminders,
+        'auto_reschedule': _autoReschedule,
+        'ai_intervention_level': _aiInterventionLevel,
+        'recommendation_style': _recommendationStyle,
+        'ai_coaching_tone': _aiCoachingTone,
+        'quiet_hours_start': _quietHoursStart,
+        'quiet_hours_end': _quietHoursEnd,
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('تم حفظ الإعدادات'), backgroundColor: AppConstants.accentGreen),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('فشل حفظ الإعدادات'), backgroundColor: Colors.red),
+        );
+      }
+    }
+    setState(() => _saving = false);
+  }
 
   Widget _buildSection(String title, List<Widget> children) {
     return Column(
@@ -147,7 +218,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   IconButton(
                     icon: const Icon(Icons.edit, color: Colors.white70, size: 18),
-                    onPressed: () => _showEditProfileDialog(context, user?.name ?? ''),
+                    onPressed: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const ProfileScreen()),
+                    ),
                   ),
                 ],
               ),
@@ -188,6 +262,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   final t = await showTimePicker(context: context, initialTime: _reminderTime);
                   if (t != null) setState(() => _reminderTime = t);
                 },
+              ),
+            ]),
+
+            // AI Settings (Phase B)
+            _buildSection('إعدادات الذكاء الاصطناعي', [
+              _buildArrowTile(
+                'مستوى التدخل',
+                _aiInterventionLevel == 'minimal' ? 'حد أدنى' : _aiInterventionLevel == 'balanced' ? 'متوازن' : 'نشط',
+                () => _showAiInterventionPicker(),
+              ),
+              const Divider(height: 1, color: Color(0xFF1E2D4A)),
+              _buildArrowTile(
+                'أسلوب التوصيات',
+                _recommendationStyle == 'direct' ? 'مباشر' : _recommendationStyle == 'contextual' ? 'سياقي' : 'تفصيلي',
+                () => _showRecommendationStylePicker(),
+              ),
+              const Divider(height: 1, color: Color(0xFF1E2D4A)),
+              _buildArrowTile(
+                'نبرة المدرب',
+                _aiCoachingTone == 'strict' ? 'صارم' : _aiCoachingTone == 'supportive' ? 'داعم' : 'ودود',
+                () => _showCoachingTonePicker(),
+              ),
+              const Divider(height: 1, color: Color(0xFF1E2D4A)),
+              _buildToggleTile(
+                'التذكيرات الذكية',
+                'اقتراحات بناءً على أنماطك',
+                _smartReminders,
+                (v) { setState(() => _smartReminders = v); _saveSettings(); },
+              ),
+              const Divider(height: 1, color: Color(0xFF1E2D4A)),
+              _buildToggleTile(
+                'إعادة الجدولة التلقائية',
+                'نقل المهام المتأخرة تلقائياً',
+                _autoReschedule,
+                (v) { setState(() => _autoReschedule = v); _saveSettings(); },
               ),
             ]),
 
@@ -271,6 +380,50 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: const Text('حفظ', style: TextStyle(color: Colors.white)),
           ),
         ],
+      ),
+    );
+  }
+
+  void _showAiInterventionPicker() {
+    _showOptionPicker('مستوى التدخل', {'minimal': 'حد أدنى', 'balanced': 'متوازن', 'active': 'نشط'}, _aiInterventionLevel, (v) {
+      setState(() => _aiInterventionLevel = v);
+      _saveSettings();
+    });
+  }
+
+  void _showRecommendationStylePicker() {
+    _showOptionPicker('أسلوب التوصيات', {'direct': 'مباشر', 'contextual': 'سياقي', 'detailed': 'تفصيلي'}, _recommendationStyle, (v) {
+      setState(() => _recommendationStyle = v);
+      _saveSettings();
+    });
+  }
+
+  void _showCoachingTonePicker() {
+    _showOptionPicker('نبرة المدرب', {'strict': 'صارم', 'supportive': 'داعم', 'friendly': 'ودود'}, _aiCoachingTone, (v) {
+      setState(() => _aiCoachingTone = v);
+      _saveSettings();
+    });
+  }
+
+  void _showOptionPicker(String title, Map<String, String> options, String current, Function(String) onSelect) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppConstants.darkCard,
+        title: Text(title, style: const TextStyle(color: Colors.white)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: options.entries.map((e) => RadioListTile<String>(
+            value: e.key,
+            groupValue: current,
+            title: Text(e.value, style: const TextStyle(color: Colors.white)),
+            activeColor: AppConstants.primaryPurple,
+            onChanged: (v) {
+              Navigator.pop(ctx);
+              if (v != null) onSelect(v);
+            },
+          )).toList(),
+        ),
       ),
     );
   }

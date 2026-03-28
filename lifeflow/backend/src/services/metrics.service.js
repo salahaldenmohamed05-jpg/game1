@@ -42,23 +42,23 @@ function setCachedMetrics(userId, metrics) {
 // ─── Model Loader ─────────────────────────────────────────────────────────────
 function getModels() {
   const m = {};
-  try { m.Task             = require('../models/task.model');            } catch (_) {}
-  try { m.Habit            = require('../models/habit.model');           } catch (_) {}
-  try { m.MoodEntry        = require('../models/mood.model');            } catch (_) {}
-  try { m.EnergyLog        = require('../models/energy_log.model');      } catch (_) {}
-  try { m.ProductivityScore = require('../models/productivity_score.model'); } catch (_) {}
+  try { m.Task = require('../models/task.model'); } catch (_e) { logger.debug(`[METRICS_SERVICE] Model load failed: ${_e.message}`); }
+  try { m.Habit = require('../models/habit.model').Habit; } catch (_e) { logger.debug(`[METRICS_SERVICE] Model load failed: ${_e.message}`); }
+  try { m.MoodEntry = require('../models/mood.model'); } catch (_e) { logger.debug(`[METRICS_SERVICE] Model load failed: ${_e.message}`); }
+  try { m.EnergyLog = require('../models/energy_log.model'); } catch (_e) { logger.debug(`[METRICS_SERVICE] Model load failed: ${_e.message}`); }
+  try { m.ProductivityScore = require('../models/productivity_score.model'); } catch (_e) { logger.debug(`[METRICS_SERVICE] Model load failed: ${_e.message}`); }
   return m;
 }
 
 // ─── Lazy Service Loader ──────────────────────────────────────────────────────
 function getLearning() {
-  try { return require('./learning.engine.service'); } catch (_) { return null; }
+  try { return require('./learning.engine.service'); } catch (_e) { logger.debug(`[METRICS_SERVICE] Module './learning.engine.service' not available: ${_e.message}`); return null; }
 }
 function getAdaptiveBehavior() {
-  try { return require('./adaptive.behavior.service'); } catch (_) { return null; }
+  try { return require('./adaptive.behavior.service'); } catch (_e) { logger.debug(`[METRICS_SERVICE] Module './adaptive.behavior.service' not available: ${_e.message}`); return null; }
 }
 function getDecisionEngine() {
-  try { return require('./decision.engine.service'); } catch (_) { return null; }
+  try { return require('./decision.engine.service'); } catch (_e) { logger.debug(`[METRICS_SERVICE] Module './decision.engine.service' not available: ${_e.message}`); return null; }
 }
 
 // ─── Task Completion Metrics ──────────────────────────────────────────────────
@@ -221,7 +221,7 @@ function getAIMetrics(userId) {
       const failed      = log.filter(d => d.status === 'failed').length;
       ai.interventions  = log.length;
       ai.successRate    = executed + failed > 0 ? Math.round((executed / (executed + failed)) * 100) : null;
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[METRICS_SERVICE] Non-critical operation failed: ${_e.message}`); }
   }
 
   // Learning engine
@@ -231,7 +231,7 @@ function getAIMetrics(userId) {
       const stats = learning.getLearningStats(userId);
       ai.suggestionAcceptRate = stats.suggestionAcceptRate;
       ai.learningDataPoints   = stats.totalRecords;
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[METRICS_SERVICE] Non-critical operation failed: ${_e.message}`); }
   }
 
   // Adaptive behavior
@@ -243,7 +243,7 @@ function getAIMetrics(userId) {
         ai.suggestionRate     = profile.suggestionRate;
         ai.engagementScore    = profile.engagementScore;
       }
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[METRICS_SERVICE] Non-critical operation failed: ${_e.message}`); }
   }
 
   return ai;
@@ -349,7 +349,7 @@ function recordIntervention(userId, type, accepted) {
         suggestionType: type,
         userResponse : accepted ? 'accepted' : 'ignored',
       });
-    } catch (_) {}
+    } catch (_e) { logger.debug(`[METRICS_SERVICE] Non-critical operation failed: ${_e.message}`); }
   }
 }
 

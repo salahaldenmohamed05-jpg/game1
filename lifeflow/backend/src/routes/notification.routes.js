@@ -5,6 +5,9 @@
 const express = require('express');
 const router  = express.Router();
 const { protect } = require('../middleware/auth.middleware');
+const { writeLimiter } = require('../middleware/rateLimiter');
+const { body } = require('express-validator');
+const { handleValidation } = require('../middleware/validators');
 const { Notification } = require('../models/insight.model');
 const { Op }  = require('sequelize');
 const logger  = require('../utils/logger');
@@ -32,7 +35,7 @@ router.get('/', async (req, res) => {
 });
 
 // Mark notification as read
-router.patch('/:id/read', async (req, res) => {
+router.patch('/:id/read', writeLimiter, async (req, res) => {
   try {
     await Notification.update({ is_read: true }, { where: { id: req.params.id, user_id: req.user.id } });
     res.json({ success: true, message: 'تم تعليم الإشعار كمقروء' });
@@ -42,7 +45,7 @@ router.patch('/:id/read', async (req, res) => {
 });
 
 // Mark all as read
-router.patch('/read-all', async (req, res) => {
+router.patch('/read-all', writeLimiter, async (req, res) => {
   try {
     await Notification.update({ is_read: true }, { where: { user_id: req.user.id, is_read: false } });
     res.json({ success: true, message: 'تم تعليم كل الإشعارات كمقروءة' });
@@ -57,7 +60,15 @@ router.patch('/read-all', async (req, res) => {
  * Create a smart AI-powered reminder for a task or habit.
  * Body: { type: 'task'|'habit', item_id, item_title, reminder_before?, scheduled_at?, priority? }
  */
-router.post('/smart-reminder', async (req, res) => {
+const validateSmartReminder = [
+  body('item_id').trim().notEmpty().withMessage('item_id مطلوب'),
+  body('item_title').trim().notEmpty().withMessage('item_title مطلوب').isLength({ max: 500 }).withMessage('العنوان طويل جداً'),
+  body('type').optional().isIn(['task', 'habit']).withMessage('النوع يجب أن يكون task أو habit'),
+  body('reminder_before').optional().isInt({ min: 1, max: 1440 }).withMessage('وقت التذكير غير صالح'),
+  body('priority').optional().isIn(['low', 'medium', 'high', 'urgent']).withMessage('الأولوية غير صالحة'),
+  handleValidation,
+];
+router.post('/smart-reminder', writeLimiter, validateSmartReminder, async (req, res) => {
   const {
     type          = 'task',
     item_id,
@@ -171,7 +182,7 @@ const { triggerNow } = require('../services/proactive.monitor.service');
  * POST /notifications/trigger-proactive
  * Manually trigger an AI proactive message for current user (for testing / frontend trigger)
  */
-router.post('/trigger-proactive', async (req, res) => {
+router.post('/trigger-proactive', writeLimiter, async (req, res) => {
   try {
     const { type = 'morning_check' } = req.body;
     const validTypes = ['morning_check', 'mood_check', 'overdue_tasks', 'energy_drop', 'habit_reminder', 'burnout_alert', 'evening_review', 'daily_question'];
@@ -226,7 +237,7 @@ router.get('/proactive-status', async (req, res) => {
  * Body: { item_time (ISO or HH:MM), reminder_before (minutes), timezone? }
  * Returns: { trigger_time (ISO), item_time, reminder_before, minutes_remaining }
  */
-router.post('/compute-trigger', async (req, res) => {
+router.post('/compute-trigger', writeLimiter, async (req, res) => {
   try {
     const {
       item_time,

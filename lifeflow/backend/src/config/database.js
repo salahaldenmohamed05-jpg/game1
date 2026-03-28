@@ -67,6 +67,9 @@ function registerModels() {
   // Phase 16 — chat memory
   require('../models/chat_session.model');
   require('../models/chat_message.model');
+  // Profile & Settings system
+  require('../models/user_profile.model');
+  require('../models/user_settings.model');
 }
 
 async function connectDB() {
@@ -85,7 +88,7 @@ async function connectDB() {
       } catch (syncErr) {
         logger.warn('⚠️  SQLite sync warning:', syncErr.message);
         // Retry with alter:false as last resort
-        try { await sequelize.sync({ alter: false }); } catch (_) {}
+        try { await sequelize.sync({ alter: false }); } catch (_e) { logger.debug(`[DATABASE] Non-critical operation failed: ${_e.message}`); }
       }
 
       // Phase 16: Safe column migrations for SQLite (ALTER TABLE IF NOT EXISTS column)
@@ -107,6 +110,9 @@ async function connectDB() {
       await addColumnIfMissing('notifications', 'priority',           'VARCHAR(10) DEFAULT "medium"');
       await addColumnIfMissing('notifications', 'related_item_id',    'VARCHAR(36)');
       await addColumnIfMissing('notifications', 'related_item_type',  'VARCHAR(10)');
+
+      // Tasks: add goal linkage for goal-driven planning
+      await addColumnIfMissing('tasks', 'goal_id',           'VARCHAR(36)');
 
       // Tasks: add Phase 16 energy-aware fields
       await addColumnIfMissing('tasks', 'energy_level',        'VARCHAR(10)');

@@ -26,13 +26,13 @@ const memory  = require('./memory.service');
 
 // Phase 15 — lazy imports (avoid circular deps)
 function getLearning() {
-  try { return require('./learning.engine.service'); } catch (_) { return null; }
+  try { return require('./learning.engine.service'); } catch (_e) { logger.debug(`[DECISION_ENGINE_SERVICE] Module './learning.engine.service' not available: ${_e.message}`); return null; }
 }
 function getPlanning() {
-  try { return require('./planning.engine.service'); } catch (_) { return null; }
+  try { return require('./planning.engine.service'); } catch (_e) { logger.debug(`[DECISION_ENGINE_SERVICE] Module './planning.engine.service' not available: ${_e.message}`); return null; }
 }
 function getExplainability() {
-  try { return require('./explainability.service'); } catch (_) { return null; }
+  try { return require('./explainability.service'); } catch (_e) { logger.debug(`[DECISION_ENGINE_SERVICE] Module './explainability.service' not available: ${_e.message}`); return null; }
 }
 
 // ─── Decision Log (in-memory, ring buffer) ───────────────────────────────────
@@ -48,9 +48,9 @@ function logDecision(entry) {
 // ─── Model Loader ─────────────────────────────────────────────────────────────
 function getModels() {
   const models = {};
-  try { models.Task     = require('../models/task.model'); }      catch (_) {}
-  try { models.Habit    = require('../models/habit.model'); }     catch (_) {}
-  try { models.MoodEntry= require('../models/mood.model'); }      catch (_) {}
+  try { models.Task = require('../models/task.model'); } catch (_e) { logger.debug(`[DECISION_ENGINE_SERVICE] Model load failed: ${_e.message}`); }
+  try { models.Habit = require('../models/habit.model').Habit; } catch (_e) { logger.debug(`[DECISION_ENGINE_SERVICE] Model load failed: ${_e.message}`); }
+  try { models.MoodEntry = require('../models/mood.model'); } catch (_e) { logger.debug(`[DECISION_ENGINE_SERVICE] Model load failed: ${_e.message}`); }
   return models;
 }
 

@@ -41,7 +41,7 @@ export default function AdaptiveView() {
   });
 
   const profile = profileData?.data?.data;
-  const recs = recsData?.data?.data;
+  const recs = recsData?.data?.data || {};
   const sim = simData?.data?.data;
 
   return (
@@ -92,7 +92,7 @@ export default function AdaptiveView() {
         </h2>
         {recsLoading ? (
           <div className="flex justify-center py-6"><div className="loading-spinner" /></div>
-        ) : recs?.recommendations?.length > 0 ? (
+        ) : Array.isArray(recs?.recommendations) && recs.recommendations.length > 0 ? (
           <div className="space-y-3">
             {recs.recommendations.slice(0, 5).map((rec, i) => (
               <motion.div key={i} initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.1 }}
@@ -135,11 +135,11 @@ export default function AdaptiveView() {
         </div>
         {sim ? (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
-            {sim.scenarios?.map((s, i) => (
-              <div key={i} className={`p-3 rounded-xl ${s.delta >= 0 ? 'bg-green-500/10 border border-green-500/20' : 'bg-red-500/10 border border-red-500/20'}`}>
-                <p className="text-xs text-gray-400">{s.dimension || s.name}</p>
-                <p className={`font-bold text-lg ${s.delta >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {s.delta >= 0 ? '+' : ''}{s.delta?.toFixed(1) ?? '—'}
+            {(Array.isArray(sim.scenarios) ? sim.scenarios : []).map((s, i) => (
+              <div key={i} className={`p-3 rounded-xl ${(s?.delta ?? 0) >= 0 ? 'bg-green-500/10 border border-green-500/20' : 'bg-red-500/10 border border-red-500/20'}`}>
+                <p className="text-xs text-gray-400">{s?.dimension || s?.name || ''}</p>
+                <p className={`font-bold text-lg ${(s?.delta ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {(s?.delta ?? 0) >= 0 ? '+' : ''}{s?.delta?.toFixed(1) ?? '—'}
                 </p>
               </div>
             ))}

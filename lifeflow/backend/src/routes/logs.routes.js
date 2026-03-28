@@ -68,7 +68,7 @@ router.get('/recent', protect, (req, res) => {
           const fileLines = content.split('\n').filter(Boolean).slice(-limit);
           lines = lines.concat(fileLines.map(l => ({ source: path.basename(logPath), line: l })));
         }
-      } catch (_) {}
+      } catch (_e) { logger.debug(`[LOGS_ROUTES] Non-critical operation failed: ${_e.message}`); }
     }
 
     // Sort by content (approximate time ordering)
