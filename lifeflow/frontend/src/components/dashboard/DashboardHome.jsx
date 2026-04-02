@@ -45,12 +45,111 @@ import {
   ArrowRight, Plus, Activity, TrendingUp,
   ChevronDown, ChevronUp, AlertTriangle,
   RefreshCw, Sparkles, Zap, Sun, Moon,
-  Calendar, Target, Brain, Info,
+  Calendar, Target, Brain, Info, Play,
 } from 'lucide-react';
-import { taskAPI, habitAPI, dashboardAPI, assistantAPI } from '../../utils/api';
+import { taskAPI, habitAPI, dashboardAPI, assistantAPI, engineAPI } from '../../utils/api';
 import { SMART_ACTIONS } from '../../constants/smartActions';
 import useSyncStore from '../../store/syncStore';
 import toast from 'react-hot-toast';
+
+// ═════════════════════════════════════════════════════════════════════════════
+// EXECUTION STRIP — Top-of-Dashboard widget
+// Shows next action + duration + "Start Now" button → opens ExecutionScreen
+// ═════════════════════════════════════════════════════════════════════════════
+function ExecutionStrip({ onViewChange }) {
+  const { data: rawData, isLoading } = useQuery({
+    queryKey: ['engine-today'],
+    queryFn: engineAPI.getToday,
+    staleTime: 30 * 1000,
+    refetchInterval: 2 * 60 * 1000,
+    retry: 1,
+  });
+
+  const engineData = rawData?.data?.data || {};
+  const action = engineData?.next_action;
+  const reasoning = engineData?.reasoning || [];
+  const oneLineReason = reasoning.length > 0
+    ? reasoning[0].replace(/^[⏰📅🔴🟠⚡💪😴🎯💡🚀🧘📈⚠️🔥📱✅🌟]+\s*/g, '').slice(0, 60)
+    : null;
+
+  if (isLoading) {
+    return (
+      <div className="glass-card p-3 bg-gradient-to-l from-primary-500/10 to-purple-500/5 border border-primary-500/20">
+        <div className="flex items-center gap-3">
+          <div className="skeleton w-10 h-10 rounded-xl" />
+          <div className="flex-1 space-y-1.5">
+            <div className="skeleton h-4 w-3/4 rounded" />
+            <div className="skeleton h-3 w-1/2 rounded" />
+          </div>
+          <div className="skeleton w-24 h-10 rounded-xl" />
+        </div>
+      </div>
+    );
+  }
+
+  if (!action) {
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
+        className="glass-card p-3 bg-gradient-to-l from-green-500/10 to-emerald-500/5 border border-green-500/20"
+        dir="rtl"
+      >
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-green-500/15 flex items-center justify-center">
+            <Check size={18} className="text-green-400" />
+          </div>
+          <div className="flex-1">
+            <p className="text-sm font-bold text-white">يوم منجز!</p>
+            <p className="text-[11px] text-gray-500">لا توجد مهام معلقة — أحسنت</p>
+          </div>
+          <button onClick={() => onViewChange?.('tasks')}
+            className="px-3 py-2 bg-white/5 text-gray-400 text-xs rounded-xl hover:bg-white/10 transition-all">
+            + مهمة
+          </button>
+        </div>
+      </motion.div>
+    );
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
+      className="glass-card p-3 bg-gradient-to-l from-primary-500/12 to-purple-600/8 border border-primary-500/25 cursor-pointer hover:border-primary-500/40 transition-all"
+      dir="rtl"
+      onClick={() => onViewChange?.('execution')}
+    >
+      <div className="flex items-center gap-3">
+        {/* Action icon */}
+        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 to-purple-600 flex items-center justify-center flex-shrink-0 shadow-lg shadow-primary-500/25">
+          <Zap size={18} className="text-white" />
+        </div>
+
+        {/* Action info */}
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-bold text-white truncate">{action.title}</p>
+          <div className="flex items-center gap-2 mt-0.5">
+            {action.estimated_minutes && (
+              <span className="text-[11px] text-gray-400 flex items-center gap-1">
+                <Clock size={10} /> {action.estimated_minutes} دقيقة
+              </span>
+            )}
+            {oneLineReason && (
+              <span className="text-[10px] text-gray-500 truncate">— {oneLineReason}</span>
+            )}
+          </div>
+        </div>
+
+        {/* Start button */}
+        <button
+          onClick={(e) => { e.stopPropagation(); onViewChange?.('execution'); }}
+          className="flex-shrink-0 px-4 py-2.5 bg-gradient-to-l from-primary-500 to-purple-600 text-white text-xs font-bold rounded-xl shadow-lg shadow-primary-500/25 hover:from-primary-600 hover:to-purple-700 active:scale-95 transition-all flex items-center gap-1.5"
+        >
+          <Play size={12} fill="white" /> ابدأ الآن
+        </button>
+      </div>
+    </motion.div>
+  );
+}
 
 // ─── Cairo Time Helper (timezone-aware) ──────────────────────────────────────
 function getCairoNow() {
@@ -167,18 +266,50 @@ function SectionSkeleton({ lines = 3 }) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// CONTEXT-AWARE ACTION CARD
-// Priority: time window → energy/behavior → habit timing → goal alignment → urgency → overdue
-// Shows "Why this now?" explanation
+// DO NOW CARD — Merged ExecutionStrip + ContextAwareActionCard
+// Single unified card: shows next action with time-aware reasoning,
+// remaining time, "Why now?" explanation, and link to execution screen.
 // ═════════════════════════════════════════════════════════════════════════════
-function ContextAwareActionCard({ todayFlowData, isLoading, isError, refetch, onViewChange, onCompleteTask }) {
+function DoNowCard({ todayFlowData, isLoading, isError, refetch, onViewChange, onCompleteTask }) {
+  // Data from today-flow
   const action = todayFlowData?.nextAction || {};
   const [completing, setCompleting] = useState(false);
   const [showWhy, setShowWhy] = useState(false);
 
-  const isOverdueTask = action.urgency === 'critical' && Array.isArray(action.reason) &&
-    action.reason.some(r => typeof r === 'string' && r.includes('متأخرة'));
+  // Also fetch engine data for detailed reasoning
+  const { data: engineRaw } = useQuery({
+    queryKey: ['engine-today'],
+    queryFn: engineAPI.getToday,
+    staleTime: 30 * 1000,
+    refetchInterval: 2 * 60 * 1000,
+    retry: 1,
+  });
+  const engineData = engineRaw?.data?.data || {};
+  const engineAction = engineData?.next_action || {};
+  const reasoning = engineData?.reasoning || [];
 
+  // Time-aware: use engine's time-aware data (computed on backend)
+  const taskDueTime = engineAction.due_time || action.due_time;
+  const engineTimeRemaining = engineAction._time_remaining;
+  const engineTimeRemainingMins = engineAction._time_remaining_minutes;
+  const engineNotDueYet = engineAction._not_due_yet;
+  const engineIsOverdue = engineAction._is_overdue;
+
+  // Fallback: compute remaining time on frontend if engine didn't provide it
+  const timeRemaining = useMemo(() => {
+    if (engineTimeRemaining) {
+      return { text: engineTimeRemaining, isOverdue: !!engineIsOverdue, minutesLeft: engineTimeRemainingMins || 0 };
+    }
+    if (!taskDueTime) return null;
+    const result = getTimeRemaining(action.due_date || new Date().toISOString().split('T')[0], taskDueTime);
+    return result;
+  }, [engineTimeRemaining, engineIsOverdue, engineTimeRemainingMins, taskDueTime, action.due_date]);
+
+  // Determine if task is approaching (within 60 min) or not due yet
+  const isApproaching = timeRemaining && !timeRemaining.isOverdue && !engineNotDueYet;
+  const isNotDueYet = !!engineNotDueYet;
+  const isOverdueTask = engineIsOverdue || timeRemaining?.isOverdue || (action.urgency === 'critical' && Array.isArray(action.reason) &&
+    action.reason.some(r => typeof r === 'string' && r.includes('متأخرة')));
   const hasReschedule = !!action.reschedule_suggestion;
 
   const handleActNow = useCallback(async () => {
@@ -203,7 +334,7 @@ function ContextAwareActionCard({ todayFlowData, isLoading, isError, refetch, on
     } else if (action.action === 'check_habit') {
       onViewChange?.('habits');
     } else {
-      onViewChange?.('tasks');
+      onViewChange?.('execution');
     }
   }, [completing, action, onCompleteTask, refetch, onViewChange]);
 
@@ -233,50 +364,80 @@ function ContextAwareActionCard({ todayFlowData, isLoading, isError, refetch, on
   };
   const actionStyle = actionIcons[action.action] || actionIcons.start_task;
 
+  // Safe string renderer — prevents React Error #31 (objects rendered as children)
+  const safeStr = (v) => {
+    if (v == null) return '';
+    if (typeof v === 'string') return v;
+    if (typeof v === 'number') return String(v);
+    if (typeof v === 'object' && v.suggestion) return v.suggestion;
+    if (typeof v === 'object' && v.title) return v.title;
+    try { return JSON.stringify(v); } catch { return ''; }
+  };
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
-      className="glass-card p-4 sm:p-5 bg-gradient-to-br from-primary-500/15 to-purple-600/10 border border-primary-500/20"
-      dir="rtl" role="region" aria-label="الإجراء التالي"
+      className="glass-card p-4 sm:p-5 bg-gradient-to-br from-primary-500/15 to-purple-600/10 border border-primary-500/20 cursor-pointer"
+      dir="rtl" role="region" aria-label="افعل الآن"
+      onClick={() => onViewChange?.('execution')}
     >
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
-          <div className={`w-8 h-8 rounded-xl bg-gradient-to-br ${actionStyle.gradient} flex items-center justify-center`}>
+          <div className={`w-9 h-9 rounded-xl bg-gradient-to-br ${actionStyle.gradient} flex items-center justify-center shadow-lg shadow-primary-500/25`}>
             {actionStyle.icon}
           </div>
           <div>
-            <h2 className="text-sm font-bold text-white">
+            <h2 className="text-sm font-bold text-white flex items-center gap-2">
               {action.action === 'take_break' ? 'وقت راحة' :
                action.action === 'log_mood' ? 'سجّل مزاجك' :
                action.action === 'check_habit' ? 'تتبّع العادة' :
                action.action === 'review_plan' ? 'راجع خطتك' :
                'افعل الآن'}
+              {/* Remaining time badge */}
+              {isNotDueYet && timeRemaining && (
+                <span className="text-[10px] bg-purple-500/15 text-purple-400 px-2 py-0.5 rounded-full font-medium">
+                  🕐 متبقي {timeRemaining.text} — استعد
+                </span>
+              )}
+              {isApproaching && timeRemaining && (
+                <span className="text-[10px] bg-yellow-500/15 text-yellow-400 px-2 py-0.5 rounded-full font-medium">
+                  ⏳ متبقي {timeRemaining.text} — ابدأ!
+                </span>
+              )}
+              {!isNotDueYet && !isApproaching && timeRemaining && !timeRemaining.isOverdue && (
+                <span className="text-[10px] bg-blue-500/15 text-blue-400 px-2 py-0.5 rounded-full font-medium">
+                  ⏳ متبقي {timeRemaining.text}
+                </span>
+              )}
+              {timeRemaining?.isOverdue && (
+                <span className="text-[10px] bg-red-500/15 text-red-400 px-2 py-0.5 rounded-full font-medium">
+                  ⏰ {timeRemaining.text}
+                </span>
+              )}
             </h2>
             <p className="text-[10px] text-gray-500">
               {action.ml_driven ? '🤖 اقتراح ذكي' : 'الإجراء الأهم'}
               {action.energy_match ? ' · ⚡ يناسب طاقتك' : ''}
+              {taskDueTime ? ` · ${taskDueTime}` : ''}
             </p>
           </div>
         </div>
         <div className="flex items-center gap-1">
-          {/* "Why this now?" toggle */}
-          <button onClick={() => setShowWhy(!showWhy)}
+          <button onClick={(e) => { e.stopPropagation(); setShowWhy(!showWhy); }}
             className="text-gray-500 hover:text-primary-400 p-1.5 transition-colors active:scale-90 rounded-lg hover:bg-white/5"
-            aria-label="لماذا الآن؟"
-            title="لماذا هذا الإجراء الآن؟"
-          >
+            aria-label="لماذا الآن؟" title="لماذا هذا الإجراء الآن؟">
             <Info size={12} />
           </button>
-          <button onClick={refetch} className="text-gray-500 hover:text-yellow-400 p-1 transition-colors active:scale-90">
+          <button onClick={(e) => { e.stopPropagation(); refetch?.(); }} className="text-gray-500 hover:text-yellow-400 p-1 transition-colors active:scale-90">
             <RefreshCw size={12} className={isLoading ? 'animate-spin' : ''} />
           </button>
         </div>
       </div>
 
-      {/* "Why this now?" explanation panel */}
+      {/* "Why this now?" explanation panel — uses engine reasoning */}
       <AnimatePresence>
-        {showWhy && Array.isArray(action.explanation) && action.explanation.length > 0 && (
+        {showWhy && reasoning.length > 0 && (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
@@ -288,16 +449,23 @@ function ContextAwareActionCard({ todayFlowData, isLoading, isError, refetch, on
               <p className="text-[10px] text-primary-400 font-bold flex items-center gap-1">
                 <Brain size={10} /> لماذا هذا الإجراء الآن؟
               </p>
-              {action.explanation.map((exp, i) => (
-                <p key={i} className="text-[11px] text-gray-400 leading-relaxed">💡 {exp}</p>
+              {reasoning.slice(0, 4).map((r, i) => (
+                <p key={i} className="text-[11px] text-gray-400 leading-relaxed">💡 {safeStr(r)}</p>
               ))}
+              {/* Time-aware context */}
+              {isNotDueYet && (
+                <p className="text-[11px] text-purple-400 leading-relaxed">🕐 الموعد لم يحن بعد — استعد أو اعمل شيء آخر</p>
+              )}
+              {isApproaching && !isNotDueYet && (
+                <p className="text-[11px] text-yellow-400 leading-relaxed">⏳ الموعد قريب — ابدأ التحضير أو ابدأ الآن!</p>
+              )}
             </div>
           </motion.div>
         )}
       </AnimatePresence>
 
       {isError ? (
-        <div className="text-center py-2">
+        <div className="text-center py-2" onClick={e => e.stopPropagation()}>
           <p className="text-xs text-amber-400 mb-2">فشل تحميل الإجراء التالي</p>
           <button onClick={refetch} className="text-xs text-primary-400 hover:text-primary-300 flex items-center gap-1 mx-auto">
             <RefreshCw size={10} /> إعادة المحاولة
@@ -308,10 +476,10 @@ function ContextAwareActionCard({ todayFlowData, isLoading, isError, refetch, on
           <div className="skeleton h-5 rounded w-3/4" />
           <div className="skeleton h-3 rounded w-full" />
         </div>
-      ) : action.title || action.task_title ? (
-        <div>
+      ) : action.title || action.task_title || engineAction.title ? (
+        <div onClick={e => e.stopPropagation()}>
           <p className="text-base font-bold text-white mb-1.5 leading-snug">
-            {action.title || action.task_title}
+            {action.title || action.task_title || engineAction.title}
           </p>
           {action.confidence != null && (
             <div className="flex items-center gap-2 mb-2">
@@ -322,8 +490,9 @@ function ContextAwareActionCard({ todayFlowData, isLoading, isError, refetch, on
               <span className="text-[10px] text-gray-500">{action.confidence}% ثقة</span>
             </div>
           )}
+          {/* Safe rendering of reason — prevents React Error #31 */}
           {Array.isArray(action.reason) && action.reason.slice(0, 3).map((r, i) => (
-            <p key={i} className="text-xs text-gray-400 leading-relaxed">→ {r}</p>
+            <p key={i} className="text-xs text-gray-400 leading-relaxed">→ {safeStr(r)}</p>
           ))}
 
           <div className="flex gap-2 mt-3">
@@ -334,33 +503,34 @@ function ContextAwareActionCard({ todayFlowData, isLoading, isError, refetch, on
                 hover:from-primary-600 hover:to-purple-700 active:scale-[0.98] transition-all flex items-center justify-center gap-2
                 disabled:opacity-60"
             >
-              {completing ? <RefreshCw size={14} className="animate-spin" /> : <Check size={14} />}
+              {completing ? <RefreshCw size={14} className="animate-spin" /> : <Play size={14} fill="white" />}
               {completing ? 'جارٍ...' :
                 action.action === 'log_mood' ? 'سجّل الآن' :
                 action.action === 'check_habit' ? 'سجّل العادة' :
-                action.task_id ? 'أكمل المهمة' : 'ابدأ الآن'}
+                action.task_id ? 'ابدأ الآن' : 'افعل الآن'}
             </button>
-            {/* Overdue + has reschedule: show reschedule button */}
             {(isOverdueTask || hasReschedule) && action.task_id && (
               <button onClick={handleReschedule}
                 className="px-3 py-2.5 bg-orange-500/10 text-orange-400 text-sm rounded-xl hover:bg-orange-500/20 transition-all flex items-center gap-1 border border-orange-500/20">
                 <Calendar size={12} /> أعد الجدولة
               </button>
             )}
-            {!isOverdueTask && !hasReschedule && action.task_id && (
-              <button onClick={() => onViewChange?.('tasks')}
+            {!isOverdueTask && !hasReschedule && (
+              <button onClick={() => onViewChange?.('execution')}
                 className="px-3 py-2.5 bg-white/5 text-gray-400 text-sm rounded-xl hover:bg-white/10 transition-all flex items-center gap-1">
-                <ArrowRight size={12} /> عرض
+                <ArrowRight size={12} /> نفّذ
               </button>
             )}
           </div>
         </div>
       ) : (
-        <div className="text-center py-2">
-          <p className="text-sm text-gray-400 mb-2">لا توجد مهام عاجلة — أحسنت!</p>
-          <button onClick={() => onViewChange?.('assistant')}
+        <div className="text-center py-3" onClick={e => e.stopPropagation()}>
+          <Check size={24} className="text-green-400 mx-auto mb-2" />
+          <p className="text-sm font-bold text-white mb-1">يوم منجز!</p>
+          <p className="text-xs text-gray-500 mb-2">لا توجد مهام معلقة — أحسنت</p>
+          <button onClick={() => onViewChange?.('tasks')}
             className="text-xs text-primary-400 hover:text-primary-300 flex items-center gap-1 mx-auto">
-            <Sparkles size={10} /> اسأل المساعد عن اقتراحات
+            <Plus size={10} /> أضف مهمة جديدة
           </button>
         </div>
       )}
@@ -437,9 +607,44 @@ function OverdueStrategyBanner({ tasks, onRescheduleAll, onViewChange }) {
 // ═════════════════════════════════════════════════════════════════════════════
 // TODAY SUMMARY CARD (kept, minor improvements)
 // ═════════════════════════════════════════════════════════════════════════════
+// ─── Mini Circular Progress Ring ─────────────────────────────────────────
+function MiniProgressRing({ progress, size = 80, strokeWidth = 6 }) {
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference - (progress / 100) * circumference;
+  const color = progress >= 80 ? '#10B981' : progress >= 50 ? '#6C63FF' : '#F59E0B';
+
+  return (
+    <div className="relative" style={{ width: size, height: size }}>
+      <svg width={size} height={size} className="transform -rotate-90">
+        <circle cx={size / 2} cy={size / 2} r={radius}
+          stroke="rgba(255,255,255,0.05)" strokeWidth={strokeWidth} fill="none" />
+        <circle cx={size / 2} cy={size / 2} r={radius}
+          stroke={color} strokeWidth={strokeWidth} fill="none"
+          strokeLinecap="round" strokeDasharray={circumference} strokeDashoffset={offset}
+          style={{ transition: 'stroke-dashoffset 1s ease' }} />
+      </svg>
+      <div className="absolute inset-0 flex items-center justify-center">
+        <span className="text-lg font-black text-white">{progress}%</span>
+      </div>
+    </div>
+  );
+}
+
+// ─── Motivational Quotes ─────────────────────────────────────────────────
+const MOTIVATIONAL_QUOTES = [
+  { ar: 'النجاح ليس نهائياً والفشل ليس قاتلاً، الشجاعة للاستمرار هي ما تهم', en: 'Success is not final, failure is not fatal' },
+  { ar: 'كل يوم جديد هو فرصة جديدة لتكون أفضل', en: 'Every day is a new opportunity' },
+  { ar: 'التركيز هو مفتاح الإنتاجية', en: 'Focus is the key to productivity' },
+  { ar: 'خطوة صغيرة كل يوم تصنع فرقاً كبيراً', en: 'Small steps every day make a big difference' },
+  { ar: 'الإنجاز الحقيقي يبدأ من الانضباط', en: 'Real achievement starts with discipline' },
+  { ar: 'لا تقارن نفسك بالآخرين، قارنها بنفسك بالأمس', en: 'Compare yourself to who you were yesterday' },
+  { ar: 'الراحة ليست كسلاً، هي جزء من الإنتاجية', en: 'Rest is not laziness, it is part of productivity' },
+  { ar: 'ابدأ من حيث أنت واستخدم ما لديك', en: 'Start where you are, use what you have' },
+];
+
 function TodaySummaryCard({ dashboardData, onViewChange }) {
   const summary = dashboardData?.summary;
-  if (!summary) return null;
 
   const tasksTotal     = summary?.tasks?.total || 0;
   const tasksCompleted = summary?.tasks?.completed || 0;
@@ -459,6 +664,14 @@ function TodaySummaryCard({ dashboardData, onViewChange }) {
   };
   const tod = getTimeOfDay();
 
+  // Daily quote based on day of year
+  const dailyQuote = useMemo(() => {
+    const dayOfYear = Math.floor((getCairoNow() - new Date(getCairoNow().getFullYear(), 0, 0)) / 86400000);
+    return MOTIVATIONAL_QUOTES[dayOfYear % MOTIVATIONAL_QUOTES.length];
+  }, []);
+
+  if (!summary) return null;
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
@@ -475,42 +688,39 @@ function TodaySummaryCard({ dashboardData, onViewChange }) {
         </span>
       </div>
 
-      {/* Progress Bar */}
-      <div className="mb-3">
-        <div className="flex items-center justify-between mb-1.5">
-          <span className="text-xs text-gray-400">تقدم اليوم</span>
-          <span className="text-xs font-bold text-white">{progressPct}%</span>
-        </div>
-        <div className="w-full h-2 bg-white/5 rounded-full overflow-hidden" role="progressbar" aria-valuenow={progressPct} aria-valuemin={0} aria-valuemax={100}>
-          <motion.div
-            initial={{ width: 0 }} animate={{ width: `${progressPct}%` }}
-            transition={{ duration: 0.8, ease: 'easeOut' }}
-            className={`h-full rounded-full ${
-              progressPct >= 80 ? 'bg-gradient-to-l from-green-400 to-emerald-500' :
-              progressPct >= 50 ? 'bg-gradient-to-l from-blue-400 to-primary-500' :
-              'bg-gradient-to-l from-orange-400 to-yellow-500'
-            }`}
-          />
+      {/* Circular Progress + Stats Row */}
+      <div className="flex items-center gap-4 mb-3">
+        <MiniProgressRing progress={progressPct} />
+        <div className="flex-1 grid grid-cols-3 gap-2">
+          <button onClick={() => onViewChange?.('tasks')} className="text-center p-2 rounded-lg bg-white/5 hover:bg-white/8 transition-all active:scale-95">
+            <div className="text-lg font-black text-white">{tasksCompleted}/{tasksTotal}</div>
+            <div className="text-[10px] text-gray-500">مهام</div>
+            {overdue > 0 && <div className="text-[9px] text-red-400 mt-0.5">{overdue} متأخرة</div>}
+          </button>
+          <button onClick={() => onViewChange?.('habits')} className="text-center p-2 rounded-lg bg-white/5 hover:bg-white/8 transition-all active:scale-95">
+            <div className="text-lg font-black text-white">{habitsCompleted}/{habitsTotal}</div>
+            <div className="text-[10px] text-gray-500">عادات</div>
+          </button>
+          <button onClick={() => onViewChange?.('mood')} className="text-center p-2 rounded-lg bg-white/5 hover:bg-white/8 transition-all active:scale-95">
+            <div className="text-lg font-black text-white">
+              {summary?.mood?.has_checked_in ? `${summary.mood.score || '✓'}/10` : '---'}
+            </div>
+            <div className="text-[10px] text-gray-500">المزاج</div>
+          </button>
         </div>
       </div>
 
-      {/* Mini Stats Row */}
-      <div className="grid grid-cols-3 gap-2">
-        <button onClick={() => onViewChange?.('tasks')} className="text-center p-2 rounded-lg bg-white/5 hover:bg-white/8 transition-all active:scale-95">
-          <div className="text-lg font-black text-white">{tasksCompleted}/{tasksTotal}</div>
-          <div className="text-[10px] text-gray-500">مهام</div>
-          {overdue > 0 && <div className="text-[9px] text-red-400 mt-0.5">{overdue} متأخرة</div>}
-        </button>
-        <button onClick={() => onViewChange?.('habits')} className="text-center p-2 rounded-lg bg-white/5 hover:bg-white/8 transition-all active:scale-95">
-          <div className="text-lg font-black text-white">{habitsCompleted}/{habitsTotal}</div>
-          <div className="text-[10px] text-gray-500">عادات</div>
-        </button>
-        <button onClick={() => onViewChange?.('mood')} className="text-center p-2 rounded-lg bg-white/5 hover:bg-white/8 transition-all active:scale-95">
-          <div className="text-lg font-black text-white">
-            {summary?.mood?.has_checked_in ? `${summary.mood.score || '✓'}/10` : '---'}
-          </div>
-          <div className="text-[10px] text-gray-500">المزاج</div>
-        </button>
+      {/* Focus Timer Quick Access */}
+      <button onClick={() => onViewChange?.('focus')}
+        className="w-full mb-3 py-2.5 bg-gradient-to-l from-primary-500/15 to-purple-500/10 text-sm text-primary-300 font-medium
+          rounded-xl border border-primary-500/20 hover:border-primary-500/40 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
+      >
+        🍅 ابدأ جلسة تركيز بومودورو
+      </button>
+
+      {/* Motivational Quote */}
+      <div className="p-3 rounded-xl bg-gradient-to-l from-primary-500/5 to-transparent border border-white/5">
+        <p className="text-xs text-gray-300 leading-relaxed text-center italic">&ldquo;{dailyQuote.ar}&rdquo;</p>
       </div>
 
       {/* Evening Reflection Prompt */}
@@ -713,12 +923,11 @@ function DynamicExecutionTimeline({ tasks, onCompleteTask, isLoading, onViewChan
 // Today's behavior state, habit patterns, smart nudges, risk alerts.
 // ═════════════════════════════════════════════════════════════════════════════
 function BehaviorIntelligenceCard({ habits, onLogHabit, onViewChange }) {
-  if (!Array.isArray(habits) || habits.length === 0) return null;
-
-  const completed = habits.filter(h => h.completed_today);
-  const uncompleted = habits.filter(h => !h.completed_today);
-  const completionRate = habits.length > 0 ? Math.round((completed.length / habits.length) * 100) : 0;
-  const bestStreak = habits.reduce((max, h) => Math.max(max, h.current_streak || 0), 0);
+  const safeHabits = Array.isArray(habits) ? habits : [];
+  const completed = safeHabits.filter(h => h.completed_today);
+  const uncompleted = safeHabits.filter(h => !h.completed_today);
+  const completionRate = safeHabits.length > 0 ? Math.round((completed.length / safeHabits.length) * 100) : 0;
+  const bestStreak = safeHabits.reduce((max, h) => Math.max(max, h.current_streak || 0), 0);
 
   const currentHour = getCairoNow().getHours();
 
@@ -757,6 +966,8 @@ function BehaviorIntelligenceCard({ habits, onLogHabit, onViewChange }) {
     return { label: 'ابدأ الآن', emoji: '⏰', color: 'text-gray-400' };
   }, [completionRate]);
 
+  if (safeHabits.length === 0) return null;
+
   return (
     <div className="glass-card p-4" dir="rtl" role="region" aria-label="ذكاء السلوك">
       <div className="flex items-center justify-between mb-3">
@@ -767,7 +978,7 @@ function BehaviorIntelligenceCard({ habits, onLogHabit, onViewChange }) {
           </span>
         </h2>
         <div className="flex items-center gap-2">
-          <span className="text-xs text-gray-400">{completed.length}/{habits.length}</span>
+          <span className="text-xs text-gray-400">{completed.length}/{safeHabits.length}</span>
           <button onClick={() => onViewChange?.('habits')} className="text-[10px] text-primary-400 hover:text-primary-300">
             التفاصيل
           </button>
@@ -814,7 +1025,7 @@ function BehaviorIntelligenceCard({ habits, onLogHabit, onViewChange }) {
 
       {/* Habit Grid */}
       <div className="grid grid-cols-4 sm:grid-cols-5 gap-1.5">
-        {habits.slice(0, 10).map((habit, idx) => (
+        {safeHabits.slice(0, 10).map((habit, idx) => (
           <motion.div key={habit.id} initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}
             transition={{ delay: idx * 0.03 }}
             onClick={() => !habit.completed_today && onLogHabit(habit.id)}
@@ -1086,8 +1297,8 @@ export default function DashboardHome({ dashboardData, isLoading, isError, onVie
         </motion.div>
       )}
 
-      {/* Context-Aware Action Card (Phase G: with "Why this now?") */}
-      <ContextAwareActionCard
+      {/* Merged "Do Now" Card — combines ExecutionStrip + ContextAwareActionCard */}
+      <DoNowCard
         todayFlowData={todayFlowData}
         isLoading={flowLoading}
         isError={flowError}
@@ -1130,9 +1341,170 @@ export default function DashboardHome({ dashboardData, isLoading, isError, onVie
         onViewChange={onViewChange}
       />
 
+      {/* ═══ Streak Celebration & Milestone ═══ */}
+      <StreakCelebration habits={habits} dashboardData={dashboardData} />
+
+      {/* ═══ Weekly Achievement Summary ═══ */}
+      <WeeklyAchievement dashboardData={dashboardData} onViewChange={onViewChange} />
+
       {/* Life Feed (collapsible) */}
       <LifeFeedWidget todayFlowData={todayFlowData} />
+
+      {/* ═══ Quick Voice Assistant Access ═══ */}
+      <VoiceAssistantTeaser onViewChange={onViewChange} />
     </div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// STREAK CELEBRATION — Gamification element
+// Shows celebration when user hits streak milestones (3, 7, 14, 21, 30, 60, 100)
+// ═════════════════════════════════════════════════════════════════════════════
+function StreakCelebration({ habits, dashboardData }) {
+  const safeHabits = Array.isArray(habits) ? habits : [];
+  const bestStreak = safeHabits.reduce((max, h) => Math.max(max, h.current_streak || 0), 0);
+  const streakHabit = safeHabits.find(h => (h.current_streak || 0) === bestStreak);
+  const tasksCompleted = dashboardData?.summary?.tasks?.completed || 0;
+  const totalScore = (bestStreak * 10) + (tasksCompleted * 5);
+
+  const milestones = [3, 7, 14, 21, 30, 60, 100];
+  const currentMilestone = milestones.filter(m => bestStreak >= m).pop();
+  const nextMilestone = milestones.find(m => bestStreak < m);
+  const progressToNext = nextMilestone ? Math.round((bestStreak / nextMilestone) * 100) : 100;
+
+  const getMilestoneEmoji = (days) => {
+    if (days >= 100) return '👑';
+    if (days >= 60) return '💎';
+    if (days >= 30) return '🏆';
+    if (days >= 21) return '🌟';
+    if (days >= 14) return '🔥';
+    if (days >= 7) return '⭐';
+    if (days >= 3) return '✨';
+    return '🌱';
+  };
+
+  if (bestStreak < 2) return null;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+      className="glass-card p-4 bg-gradient-to-r from-orange-500/8 to-yellow-500/5 border border-orange-500/15"
+      dir="rtl"
+    >
+      <div className="flex items-center gap-3 mb-2">
+        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-orange-400 to-yellow-500 flex items-center justify-center text-lg shadow-lg shadow-orange-500/20">
+          {getMilestoneEmoji(bestStreak)}
+        </div>
+        <div className="flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-bold text-white">
+              {bestStreak} يوم متتالي! 🔥
+            </span>
+            {currentMilestone && (
+              <span className="text-[9px] bg-orange-500/20 text-orange-300 px-2 py-0.5 rounded-full">
+                مرحلة {currentMilestone}
+              </span>
+            )}
+          </div>
+          <p className="text-[10px] text-gray-500">
+            {streakHabit?.name || 'أطول سلسلة'} · نقاطك: {totalScore}
+          </p>
+        </div>
+        <div className="text-center">
+          <div className="text-lg font-black text-orange-400">{totalScore}</div>
+          <div className="text-[8px] text-gray-500">نقطة</div>
+        </div>
+      </div>
+
+      {/* Progress to next milestone */}
+      {nextMilestone && (
+        <div className="flex items-center gap-2">
+          <div className="flex-1 h-1.5 bg-white/5 rounded-full overflow-hidden">
+            <motion.div
+              initial={{ width: 0 }}
+              animate={{ width: `${progressToNext}%` }}
+              transition={{ duration: 1, ease: 'easeOut' }}
+              className="h-full bg-gradient-to-l from-orange-400 to-yellow-500 rounded-full"
+            />
+          </div>
+          <span className="text-[10px] text-gray-500">
+            {nextMilestone - bestStreak} يوم لـ {getMilestoneEmoji(nextMilestone)} {nextMilestone}
+          </span>
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// WEEKLY ACHIEVEMENT — Shows weekly progress summary
+// ═════════════════════════════════════════════════════════════════════════════
+function WeeklyAchievement({ dashboardData, onViewChange }) {
+  const summary = dashboardData?.summary;
+  if (!summary) return null;
+
+  const tasksCompleted = summary?.tasks?.completed || 0;
+  const habitsCompleted = summary?.habits?.completed || 0;
+  const score = summary?.productivity_score || 0;
+  const total = (summary?.tasks?.total || 0) + (summary?.habits?.total || 0);
+  const done = tasksCompleted + habitsCompleted;
+
+  // Only show if meaningful data
+  if (total === 0) return null;
+
+  const achievements = [];
+  if (tasksCompleted >= 5) achievements.push({ emoji: '🏅', text: 'بطل المهام' });
+  if (habitsCompleted >= 3) achievements.push({ emoji: '🎯', text: 'منضبط العادات' });
+  if (score >= 80) achievements.push({ emoji: '⚡', text: 'إنتاجية عالية' });
+  if (done >= total * 0.8) achievements.push({ emoji: '🌟', text: 'يوم مثالي' });
+
+  if (achievements.length === 0) return null;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+      className="glass-card p-3" dir="rtl"
+    >
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-[10px] text-gray-500 font-medium">إنجازات اليوم:</span>
+        {achievements.map((a, i) => (
+          <motion.span
+            key={i}
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ delay: i * 0.15 }}
+            className="inline-flex items-center gap-1 text-[10px] bg-primary-500/10 text-primary-300 px-2 py-1 rounded-full border border-primary-500/20"
+          >
+            {a.emoji} {a.text}
+          </motion.span>
+        ))}
+      </div>
+    </motion.div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// VOICE ASSISTANT TEASER — Quick access to voice features
+// ═════════════════════════════════════════════════════════════════════════════
+function VoiceAssistantTeaser({ onViewChange }) {
+  return (
+    <motion.button
+      initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+      onClick={() => onViewChange?.('assistant')}
+      className="w-full glass-card p-3 hover:bg-white/5 transition-all active:scale-[0.99] border border-white/5 hover:border-primary-500/20"
+      dir="rtl"
+    >
+      <div className="flex items-center gap-3">
+        <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-primary-500/20 to-purple-500/20 flex items-center justify-center">
+          <Sparkles size={16} className="text-primary-400" />
+        </div>
+        <div className="flex-1 text-right">
+          <p className="text-xs font-medium text-white">المساعد الذكي يتعلم أسلوبك</p>
+          <p className="text-[10px] text-gray-500">تكلم بصوتك وهو هيتكيف معاك — جرّب دلوقتي</p>
+        </div>
+        <ArrowRight size={14} className="text-gray-600" />
+      </div>
+    </motion.button>
   );
 }
 

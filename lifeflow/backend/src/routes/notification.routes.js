@@ -287,6 +287,60 @@ router.post('/compute-trigger', writeLimiter, async (req, res) => {
 });
 
 /**
+ * POST /notifications/fcm-token
+ * Register push notification subscription (Web Push / FCM)
+ */
+router.post('/fcm-token', writeLimiter, async (req, res) => {
+  try {
+    const { fcm_token, subscription } = req.body;
+    const userId = req.user.id;
+    
+    // Store token/subscription in user record
+    const User = require('../models/user.model');
+    const updateData = {};
+    if (fcm_token) updateData.fcm_token = fcm_token;
+    if (subscription) updateData.push_subscription = JSON.stringify(subscription);
+    
+    await User.update(updateData, { where: { id: userId } });
+    
+    logger.info(`[PUSH] Registered push token for user ${userId}`);
+    res.json({ success: true, message: 'تم تسجيل إشعارات Push بنجاح' });
+  } catch (error) {
+    logger.error('[PUSH] Token registration error:', error.message);
+    res.status(500).json({ success: false, message: 'فشل في تسجيل إشعارات Push' });
+  }
+});
+
+/**
+ * POST /notifications/send-push
+ * Send a test push notification to current user
+ */
+router.post('/send-push', writeLimiter, async (req, res) => {
+  try {
+    const { title = 'LifeFlow', body: msgBody = 'إشعار تجريبي', url = '/' } = req.body;
+    const userId = req.user.id;
+    
+    // Emit via Socket.IO for real-time delivery
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`user_${userId}`).emit('push_notification', {
+        title,
+        body: msgBody,
+        url,
+        icon: '/favicon.ico',
+        badge: '/favicon.ico',
+        timestamp: Date.now(),
+      });
+    }
+    
+    res.json({ success: true, message: 'تم إرسال الإشعار' });
+  } catch (error) {
+    logger.error('[PUSH] Send push error:', error.message);
+    res.status(500).json({ success: false, message: 'فشل في إرسال الإشعار' });
+  }
+});
+
+/**
  * GET /notifications/settings
  * Returns user's default reminder settings
  */

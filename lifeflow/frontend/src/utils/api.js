@@ -6,6 +6,58 @@
 
 import axios from 'axios';
 
+// ─── Text Sanitizer — clean garbled AI output on the client side ──────────────
+/**
+ * sanitizeText(str) removes:
+ *   - Unicode replacement chars (U+FFFD)
+ *   - CJK characters (model hallucination)
+ *   - Orphan "??" replacing dropped Arabic letters
+ *   - Non-printable control characters
+ *   - Zero-width characters that break Arabic rendering
+ */
+function sanitizeText(text) {
+  if (!text || typeof text !== 'string') return text;
+  return text
+    // Remove Unicode replacement character
+    .replace(/\uFFFD/g, '')
+    // Remove ALL CJK characters (Chinese/Japanese/Korean — model hallucination)
+    .replace(/[\u4E00-\u9FFF\u3400-\u4DBF\u2E80-\u2EFF\u3000-\u303F\u31C0-\u31EF\uF900-\uFAFF]/g, '')
+    .replace(/[\u3040-\u309F\u30A0-\u30FF\uFF00-\uFFEF]/g, '') // Hiragana, Katakana, halfwidth
+    // Remove orphan "??" replacing dropped Arabic characters
+    .replace(/(?<=[\u0600-\u06FF\u0750-\u077F])\?{2,}(?=[\u0600-\u06FF\u0750-\u077F]|\s|$)/g, '')
+    .replace(/(?<=^|\s)\?{2,}(?=[\u0600-\u06FF\u0750-\u077F])/g, '')
+    .replace(/(?<!\w)\?{2,}(?!\w)/g, '')
+    // Remove non-printable control chars (keep newlines, tabs)
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+    // Remove zero-width characters that break Arabic rendering
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    // Remove orphan combining marks without a base character
+    .replace(/(^|[\s\n])([\u0300-\u036F\u0610-\u061A\u064B-\u065F\u0670]+)/g, '$1')
+    // Remove broken surrogate pairs
+    .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g, '')
+    .replace(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '')
+    // Collapse excessive whitespace/newlines
+    .replace(/ {3,}/g, '  ')
+    .replace(/\n{4,}/g, '\n\n\n')
+    .trim();
+}
+
+function deepSanitize(obj) {
+  if (!obj) return obj;
+  if (typeof obj === 'string') return sanitizeText(obj);
+  if (Array.isArray(obj)) return obj.map(deepSanitize);
+  if (typeof obj === 'object') {
+    const result = {};
+    for (const [key, value] of Object.entries(obj)) {
+      result[key] = deepSanitize(value);
+    }
+    return result;
+  }
+  return obj;
+}
+
+export { sanitizeText, deepSanitize };
+
 // Dynamic URL detection: supports sandbox environments, localhost, and production
 // PRIORITY: runtime detection > env var (env vars get stale in sandbox environments)
 function getBaseUrl() {
@@ -88,9 +140,15 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
-// Response interceptor — refresh token on 401
+// Response interceptor — sanitize AI text + refresh token on 401
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    // Sanitize all string data in API responses to remove garbled characters
+    if (response.data) {
+      response.data = deepSanitize(response.data);
+    }
+    return response;
+  },
   async (error) => {
     const original = error.config;
     if (error.response?.status === 401 && !original._retry) {
@@ -236,6 +294,8 @@ export const notificationAPI = {
 export const calendarAPI = {
   getEvents: (params) => api.get('/calendar', { params }),
   createEvent: (data) => api.post('/calendar', data),
+  getGoogleAuth: () => api.get('/calendar/google/auth'),
+  syncGoogle: () => api.post('/calendar/google/sync'),
 };
 
 // ─── Intelligence API (Phase 8 — Life Score, Timeline, Predictions) ───────────
@@ -254,6 +314,51 @@ export const intelligenceAPI = {
   getFocusWindows: () => api.get('/intelligence/focus-windows'),
   getCoachInsights: () => api.get('/intelligence/coach'),
   planDay: (date = null) => api.post('/intelligence/plan-day', date ? { date } : {}),
+};
+
+// ─── Analytics API (Phase O — Single Source of Truth) ────────────────────────
+export const analyticsAPI = {
+  getSummary:  () => api.get('/analytics/summary'),
+  getOverview: () => api.get('/analytics/overview'),
+  getUnified:  () => api.get('/analytics/unified'),
+  getSnapshot: () => api.get('/analytics/snapshot'),
+};
+
+// ─── Execution Engine API v2 — Optimized Execution Loop ─────────────────────
+export const engineAPI = {
+  getToday:      () => api.get('/engine/today'),
+  start:         (data) => api.post('/engine/start', data),
+  pulse:         (data) => api.post('/engine/pulse', data),
+  pause:         () => api.post('/engine/pause'),
+  resume:        () => api.post('/engine/resume'),
+  complete:      (data) => api.post('/engine/complete', data),
+  skip:          (data) => api.post('/engine/skip', data),
+  delay:         (data) => api.post('/engine/delay', data),
+  abandon:       (data) => api.post('/engine/abandon', data),
+  nudge:         (data) => api.post('/engine/nudge', data),
+  switchAction:  (data) => api.post('/engine/switch', data),
+  getSession:    () => api.get('/engine/session'),
+  // Behavior Engine
+  onboarding:    (data) => api.post('/engine/onboarding', data),
+  getGoals:      () => api.get('/engine/goals'),
+  adaptBehavior: (data) => api.post('/engine/adapt-behavior', data),
+};
+
+// ─── Decision API (Phase K — Core Brain) ────────────────────────────────────
+export const decisionAPI = {
+  getNext: (params = {}) => api.get('/decision/next', { params }),
+  getSignals: (params = {}) => api.get('/decision/signals', { params }),
+  getDebug: () => api.get('/decision/debug'),
+  sendFeedback: (data) => api.post('/decision/feedback', data),
+};
+
+// ─── UserModel API (Phase P — Persistent Per-User Intelligence) ─────────────
+export const userModelAPI = {
+  getProfile:   () => api.get('/user-model/profile'),
+  getModifiers: () => api.get('/user-model/modifiers'),
+  rebuild:      () => api.post('/user-model/rebuild'),
+  validate:     () => api.get('/user-model/validate'),
+  simulate:     () => api.post('/user-model/simulate'),
 };
 
 // ─── intelligenceAPIv2 — alias for intelligence widgets (Phase 11) ────────────
@@ -400,4 +505,50 @@ export const settingsAPI = {
   changePassword: (data) => api.put('/profile-settings/settings/password', data),
   deleteAccount:  ()     => api.post('/profile-settings/settings/delete-account'),
   exportData:     ()     => api.post('/profile-settings/settings/export-data'),
+};
+
+// ─── VA API (Full Adaptive Virtual Assistant) ──────────────────────────────────
+
+// ─── Search API (Global Search) ──────────────────────────────────────────────
+export const searchAPI = {
+  search: (q, type = 'all', limit = 20) => api.get('/search', { params: { q, type, limit } }),
+};
+
+// ─── Export API (Data Export) ────────────────────────────────────────────────
+export const exportAPI = {
+  exportCSV:     (type = 'all', period = 'month') => api.post('/export/csv', { type, period }, { responseType: 'blob' }),
+  exportJSON:    (type = 'all', period = 'month') => api.post('/export/json', { type, period }, { responseType: 'blob' }),
+  exportSummary: (period = 'month') => api.post('/export/summary', { period }),
+};
+
+export const vaAPI = {
+  // Phase 1: VA Presence Layer
+  getPresence:       ()     => api.get('/va/presence'),
+
+  // Phase 2: Follow-up Intelligence
+  escalate:          (data) => api.post('/va/escalate', data),
+  getFailurePatterns:()     => api.get('/va/failure-patterns'),
+  getTimingAdapt:    ()     => api.get('/va/timing-adapt'),
+
+  // Phase 3: Communication Engine
+  sendMessage:       (data) => api.post('/va/comm/send', data),
+  getCommStats:      ()     => api.get('/va/comm/stats'),
+  getPendingMessages:()     => api.get('/va/comm/pending'),
+  ackMessage:        (data) => api.post('/va/comm/ack', data),
+
+  // Phase 4: WhatsApp
+  sendWhatsApp:      (data) => api.post('/va/whatsapp/send', data),
+
+  // Phase 5: Email Reports
+  getDailySummary:   ()     => api.get('/va/email/daily'),
+  getWeeklyReport:   ()     => api.get('/va/email/weekly'),
+  sendDailyEmail:    ()     => api.post('/va/email/send-daily'),
+  sendWeeklyEmail:   ()     => api.post('/va/email/send-weekly'),
+
+  // Phase 6: Settings
+  getSettings:       ()     => api.get('/va/settings'),
+  updateSettings:    (data) => api.put('/va/settings', data),
+
+  // Phase 7: Testing
+  testScenarios:     ()     => api.get('/va/test-scenarios'),
 };

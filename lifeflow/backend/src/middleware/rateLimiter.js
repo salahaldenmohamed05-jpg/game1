@@ -1,13 +1,16 @@
 /**
- * Rate Limiter Middleware — Phase A Stabilization
- * ==================================================
+ * Rate Limiter Middleware — Enhanced with AI-specific tiers
+ * ===========================================================
  * Protects API endpoints from abuse using express-rate-limit.
  *
  * Tiers:
- *   - authLimiter    : Strict — /auth endpoints (login, register, demo)
- *   - aiLimiter      : Medium — /assistant, /ai, /chat endpoints
- *   - writeLimiter   : Medium — POST/PUT/PATCH/DELETE on data endpoints
- *   - globalLimiter  : Lenient — fallback for all routes
+ *   - authLimiter        : Strict — /auth endpoints (login, register, demo)
+ *   - aiLimiter          : Medium — /assistant, /ai, /chat endpoints  
+ *   - aiStrictLimiter    : Strict — Groq/Gemini direct calls (prevents 429)
+ *   - writeLimiter       : Medium — POST/PUT/PATCH/DELETE on data endpoints
+ *   - globalLimiter      : Lenient — fallback for all routes
+ *   - searchLimiter      : Medium — /search endpoints
+ *   - exportLimiter      : Strict — /export endpoints (expensive operations)
  */
 
 'use strict';
@@ -23,11 +26,23 @@ const createRateLimitHandler = (tier) => (req, res) => {
     url:    req.originalUrl,
     userId: req.user?.id || 'anonymous',
   });
+  
+  const messages = {
+    auth:        'لقد تجاوزت حد محاولات تسجيل الدخول. يرجى المحاولة بعد 15 دقيقة.',
+    ai:          'لقد تجاوزت حد استخدام المساعد الذكي. يرجى المحاولة بعد دقيقة.',
+    ai_strict:   'تم تجاوز حد طلبات الذكاء الاصطناعي. يرجى الانتظار 30 ثانية.',
+    write:       'كثرة العمليات. يرجى الانتظار قليلاً.',
+    search:      'كثرة عمليات البحث. يرجى الانتظار قليلاً.',
+    export:      'يمكنك تصدير البيانات مرة كل 5 دقائق.',
+    global:      'لقد تجاوزت الحد المسموح للطلبات. يرجى المحاولة لاحقاً.',
+  };
+
   res.status(429).json({
-    success:   false,
-    errorCode: 'RATE_LIMIT_EXCEEDED',
-    message:   'لقد تجاوزت الحد المسموح للطلبات. يرجى المحاولة لاحقاً.',
+    success:    false,
+    errorCode:  'RATE_LIMIT_EXCEEDED',
+    message:    messages[tier] || messages.global,
     retryAfter: res.getHeader('Retry-After'),
+    tier,
   });
 };
 
@@ -39,7 +54,7 @@ const keyGenerator = (req) => {
 // ── Auth Limiter (strict) ───────────────────────────────────────────────────
 // 15 requests per 15 minutes per IP — protects against brute-force
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,  // 15 minutes
+  windowMs: 15 * 60 * 1000,
   max:      15,
   standardHeaders: true,
   legacyHeaders:   false,
@@ -47,33 +62,66 @@ const authLimiter = rateLimit({
 });
 
 // ── AI/Assistant Limiter (medium) ───────────────────────────────────────────
-// 60 requests per minute per user — protects AI API costs
+// 30 requests per minute per user (reduced from 60 to prevent upstream 429s)
 const aiLimiter = rateLimit({
-  windowMs: 60 * 1000,  // 1 minute
-  max:      60,
+  windowMs: 60 * 1000,
+  max:      30,
   keyGenerator,
   standardHeaders: true,
   legacyHeaders:   false,
   handler: createRateLimitHandler('ai'),
 });
 
-// ── Write Operations Limiter (medium) ───────────────────────────────────────
-// 100 writes per minute per user — prevents mass create/update/delete
-const writeLimiter = rateLimit({
-  windowMs: 60 * 1000,  // 1 minute
-  max:      100,
+// ── AI Strict Limiter — for Groq/Gemini proxy endpoints ─────────────────────
+// 10 requests per 30 seconds per user — prevents hitting Groq/Gemini 429 limits
+const aiStrictLimiter = rateLimit({
+  windowMs: 30 * 1000,
+  max:      10,
   keyGenerator,
   standardHeaders: true,
   legacyHeaders:   false,
-  skip: (req) => req.method === 'GET',  // only limit writes
+  handler: createRateLimitHandler('ai_strict'),
+});
+
+// ── Write Operations Limiter (medium) ───────────────────────────────────────
+// 60 writes per minute per user — prevents mass create/update/delete
+const writeLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max:      60,
+  keyGenerator,
+  standardHeaders: true,
+  legacyHeaders:   false,
+  skip: (req) => req.method === 'GET',
   handler: createRateLimitHandler('write'),
 });
 
+// ── Search Limiter ──────────────────────────────────────────────────────────
+// 30 searches per minute per user
+const searchLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max:      30,
+  keyGenerator,
+  standardHeaders: true,
+  legacyHeaders:   false,
+  handler: createRateLimitHandler('search'),
+});
+
+// ── Export Limiter (strict) ─────────────────────────────────────────────────
+// 3 exports per 5 minutes — expensive operations
+const exportLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max:      3,
+  keyGenerator,
+  standardHeaders: true,
+  legacyHeaders:   false,
+  handler: createRateLimitHandler('export'),
+});
+
 // ── Global Limiter (lenient) ────────────────────────────────────────────────
-// 300 requests per minute per IP — general DoS protection
+// 200 requests per minute per IP — general DoS protection (reduced from 300)
 const globalLimiter = rateLimit({
-  windowMs: 60 * 1000,  // 1 minute
-  max:      300,
+  windowMs: 60 * 1000,
+  max:      200,
   standardHeaders: true,
   legacyHeaders:   false,
   handler: createRateLimitHandler('global'),
@@ -82,6 +130,9 @@ const globalLimiter = rateLimit({
 module.exports = {
   authLimiter,
   aiLimiter,
+  aiStrictLimiter,
   writeLimiter,
+  searchLimiter,
+  exportLimiter,
   globalLimiter,
 };

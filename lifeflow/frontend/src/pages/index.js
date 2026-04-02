@@ -4,17 +4,20 @@
  * الصفحة الرئيسية - لوحة التحكم
  * Dashboard is lazy-loaded so the login page renders fast on first visit.
  *
- * FIXES (Phase 7):
- * - Loading timeout: shows error after 12s instead of infinite spinner
- * - Health check on mount: detects backend offline immediately
- * - Hydration guard: waits for Zustand persist to rehydrate
- * - Diagnostics: console logs in dev mode for debugging
+ * FIXES (Phase 7 + Pre-Launch Polish + Loading Screen Fix):
+ * - NEVER block on health check — always proceed to dashboard
+ * - Health check runs in background for diagnostics only
+ * - Hydration: waits for Zustand persist's real onRehydrateStorage signal
+ *   (replaced the unreliable 50ms timer with a proper callback + 2s safety net)
+ * - Loading screen has "skip" button after 3 seconds
+ * - Each dashboard component handles its own API errors gracefully
+ * - Hard 5-second max timeout on loading screen — user ALWAYS gets unblocked
  */
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import useAuthStore from '../store/authStore';
-import { checkBackendHealth } from '../utils/api';
+import { checkBackendHealth, profileAPI } from '../utils/api';
 import LoginPage from './login';
 
 // Lazy-load Dashboard — keeps login page bundle small
@@ -23,169 +26,146 @@ const Dashboard = dynamic(() => import('../components/dashboard/Dashboard'), {
   loading: () => <LoadingScreen message="جاري تحميل لوحة التحكم..." />,
 });
 
-// ── Loading Screen Component (reusable) ────────────────────────────────────
-function LoadingScreen({ message }) {
-  return (
-    <div className="min-h-screen animated-bg flex items-center justify-center">
-      <div className="text-center">
-        <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-primary-500 to-secondary-500 mb-4 shadow-glow animate-pulse">
-          <span className="text-3xl">✨</span>
-        </div>
-        <p className="text-gray-400 text-sm">{message}</p>
-      </div>
-    </div>
-  );
-}
+// Lazy-load Onboarding
+const OnboardingFlow = dynamic(() => import('../components/onboarding/OnboardingFlow'), {
+  ssr: false,
+});
 
-// ── Error Screen Component ─────────────────────────────────────────────────
-function ErrorScreen({ title, detail, onRetry, diagnostics }) {
+// ── Loading Screen Component (reusable) ────────────────────────────────────
+function LoadingScreen({ message, onSkip }) {
+  const [showSkip, setShowSkip] = useState(false);
+
+  useEffect(() => {
+    // Show skip button after 3 seconds to prevent blocking
+    const timer = setTimeout(() => setShowSkip(true), 3000);
+    return () => clearTimeout(timer);
+  }, []);
+
   return (
-    <div className="min-h-screen animated-bg flex items-center justify-center p-4" dir="rtl">
-      <div className="text-center max-w-md">
-        <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-red-500/20 to-orange-500/20 mb-4 border border-red-500/30">
-          <span className="text-3xl">⚠️</span>
+    <div className="min-h-screen animated-bg flex items-center justify-center" dir="rtl">
+      <div className="text-center">
+        <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-primary-500 to-secondary-500 mb-4 shadow-glow">
+          <span className="text-3xl animate-pulse">✨</span>
         </div>
-        <h2 className="text-lg font-bold text-white mb-2">{title}</h2>
-        <p className="text-gray-400 text-sm mb-4 leading-relaxed">{detail}</p>
-        {onRetry && (
+        <p className="text-gray-400 text-sm mb-2">{message}</p>
+        <div className="flex justify-center mt-3">
+          <div className="w-6 h-6 border-2 border-primary-500/30 border-t-primary-500 rounded-full animate-spin" />
+        </div>
+        {showSkip && onSkip && (
           <button
-            onClick={onRetry}
-            className="px-6 py-2.5 bg-primary-500/20 text-primary-400 text-sm rounded-xl
-              hover:bg-primary-500/30 active:scale-95 transition-all inline-flex items-center gap-2 mb-4"
+            onClick={onSkip}
+            className="mt-6 px-5 py-2 text-xs text-gray-500 hover:text-primary-400 hover:bg-white/5 rounded-xl transition-all"
           >
-            🔄 إعادة المحاولة
+            تخطي الانتظار →
           </button>
         )}
-        {diagnostics && (
-          <div className="mt-4 p-3 bg-white/5 rounded-xl text-left text-xs text-gray-500 font-mono leading-relaxed border border-white/5">
-            <p className="text-gray-400 mb-1 text-right font-sans">معلومات تقنية:</p>
-            {Object.entries(diagnostics).map(([k, v]) => (
-              <div key={k}>{k}: {String(v)}</div>
-            ))}
-          </div>
-        )}
       </div>
     </div>
   );
 }
-
-// ── Constants ──────────────────────────────────────────────────────────────
-const HYDRATION_TIMEOUT_MS = 500;    // max wait for Zustand hydration
-const HEALTH_CHECK_TIMEOUT_MS = 10000; // max wait for backend health check
-const LOADING_TIMEOUT_MS = 15000;    // absolute max before showing error
 
 export default function HomePage() {
   const { isAuthenticated } = useAuthStore();
   const [hydrated, setHydrated] = useState(false);
-  const [appState, setAppState] = useState('loading'); // loading | ready | error | timeout
-  const [errorInfo, setErrorInfo] = useState(null);
   const mountRef = useRef(false);
 
-  // Step 1: Wait for Zustand persist to rehydrate from localStorage
+  // ─── Step 1: Wait for REAL Zustand persist rehydration ──────────────────
+  // Uses onRehydrateStorage callback (not a guessed timer).
+  // Safety net: 2s max wait inside waitForHydration + 5s hard cap below.
   useEffect(() => {
-    // Zustand persist rehydrates synchronously on mount; give it a tick
-    const timer = setTimeout(() => {
-      setHydrated(true);
-      if (process.env.NODE_ENV === 'development') {
-        console.log('[LifeFlow] Zustand hydrated. isAuthenticated:', useAuthStore.getState().isAuthenticated);
-      }
-    }, 50);
-    return () => clearTimeout(timer);
-  }, []);
-
-  // Step 2: Once hydrated, run health check + set final state
-  useEffect(() => {
-    if (!hydrated || mountRef.current) return;
+    if (mountRef.current) return;
     mountRef.current = true;
 
-    const init = async () => {
-      const isAuth = useAuthStore.getState().isAuthenticated;
+    // If already hydrated synchronously (SSR or fast localStorage)
+    if (useAuthStore.getState()._hasHydrated) {
+      setHydrated(true);
+      return;
+    }
 
-      // If not authenticated, go straight to login — no backend check needed
-      if (!isAuth) {
-        if (process.env.NODE_ENV === 'development') {
-          console.log('[LifeFlow] Not authenticated → showing login');
+    // Wait for the persist middleware's real signal
+    useAuthStore.waitForHydration().then(() => {
+      setHydrated(true);
+    });
+
+    // Hard safety net — never show loading screen for more than 5 seconds
+    const hardTimeout = setTimeout(() => {
+      setHydrated(true);
+    }, 5000);
+
+    return () => clearTimeout(hardTimeout);
+  }, []);
+
+  // ─── Step 2: Background health check (never blocks UI) ──────────────────
+  useEffect(() => {
+    if (!hydrated) return;
+    const isAuth = useAuthStore.getState().isAuthenticated;
+    if (isAuth) {
+      checkBackendHealth().then((health) => {
+        if (!health.ok) {
+          console.warn('[LifeFlow] Backend not reachable:', health.error, '— dashboard will show per-component errors');
         }
-        setAppState('ready');
-        return;
-      }
-
-      // Authenticated — check backend health before loading dashboard
-      if (process.env.NODE_ENV === 'development') {
-        console.log('[LifeFlow] Authenticated → checking backend health...');
-      }
-
-      const health = await checkBackendHealth();
-
-      if (process.env.NODE_ENV === 'development') {
-        console.log('[LifeFlow] Health check result:', health);
-      }
-
-      if (health.ok) {
-        setAppState('ready');
-      } else {
-        // Backend offline — show error with diagnostics
-        setErrorInfo({
-          title: 'لا يمكن الاتصال بالخادم',
-          detail: 'تعذر الوصول إلى خادم LifeFlow. تأكد من أن الخادم يعمل وأن اتصالك بالإنترنت مستقر.',
-          diagnostics: {
-            api_url: health.baseUrl,
-            error: health.error,
-            latency: `${health.latency}ms`,
-          },
-        });
-        setAppState('error');
-      }
-    };
-
-    // Absolute safety net — never stay loading forever
-    const absoluteTimeout = setTimeout(() => {
-      setAppState((prev) => {
-        if (prev === 'loading') {
-          setErrorInfo({
-            title: 'استغرق التحميل وقتاً طويلاً',
-            detail: 'لم يتمكن التطبيق من الاتصال بالخادم في الوقت المحدد. حاول تحديث الصفحة.',
-            diagnostics: { timeout: `${LOADING_TIMEOUT_MS}ms` },
-          });
-          return 'timeout';
-        }
-        return prev;
-      });
-    }, LOADING_TIMEOUT_MS);
-
-    init();
-
-    return () => clearTimeout(absoluteTimeout);
+      }).catch(() => {});
+    }
   }, [hydrated]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
-  // Pre-hydration: show loading (max ~50ms)
+  // Pre-hydration: show loading (typically <100ms, max 5s with hard timeout)
   if (!hydrated) {
-    return <LoadingScreen message="جاري التحميل..." />;
-  }
-
-  // Error or timeout state
-  if (appState === 'error' || appState === 'timeout') {
     return (
-      <ErrorScreen
-        title={errorInfo?.title || 'حدث خطأ'}
-        detail={errorInfo?.detail || 'حدث خطأ غير متوقع'}
-        onRetry={() => window.location.reload()}
-        diagnostics={errorInfo?.diagnostics}
+      <LoadingScreen
+        message="جاري التحميل..."
+        onSkip={() => setHydrated(true)}
       />
     );
   }
 
-  // Still loading (health check in progress)
-  if (appState === 'loading') {
-    return <LoadingScreen message="جاري الاتصال بالخادم..." />;
-  }
-
-  // Ready — route to login or dashboard
+  // Route to login or dashboard
   if (!isAuthenticated) {
     return <LoginPage />;
   }
 
-  return <Dashboard />;
+  return <DashboardWithOnboarding />;
+}
+
+// ── Dashboard with Onboarding Wrapper ────────────────────────────────────
+function DashboardWithOnboarding() {
+  const { user } = useAuthStore();
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [checked, setChecked] = useState(false);
+
+  useEffect(() => {
+    const onboardingDone = localStorage.getItem('lifeflow_onboarding_done');
+    if (!onboardingDone) {
+      setShowOnboarding(true);
+    }
+    setChecked(true);
+  }, []);
+
+  const handleOnboardingComplete = useCallback(async (data) => {
+    localStorage.setItem('lifeflow_onboarding_done', 'true');
+    setShowOnboarding(false);
+    try {
+      if (data.role || (data.focus_areas && data.focus_areas.length > 0)) {
+        await profileAPI.updateProfile({
+          role: data.role || undefined,
+          focus_areas: data.focus_areas || undefined,
+        });
+      }
+    } catch {}
+  }, []);
+
+  if (!checked) return null; // Instant — no loading screen for localStorage check
+
+  return (
+    <>
+      {showOnboarding && (
+        <OnboardingFlow
+          onComplete={handleOnboardingComplete}
+          userName={user?.name?.split(' ')[0]}
+        />
+      )}
+      <Dashboard />
+    </>
+  );
 }

@@ -101,14 +101,12 @@ export default function LoginPage() {
         const result = await registerUser(payload);
         if (result.success) {
           setSandboxOtp(result._sandbox_otp || '');
-          if (!usePhone && result.verify_required) {
-            setResetEmail(form.email);
-            setMode(MODES.VERIFY);
-            toast.success('تم إنشاء حسابك! أدخل رمز التحقق من بريدك 📧');
-          } else {
-            toast.success('مرحباً! تم إنشاء حسابك بنجاح 🎉');
-            setTimeout(() => { window.location.href = '/'; }, 600);
-          }
+          // Always require verification for both email and phone
+          setResetEmail(usePhone ? form.phone : form.email);
+          setMode(MODES.VERIFY);
+          toast.success(usePhone
+            ? 'تم إنشاء حسابك! أدخل رمز التحقق المرسل لرقمك 📱'
+            : 'تم إنشاء حسابك! أدخل رمز التحقق من بريدك 📧');
         } else {
           toast.error(result.message || 'فشل إنشاء الحساب');
         }
@@ -345,19 +343,32 @@ export default function LoginPage() {
               </motion.div>
             ) : (
               <motion.div key="phone" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-                <label className="block text-sm text-gray-400 mb-1">رقم الهاتف</label>
-                <div className="flex gap-2">
-                  <span className="input-field w-16 flex items-center justify-center text-gray-400 text-sm flex-shrink-0">+20</span>
+                <label className="block text-sm text-gray-400 mb-1.5">رقم الهاتف</label>
+                <div className="flex gap-0 items-stretch" dir="ltr">
+                  <div className="input-field rounded-l-none rounded-r-xl border-l-0 w-[72px] flex items-center justify-center text-gray-300 text-sm flex-shrink-0 font-mono tracking-wide"
+                    style={{ minHeight: '48px' }}>
+                    +20
+                  </div>
                   <input
                     value={form.phone}
-                    onChange={set('phone')}
+                    onChange={(e) => {
+                      const val = e.target.value.replace(/[^\d]/g, '').slice(0, 11);
+                      setForm(f => ({ ...f, phone: val }));
+                      if (errors.phone) setErrors(er => ({ ...er, phone: undefined }));
+                    }}
                     placeholder="01XXXXXXXXX"
                     dir="ltr"
                     type="tel"
+                    inputMode="numeric"
                     autoComplete="tel"
-                    className={`input-field flex-1 ${errors.phone ? 'border-red-500/50' : ''}`}
+                    maxLength={11}
+                    className={`input-field flex-1 font-mono tracking-wide rounded-r-none rounded-l-xl ${errors.phone ? 'border-red-500/50 bg-red-500/5' : ''}`}
+                    style={{ minHeight: '48px' }}
                   />
                 </div>
+                {form.phone && form.phone.length > 0 && form.phone.length < 10 && (
+                  <p className="text-yellow-400 text-xs mt-1.5 flex items-center gap-1">⚠️ يجب أن يكون الرقم 10-11 خانة</p>
+                )}
                 {errors.phone && <p className="text-red-400 text-xs mt-1">{errors.phone}</p>}
               </motion.div>
             )}

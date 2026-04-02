@@ -15,6 +15,10 @@ const moment = require('moment-timezone');
 function getBehaviorService() {
   try { return require('../services/behavior.model.service'); } catch (_) { return null; }
 }
+// Step 2: Wire UserModel events into habit lifecycle (Phase P)
+function getUserModelService() {
+  try { return require('../services/user.model.service'); } catch (_) { return null; }
+}
 
 /* ─── Frequency helpers ────────────────────────────────────────── */
 
@@ -349,6 +353,17 @@ exports.checkIn = async (req, res) => {
     const behaviorSvc = getBehaviorService();
     if (behaviorSvc) {
       behaviorSvc.onHabitEvent(req.user.id, 'habit_completed', { habitId: habit.id }, req.user.timezone).catch(() => {});
+    }
+
+    // Step 2: Update persistent UserModel (Phase P)
+    const userModelSvc = getUserModelService();
+    if (userModelSvc) {
+      userModelSvc.onHabitCompleted(req.user.id, {
+        id: habit.id,
+        name: habit.name,
+        current_streak: habit.current_streak,
+        category: habit.category,
+      }).catch(e => logger.debug('[HABIT] UserModel update failed:', e.message));
     }
 
     res.json({

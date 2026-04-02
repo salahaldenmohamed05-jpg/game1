@@ -17,20 +17,29 @@ import {
 import api from '../../utils/api';
 import toast from 'react-hot-toast';
 
-// ─── Map notification type → icon, color, route ──────────────────────────────
+// ─── Map notification type → icon, color, route, action label ──────────────
 const TYPE_META = {
-  reminder:    { icon: '⏰', color: 'border-blue-500/40 bg-blue-500/8',     route: 'tasks',       label: 'تذكير' },
-  achievement: { icon: '🏆', color: 'border-yellow-500/40 bg-yellow-500/8', route: 'performance', label: 'إنجاز' },
-  insight:     { icon: '💡', color: 'border-purple-500/40 bg-purple-500/8', route: 'insights',    label: 'رؤية ذكية' },
-  coach:       { icon: '🧠', color: 'border-green-500/40 bg-green-500/8',   route: 'assistant',   label: 'مدرّب' },
-  habit:       { icon: '🎯', color: 'border-teal-500/40 bg-teal-500/8',     route: 'habits',      label: 'عادة' },
-  task:        { icon: '✅', color: 'border-cyan-500/40 bg-cyan-500/8',     route: 'tasks',       label: 'مهمة' },
-  mood:        { icon: '💙', color: 'border-pink-500/40 bg-pink-500/8',     route: 'mood',        label: 'مزاج' },
-  system:      { icon: '⚙️', color: 'border-gray-500/30 bg-gray-500/5',    route: null,          label: 'نظام' },
-  smart_task:  { icon: '🤖', color: 'border-blue-400/40 bg-blue-400/8',     route: 'tasks',       label: 'ذكاء اصطناعي' },
-  smart_habit: { icon: '🔥', color: 'border-orange-400/40 bg-orange-400/8', route: 'habits',      label: 'عادة ذكية' },
-  morning_check:{ icon: '🌅',color: 'border-orange-500/30 bg-orange-500/5', route: 'assistant',   label: 'صباح' },
-  ai:          { icon: '🤖', color: 'border-violet-500/40 bg-violet-500/8', route: 'assistant',   label: 'ذكاء اصطناعي' },
+  reminder:       { icon: '⏰', color: 'border-blue-500/40 bg-blue-500/8',     route: 'tasks',       label: 'تذكير',          action: 'عرض المهمة' },
+  achievement:    { icon: '🏆', color: 'border-yellow-500/40 bg-yellow-500/8', route: 'analytics',   label: 'إنجاز',          action: 'عرض إنجازاتي' },
+  insight:        { icon: '💡', color: 'border-purple-500/40 bg-purple-500/8', route: 'analytics',   label: 'رؤية ذكية',      action: 'عرض التحليلات' },
+  coach:          { icon: '🧠', color: 'border-green-500/40 bg-green-500/8',   route: 'assistant',   label: 'مدرّب',          action: 'فتح المساعد' },
+  habit:          { icon: '🎯', color: 'border-teal-500/40 bg-teal-500/8',     route: 'habits',      label: 'عادة',           action: 'تسجيل العادة' },
+  habit_reminder: { icon: '🏃', color: 'border-teal-500/40 bg-teal-500/8',     route: 'habits',      label: 'تذكير عادة',     action: 'تسجيل الآن' },
+  task:           { icon: '✅', color: 'border-cyan-500/40 bg-cyan-500/8',     route: 'tasks',       label: 'مهمة',           action: 'عرض المهمة' },
+  task_reminder:  { icon: '📋', color: 'border-cyan-500/40 bg-cyan-500/8',     route: 'tasks',       label: 'تذكير مهمة',     action: 'إنجاز المهمة' },
+  overdue_reminder:{ icon: '⚠️',color: 'border-red-500/40 bg-red-500/8',      route: 'tasks',       label: 'متأخرة',         action: 'عالج المتأخر' },
+  mood:           { icon: '💙', color: 'border-pink-500/40 bg-pink-500/8',     route: 'mood',        label: 'مزاج',           action: 'سجّل مزاجك' },
+  mood_prompt:    { icon: '💭', color: 'border-pink-500/40 bg-pink-500/8',     route: 'mood',        label: 'استبيان مزاج',   action: 'سجّل الآن' },
+  system:         { icon: '⚙️', color: 'border-gray-500/30 bg-gray-500/5',    route: null,          label: 'نظام',           action: '' },
+  smart_task:     { icon: '🤖', color: 'border-blue-400/40 bg-blue-400/8',     route: 'tasks',       label: 'ذكاء اصطناعي',   action: 'عرض المهمة' },
+  smart_habit:    { icon: '🔥', color: 'border-orange-400/40 bg-orange-400/8', route: 'habits',      label: 'عادة ذكية',      action: 'تسجيل العادة' },
+  morning_check:  { icon: '🌅', color: 'border-orange-500/30 bg-orange-500/5', route: 'dashboard',   label: 'إحاطة صباحية',   action: 'عرض خطة اليوم' },
+  morning_briefing:{ icon: '☀️',color: 'border-orange-500/30 bg-orange-500/5', route: 'dashboard',   label: 'صباح',           action: 'عرض خطة اليوم' },
+  evening_review: { icon: '🌙', color: 'border-indigo-500/30 bg-indigo-500/5', route: 'analytics',   label: 'مراجعة مسائية',  action: 'عرض أدائي' },
+  burnout_alert:  { icon: '🌿', color: 'border-red-500/30 bg-red-500/5',       route: 'mood',        label: 'تنبيه إرهاق',    action: 'اهتم بنفسك' },
+  energy_alert:   { icon: '⚡', color: 'border-yellow-500/30 bg-yellow-500/5', route: 'mood',        label: 'تنبيه طاقة',     action: 'سجّل طاقتك' },
+  daily_question: { icon: '🤔', color: 'border-purple-500/30 bg-purple-500/5', route: 'assistant',   label: 'سؤال يومي',      action: 'أجب الآن' },
+  ai:             { icon: '🤖', color: 'border-violet-500/40 bg-violet-500/8', route: 'assistant',   label: 'ذكاء اصطناعي',   action: 'فتح المساعد' },
 };
 
 function getTypeMeta(type) {
@@ -127,12 +136,15 @@ function NotifCard({ notif, onAction, onMarkRead, index }) {
               <p className="text-primary-400 text-xs mt-1.5 italic">{notif.dynamic_message}</p>
             )}
 
-            {/* Action hint */}
+            {/* Action button */}
             {isClickable && (
-              <div className="flex items-center gap-1 mt-2 text-xs text-primary-400">
-                <span>اضغط للانتقال</span>
+              <button
+                onClick={(e) => { e.stopPropagation(); handleClick(); }}
+                className="flex items-center gap-1.5 mt-2.5 text-xs text-primary-400 bg-primary-500/10 hover:bg-primary-500/20 px-3 py-1.5 rounded-lg transition-all active:scale-95 w-fit"
+              >
+                <span>{meta.action || 'اضغط للانتقال'}</span>
                 <ChevronRight size={11} />
-              </div>
+              </button>
             )}
           </div>
 
@@ -191,10 +203,16 @@ export default function NotificationsView({ onViewChange }) {
     ? notifications.filter(n => n.is_read)
     : notifications;
 
+  const ROUTE_LABELS = {
+    tasks: 'المهام', habits: 'العادات', mood: 'المزاج', analytics: 'التحليلات',
+    assistant: 'المساعد', dashboard: 'الرئيسية', calendar: 'التقويم',
+    insights: 'التحليلات', performance: 'الأداء',
+  };
   const handleAction = (route) => {
     if (route && onViewChange) {
       onViewChange(route);
-      toast.success(`الانتقال إلى ${route}…`, { duration: 1500 });
+      const label = ROUTE_LABELS[route] || route;
+      toast.success(`→ ${label}`, { duration: 1200, icon: '🔗' });
     }
   };
 

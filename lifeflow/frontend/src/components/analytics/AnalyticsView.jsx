@@ -16,7 +16,7 @@
  *   - Performance data mapping fixed (API returns data correctly)
  */
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -84,20 +84,19 @@ export default function AnalyticsView({ userPlan, onViewChange }) {
   const perfDashQuery = useQuery({
     queryKey: ['performance-dashboard'],
     queryFn: () => api.get('/performance/dashboard'),
-    enabled: isPremium,
     refetchInterval: 5 * 60 * 1000, retry: 1,
   });
 
   const perfHistoryQuery = useQuery({
     queryKey: ['performance-history'],
     queryFn: () => api.get('/performance/history?days=30'),
-    enabled: isPremium, retry: 1,
+    retry: 1,
   });
 
   const auditQuery = useQuery({
     queryKey: ['audit-history'],
     queryFn: () => api.get('/performance/weekly-audit/history'),
-    enabled: isPremium, retry: 1,
+    retry: 1,
   });
 
   const generateTipsMutation = useMutation({
@@ -385,9 +384,6 @@ function InsightsTab({ insights, radarData, history30, isPremium, onUpgrade, onG
 // ═════════════════════════════════════════════════════════════════════════════
 
 function PerformanceTab({ todayScore, history7, activeFlags, energyProfile, isPremium, onUpgrade, isLoading }) {
-  if (!isPremium) {
-    return <LockedSection onUpgrade={onUpgrade} title="محرك الأداء الذكي" desc="تحليل يومي وأسبوعي شامل لأدائك" />;
-  }
   if (isLoading) return <Skeleton count={3} />;
 
   const hasData = todayScore || history7.length > 0 || activeFlags.length > 0 || energyProfile?.has_data;
@@ -397,14 +393,20 @@ function PerformanceTab({ todayScore, history7, activeFlags, energyProfile, isPr
       {!hasData && (
         <div className="text-center py-12">
           <div className="text-4xl mb-3">📊</div>
-          <p className="text-gray-400 text-sm mb-2">لا توجد بيانات أداء بعد</p>
-          <p className="text-gray-500 text-xs">أكمل مهام وعادات لتوليد تحليل الأداء</p>
+          <p className="text-gray-400 text-sm mb-2">لا توجد بيانات أداء كافية بعد</p>
+          <p className="text-gray-500 text-xs mb-4">أكمل مهام وعادات وسجّل مزاجك لتوليد تحليل الأداء</p>
+          <div className="flex flex-wrap justify-center gap-2 text-xs">
+            <span className="px-3 py-1.5 rounded-lg bg-primary-500/10 text-primary-300">✅ أكمل 3 مهام</span>
+            <span className="px-3 py-1.5 rounded-lg bg-green-500/10 text-green-300">🎯 سجّل عادة واحدة</span>
+            <span className="px-3 py-1.5 rounded-lg bg-yellow-500/10 text-yellow-300">💙 سجّل مزاجك</span>
+          </div>
         </div>
       )}
       {todayScore && <TodayScoreCard score={todayScore} />}
       {history7.length > 0 && <TrendChart history={history7} />}
       {activeFlags.length > 0 && <BehavioralFlagsCard flags={activeFlags} />}
       {energyProfile?.has_data && <EnergyProfileCard energy={energyProfile} />}
+      {!isPremium && hasData && <PremiumBanner onUpgrade={onUpgrade} />}
     </div>
   );
 }
@@ -414,34 +416,49 @@ function PerformanceTab({ todayScore, history7, activeFlags, energyProfile, isPr
 // ═════════════════════════════════════════════════════════════════════════════
 
 function AuditTab({ audits, expandedAudit, setExpandedAudit, isPremium, onUpgrade, isLoading, onGenerateAudit, isGeneratingAudit, onViewChange }) {
-  if (!isPremium) {
-    return <LockedSection onUpgrade={onUpgrade} title="التدقيقات الأسبوعية" desc="تقارير أسبوعية مفصلة مع استراتيجيات تحسين" />;
-  }
+  const [reportType, setReportType] = useState('weekly');
   if (isLoading) return <Skeleton count={2} />;
 
   return (
     <div className="space-y-4">
-      {/* On-demand generation button */}
+      {/* Report type selector */}
+      <div className="flex gap-2 p-1 bg-white/5 rounded-xl border border-white/5">
+        {[
+          { key: 'weekly', label: 'تقرير أسبوعي', icon: '📅' },
+          { key: 'monthly', label: 'تقرير شهري', icon: '🗓️' },
+        ].map(tab => (
+          <button key={tab.key} onClick={() => setReportType(tab.key)}
+            className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-xs font-bold transition-all active:scale-95 ${
+              reportType === tab.key
+                ? 'bg-primary-500/20 text-primary-400 shadow-sm'
+                : 'text-gray-400 hover:text-white'
+            }`}>
+            {tab.icon} {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Header + generation button */}
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold text-white flex items-center gap-2">
           <Calendar size={14} className="text-blue-400" />
-          التدقيقات الأسبوعية ({audits.length})
+          {reportType === 'weekly' ? 'التدقيقات الأسبوعية' : 'التدقيقات الشهرية'} ({audits.length})
         </h2>
         <button onClick={onGenerateAudit} disabled={isGeneratingAudit}
           className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-primary-500/20 text-primary-300 hover:bg-primary-500/30 transition-colors text-xs disabled:opacity-50">
           {isGeneratingAudit ? <RefreshCw size={12} className="animate-spin" /> : <Play size={12} />}
-          {isGeneratingAudit ? 'جارٍ الإنشاء...' : 'إنشاء تدقيق جديد'}
+          {isGeneratingAudit ? 'جارٍ الإنشاء...' : `إنشاء تقرير ${reportType === 'weekly' ? 'أسبوعي' : 'شهري'}`}
         </button>
       </div>
 
       {audits.length === 0 ? (
         <div className="text-center py-12">
           <div className="text-4xl mb-3">📋</div>
-          <p className="text-gray-400 text-sm mb-2">لا توجد تدقيقات أسبوعية بعد</p>
-          <p className="text-gray-500 text-xs mb-4">اضغط "إنشاء تدقيق جديد" لتوليد أول تقرير</p>
+          <p className="text-gray-400 text-sm mb-2">لا توجد تقارير بعد</p>
+          <p className="text-gray-500 text-xs mb-4">أنشئ أول تقرير لمتابعة تقدمك</p>
           <button onClick={onGenerateAudit} disabled={isGeneratingAudit}
-            className="px-4 py-2 rounded-xl bg-primary-500/20 text-primary-300 hover:bg-primary-500/30 text-xs inline-flex items-center gap-1.5">
-            <Play size={12} /> إنشاء تدقيق
+            className="px-4 py-2.5 rounded-xl bg-primary-500 text-white hover:bg-primary-600 text-xs inline-flex items-center gap-1.5 shadow-lg shadow-primary-500/20">
+            <Play size={12} /> إنشاء تقرير {reportType === 'weekly' ? 'أسبوعي' : 'شهري'}
           </button>
         </div>
       ) : (

@@ -25,16 +25,16 @@ const ERROR_TYPES = {
 };
 
 // ─── Default Fallback Reply ───────────────────────────────────────────────────
-const DEFAULT_FALLBACK = 'حصل مشكلة مؤقتة، حاول تاني بعد شوية 🙏';
+const DEFAULT_FALLBACK = 'حصل مشكلة بسيطة، جرّب تاني كمان شوية 🙏';
 
 // ─── Context-Aware Fallback Replies ──────────────────────────────────────────
 const FALLBACK_REPLIES = {
-  AI_TIMEOUT    : 'استغرق الرد وقتاً أطول من المعتاد. حاول مجدداً بعد لحظة 🔄',
-  AI_RATE_LIMIT : 'نحن نعالج طلبات كثيرة الآن. حاول بعد دقيقة قليلة ⏳',
-  AI_KEY_MISSING: 'خدمة الذكاء الاصطناعي غير متاحة حالياً. تحقق من الإعدادات ⚙️',
-  AI_PARSE_FAIL : 'تعذّر معالجة الرد. حاول مجدداً 🔄',
-  AI_NETWORK    : 'مشكلة في الاتصال. تحقق من الشبكة وحاول مجدداً 🌐',
-  AI_NO_PROVIDER: 'لا يوجد مزود ذكاء اصطناعي متاح حالياً 🔧',
+  AI_TIMEOUT    : 'الرد اتأخر شوية — جرّب تاني 🔄',
+  AI_RATE_LIMIT : 'في ضغط دلوقتي، جرّب بعد دقيقة ⏳',
+  AI_KEY_MISSING: 'في مشكلة في الإعدادات — كلّم الدعم ⚙️',
+  AI_PARSE_FAIL : 'حاجة غلط حصلت — جرّب تاني 🔄',
+  AI_NETWORK    : 'في مشكلة في الاتصال — شيّك النت وجرّب تاني 🌐',
+  AI_NO_PROVIDER: 'الخدمة مش متاحة دلوقتي 🔧',
   AI_UNKNOWN    : DEFAULT_FALLBACK,
 };
 
@@ -83,7 +83,7 @@ async function safeExecute(aiCallFn, context = {}) {
       return { reply: DEFAULT_FALLBACK, is_fallback: true, error_type: 'EMPTY_REPLY' };
     }
 
-    return { reply: reply.trim(), is_fallback: false };
+    return { reply: sanitizeAIText(reply.trim()), is_fallback: false };
   } catch (error) {
     const errorType = classifyError(error);
     const fallbackReply = buildContextualFallback(errorType, context);
@@ -116,6 +116,68 @@ function buildContextualFallback(errorType, context = {}) {
   return base;
 }
 
+// ─── Text Sanitizer — removes garbled/broken characters from AI output ───────
+/**
+ * sanitizeAIText(text)
+ * Cleans AI-generated text to remove:
+ *   - Unicode replacement characters (U+FFFD → �)
+ *   - Orphan combining marks without base characters
+ *   - Non-printable control characters (except newlines/tabs)
+ *   - Chinese/CJK characters that appear due to model hallucination
+ *   - Double question marks "??" that replace dropped characters
+ *   - Excessive whitespace
+ * Preserves: Arabic, Latin, digits, punctuation, emojis, common symbols.
+ */
+function sanitizeAIText(text) {
+  if (!text || typeof text !== 'string') return text;
+
+  let cleaned = text
+    // 1. Remove Unicode replacement character
+    .replace(/\uFFFD/g, '')
+    // 2. Remove CJK Unified Ideographs (Chinese/Japanese/Korean characters — hallucination)
+    .replace(/[\u4E00-\u9FFF\u3400-\u4DBF\u2E80-\u2EFF\u3000-\u303F\u31C0-\u31EF\uF900-\uFAFF]/g, '')
+    // 2b. Remove CJK Compatibility Ideographs & Extension ranges
+    .replace(/[\u{20000}-\u{2A6DF}\u{2A700}-\u{2EBEF}\u{30000}-\u{3134F}]/gu, '')
+    // 3. Remove orphan "??" that replace dropped Arabic letters (but keep single ?)
+    .replace(/(?<=[\u0600-\u06FF\u0750-\u077F])\?{2,}(?=[\u0600-\u06FF\u0750-\u077F]|\s|$)/g, '')
+    .replace(/(?<=^|\s)\?{2,}(?=[\u0600-\u06FF\u0750-\u077F])/g, '')
+    // 3b. Remove standalone "??" sequences (not inside code/URL)
+    .replace(/(?<!\w)\?{2,}(?!\w)/g, '')
+    // 4. Remove non-printable control chars (keep \n, \t, \r)
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+    // 5. Remove zero-width characters that break Arabic rendering
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    // 5b. Remove orphan combining marks without a base character
+    .replace(/(^|[\s\n])([\u0300-\u036F\u0610-\u061A\u064B-\u065F\u0670]+)/g, '$1')
+    // 6. Collapse excessive whitespace
+    .replace(/ {3,}/g, '  ')
+    .replace(/\n{4,}/g, '\n\n\n')
+    // 7. Remove broken half-characters (isolated surrogate pairs)
+    .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g, '')
+    .replace(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '')
+    .trim();
+
+  return cleaned;
+}
+
+/**
+ * Deep-sanitize an object's string values recursively.
+ * Used on full AI response objects to clean all text fields.
+ */
+function sanitizeAIResponse(obj) {
+  if (!obj) return obj;
+  if (typeof obj === 'string') return sanitizeAIText(obj);
+  if (Array.isArray(obj)) return obj.map(sanitizeAIResponse);
+  if (typeof obj === 'object') {
+    const result = {};
+    for (const [key, value] of Object.entries(obj)) {
+      result[key] = sanitizeAIResponse(value);
+    }
+    return result;
+  }
+  return obj;
+}
+
 // ─── Response Validator ───────────────────────────────────────────────────────
 /**
  * Validates and sanitizes AI response string.
@@ -125,12 +187,12 @@ function validateResponse(response, fallback = DEFAULT_FALLBACK) {
   if (!response) return fallback;
   if (typeof response !== 'string') {
     // If it's an object with reply/text field
-    if (response?.reply) return String(response.reply).trim() || fallback;
-    if (response?.text)  return String(response.text).trim()  || fallback;
-    if (response?.raw)   return String(response.raw).trim()   || fallback;
+    if (response?.reply) return sanitizeAIText(String(response.reply).trim()) || fallback;
+    if (response?.text)  return sanitizeAIText(String(response.text).trim())  || fallback;
+    if (response?.raw)   return sanitizeAIText(String(response.raw).trim())   || fallback;
     return fallback;
   }
-  const trimmed = response.trim();
+  const trimmed = sanitizeAIText(response.trim());
   return trimmed.length > 0 ? trimmed : fallback;
 }
 
@@ -166,6 +228,8 @@ module.exports = {
   safeParseJSON,
   classifyError,
   buildContextualFallback,
+  sanitizeAIText,
+  sanitizeAIResponse,
   DEFAULT_FALLBACK,
   ERROR_TYPES,
 };

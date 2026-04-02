@@ -110,6 +110,55 @@ const UserSettings = sequelize.define('UserSettings', {
     defaultValue: true,
   },
 
+  // ── VA Channel Settings (Phase: Full Adaptive VA) ──────────────────
+  whatsapp_enabled: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: false,
+  },
+  whatsapp_phone: {
+    type: DataTypes.STRING(20),
+    allowNull: true,
+  },
+  whatsapp_frequency: {
+    type: DataTypes.STRING(10),
+    defaultValue: 'normal',
+    validate: { isIn: [['low', 'normal', 'high']] },
+  },
+  email_reports_enabled: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: true,
+  },
+  email_daily: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: true,
+  },
+  email_weekly: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: true,
+  },
+  email_frequency: {
+    type: DataTypes.STRING(15),
+    defaultValue: 'daily',
+    validate: { isIn: [['daily', 'weekly_only', 'disabled']] },
+  },
+  in_app_nudges: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: true,
+  },
+  nudge_intensity: {
+    type: DataTypes.STRING(15),
+    defaultValue: 'moderate',
+    validate: { isIn: [['gentle', 'moderate', 'persistent']] },
+  },
+  smart_silence: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: true,
+  },
+  anti_spam_enabled: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: true,
+  },
+
   // ── Privacy ─────────────────────────────────────────────────────────
   data_collection: {
     type: DataTypes.BOOLEAN,

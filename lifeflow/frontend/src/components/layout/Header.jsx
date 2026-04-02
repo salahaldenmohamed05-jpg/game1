@@ -6,7 +6,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Bell, Crown, Zap, ChevronDown, LogOut, User, Settings, X, Menu, Sun, Moon } from 'lucide-react';
+import { Bell, Crown, Zap, ChevronDown, LogOut, User, Settings, X, Menu, Sun, Moon, Search } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import useAuthStore from '../../store/authStore';
 import useThemeStore from '../../store/themeStore';
@@ -124,6 +124,20 @@ export default function Header({ onViewChange }) {
 
         {/* Right: Theme + Notifications + User */}
         <div className="flex items-center gap-3">
+
+          {/* Search Button */}
+          <button
+            onClick={() => {
+              // Dispatch Cmd+K event to open GlobalSearch
+              window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, ctrlKey: true, bubbles: true }));
+            }}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 transition-colors text-gray-400 hover:text-white"
+            title="بحث سريع (Ctrl+K)"
+          >
+            <Search size={16} />
+            <span className="text-xs hidden sm:inline">بحث...</span>
+            <kbd className="hidden sm:inline text-[10px] px-1.5 py-0.5 rounded bg-white/5 border border-white/10">K</kbd>
+          </button>
 
           {/* Theme Toggle */}
           <motion.button

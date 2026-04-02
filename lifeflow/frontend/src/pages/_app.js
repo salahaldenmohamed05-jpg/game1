@@ -19,6 +19,7 @@ import useSyncStore from '../store/syncStore';
 import { getSocketUrl } from '../utils/api';
 import Head from 'next/head';
 import ErrorBoundary from '../components/common/ErrorBoundary';
+import { initErrorTracking } from '../utils/errorTracker';
 
 /**
  * Phase G Fix: QueryClient per-instance (not module-level singleton).
@@ -30,10 +31,14 @@ function makeQueryClient() {
       queries: {
         retry: 1,
         refetchOnWindowFocus: false,
-        staleTime: 2 * 60 * 1000,
+        staleTime: 2 * 60 * 1000,       // Data is fresh for 2 minutes
+        gcTime: 10 * 60 * 1000,          // Keep unused data in cache for 10 minutes
+        refetchOnReconnect: true,         // Refetch when coming back online
+        networkMode: 'offlineFirst',      // Use cache when offline
       },
       mutations: {
         retry: 0,
+        networkMode: 'offlineFirst',
       },
     },
   });
@@ -103,6 +108,40 @@ export default function LifeFlowApp({ Component, pageProps }) {
       window.removeEventListener('error', handleGlobalError);
     };
   }, []);
+
+  // Initialize error tracking
+  useEffect(() => {
+    initErrorTracking();
+  }, []);
+
+  // Register Service Worker for PWA + Offline + Push
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').then((reg) => {
+        console.log('[LifeFlow] Service Worker registered, scope:', reg.scope);
+      }).catch((err) => {
+        console.log('[LifeFlow] Service Worker registration failed (non-critical):', err.message);
+      });
+    }
+  }, []);
+
+  // Request push notification permission when authenticated
+  useEffect(() => {
+    if (!isAuthenticated || typeof window === 'undefined') return;
+    if (!('Notification' in window)) return;
+    
+    // Only request if not already granted/denied
+    if (Notification.permission === 'default') {
+      // Delay request to avoid blocking initial render
+      const timer = setTimeout(() => {
+        Notification.requestPermission().then((perm) => {
+          console.log('[LifeFlow] Notification permission:', perm);
+        }).catch(() => {});
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [isAuthenticated]);
 
   // Initialize theme on mount (hydrate from persisted store)
   useEffect(() => {
@@ -176,6 +215,25 @@ export default function LifeFlowApp({ Component, pageProps }) {
           } catch {}
         });
 
+        // Push notification via Socket.IO → Service Worker
+        socket.on('push_notification', (payload) => {
+          try {
+            if ('Notification' in window && Notification.permission === 'granted' && navigator.serviceWorker?.controller) {
+              navigator.serviceWorker.ready.then((reg) => {
+                reg.showNotification(payload.title || 'LifeFlow', {
+                  body: payload.body || '',
+                  icon: '/favicon.ico',
+                  badge: '/favicon.ico',
+                  dir: 'rtl',
+                  lang: 'ar',
+                  tag: 'lifeflow-push',
+                  data: { url: payload.url || '/' },
+                });
+              });
+            }
+          } catch {}
+        });
+
         socket.on('proactive_message', (msg) => {
           try {
             import('react-hot-toast').then(({ default: toast }) => {
@@ -219,6 +277,9 @@ export default function LifeFlowApp({ Component, pageProps }) {
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
         <meta charSet="utf-8" />
         <link rel="icon" href="/favicon.ico" />
+        {/* DNS prefetch for faster external resource loading */}
+        <link rel="dns-prefetch" href="//fonts.googleapis.com" />
+        <link rel="dns-prefetch" href="//fonts.gstatic.com" />
       </Head>
 
       <QueryClientProvider client={queryClient}>

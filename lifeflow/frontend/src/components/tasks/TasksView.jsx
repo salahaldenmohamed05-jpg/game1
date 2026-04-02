@@ -128,7 +128,7 @@ function sortTasksByTime(tasks) {
 
 // ─── Task Item (Memoized) ──────────────────────────────────────────────────
 
-const TaskItem = memo(function TaskItem({ task, onComplete, onDelete, isRecommended, onRecommendClick }) {
+const TaskItem = memo(function TaskItem({ task, onComplete, onDelete, onEdit, isRecommended, onRecommendClick }) {
   const time = getTaskTime(task);
   const endTime = getTaskEndTime(task);
   const pri = PRIORITIES[task.priority] || PRIORITIES.medium;
@@ -226,6 +226,15 @@ const TaskItem = memo(function TaskItem({ task, onComplete, onDelete, isRecommen
 
       {/* Quick Actions — 44px touch target */}
       <div className="flex flex-col gap-1 flex-shrink-0">
+        {!isDone && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onEdit?.(task); }}
+            className="w-11 h-11 rounded-xl text-gray-600 hover:text-primary-400 hover:bg-primary-500/10 transition-all flex items-center justify-center active:scale-90"
+            aria-label="تعديل المهمة"
+          >
+            <Edit3 size={15} />
+          </button>
+        )}
         <button
           onClick={() => onDelete(task.id)}
           className="w-11 h-11 rounded-xl text-gray-600 hover:text-red-400 hover:bg-red-500/10 transition-all flex items-center justify-center active:scale-90"
@@ -317,7 +326,7 @@ function AddTaskModal({ isOpen, onClose, onSubmit, isPending }) {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" onClick={handleClose}>
+    <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center" onClick={handleClose}>
       {/* Backdrop — solid dark overlay */}
       <motion.div
         initial={{ opacity: 0 }}
@@ -332,7 +341,7 @@ function AddTaskModal({ isOpen, onClose, onSubmit, isPending }) {
         exit={{ opacity: 0, y: 100 }}
         transition={{ type: 'spring', damping: 25, stiffness: 300 }}
         onClick={e => e.stopPropagation()}
-        className="relative w-full sm:max-w-lg modal-solid rounded-t-3xl sm:rounded-2xl shadow-2xl border border-white/10 max-h-[90vh] overflow-hidden z-10"
+        className="relative w-full sm:max-w-lg modal-solid rounded-t-3xl sm:rounded-2xl shadow-2xl border border-white/10 max-h-[85vh] sm:max-h-[90vh] overflow-hidden z-10 mb-[76px] sm:mb-0"
         dir="rtl"
       >
         {/* Drag handle (mobile) */}
@@ -341,7 +350,7 @@ function AddTaskModal({ isOpen, onClose, onSubmit, isPending }) {
         </div>
 
         {/* Scrollable form content — leave room for sticky CTA */}
-        <div className="p-5 overflow-y-auto" style={{ maxHeight: 'calc(90vh - 88px)' }}>
+        <div className="p-5 overflow-y-auto" style={{ maxHeight: 'calc(85vh - 88px)' }}>
           <div className="flex items-center justify-between mb-5">
             <h3 className="text-lg font-black text-white flex items-center gap-2">
               <Plus size={18} className="text-primary-400" />
@@ -480,11 +489,122 @@ function AddTaskModal({ isOpen, onClose, onSubmit, isPending }) {
   );
 }
 
+// ─── Edit Task Modal ──────────────────────────────────────────────────────
+
+function EditTaskModal({ isOpen, onClose, task, onSubmit, isPending }) {
+  const [form, setForm] = useState({
+    title: '', category: 'personal', priority: 'medium',
+    due_date: '', due_time: '', start_time: '', end_time: '',
+  });
+  const [errors, setErrors] = useState({});
+
+  useEffect(() => {
+    if (task && isOpen) {
+      setForm({
+        title: task.title || '',
+        category: task.category || 'personal',
+        priority: task.priority || 'medium',
+        due_date: task.due_date ? new Date(task.due_date).toLocaleDateString('en-CA', { timeZone: 'Africa/Cairo' }) : '',
+        due_time: task.due_time || '',
+        start_time: task.start_time ? toCairoTime(task.start_time) || '' : '',
+        end_time: task.end_time ? toCairoTime(task.end_time) || '' : '',
+      });
+      setErrors({});
+    }
+  }, [task, isOpen]);
+
+  const validate = () => {
+    const errs = {};
+    if (!form.title.trim()) errs.title = 'ادخل عنوان المهمة';
+    if (form.start_time && form.end_time && form.start_time >= form.end_time) errs.end_time = 'وقت النهاية يجب أن يكون بعد البداية';
+    setErrors(errs);
+    return Object.keys(errs).length === 0;
+  };
+
+  const handleSubmit = () => {
+    if (!validate()) return;
+    const data = {
+      title: form.title.trim(),
+      category: form.category,
+      priority: form.priority,
+    };
+    if (form.start_time) {
+      const date = form.due_date || getTodayCairo();
+      data.start_time = `${date}T${form.start_time}:00`;
+      data.due_date = date;
+      data.due_time = form.due_time || form.start_time;
+      if (form.end_time) data.end_time = `${date}T${form.end_time}:00`;
+    } else if (form.due_date) {
+      data.due_date = form.due_date;
+      if (form.due_time) data.due_time = form.due_time;
+    }
+    onSubmit(task.id, data);
+  };
+
+  if (!isOpen || !task) return null;
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center" onClick={onClose}>
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-black/80" />
+      <motion.div
+        initial={{ opacity: 0, y: 100 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 100 }}
+        transition={{ type: 'spring', damping: 25, stiffness: 300 }}
+        onClick={e => e.stopPropagation()}
+        className="relative w-full sm:max-w-lg modal-solid rounded-t-3xl sm:rounded-2xl shadow-2xl border border-white/10 max-h-[85vh] sm:max-h-[90vh] overflow-hidden z-10 mb-[76px] sm:mb-0" dir="rtl"
+      >
+        <div className="flex justify-center pt-3 pb-1 sm:hidden"><div className="w-10 h-1 rounded-full bg-white/20" /></div>
+        <div className="p-5 overflow-y-auto" style={{ maxHeight: 'calc(90vh - 88px)' }}>
+          <div className="flex items-center justify-between mb-5">
+            <h3 className="text-lg font-black text-white flex items-center gap-2"><Edit3 size={18} className="text-primary-400" /> تعديل المهمة</h3>
+            <button onClick={onClose} className="p-2 rounded-xl hover:bg-white/10 text-gray-400 active:scale-90"><X size={18} /></button>
+          </div>
+          <div className="space-y-4">
+            <div>
+              <input value={form.title} onChange={e => { setForm({ ...form, title: e.target.value }); if (errors.title) setErrors(prev => ({ ...prev, title: undefined })); }}
+                placeholder="عنوان المهمة..." className={`w-full rounded-xl px-4 py-3.5 text-base focus:outline-none transition-all ${errors.title ? 'border-red-500 ring-2 ring-red-500/20' : ''}`} autoFocus maxLength={200} />
+              {errors.title && <p className="text-xs text-red-400 mt-1 flex items-center gap-1"><AlertCircle size={11} /> {errors.title}</p>}
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div><label className="text-xs text-gray-400 mb-1.5 block font-medium">📅 التاريخ</label><input type="date" value={form.due_date} onChange={e => setForm({ ...form, due_date: e.target.value })} className="w-full rounded-xl px-4 py-3 focus:outline-none" /></div>
+              <div><label className="text-xs text-gray-400 mb-1.5 block font-medium">⏰ الموعد</label><input type="time" value={form.due_time} onChange={e => setForm({ ...form, due_time: e.target.value })} className="w-full rounded-xl px-4 py-3 focus:outline-none" /></div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div><label className="text-xs text-gray-400 mb-1.5 block font-medium">🕐 البداية</label><input type="time" value={form.start_time} onChange={e => setForm({ ...form, start_time: e.target.value })} className="w-full rounded-xl px-4 py-3 focus:outline-none" /></div>
+              <div><label className="text-xs text-gray-400 mb-1.5 block font-medium">🏁 النهاية</label>
+                <input type="time" value={form.end_time} onChange={e => { setForm({ ...form, end_time: e.target.value }); if (errors.end_time) setErrors(prev => ({ ...prev, end_time: undefined })); }}
+                  className={`w-full rounded-xl px-4 py-3 focus:outline-none ${errors.end_time ? 'border-red-500 ring-2 ring-red-500/20' : ''}`} />
+                {errors.end_time && <p className="text-xs text-red-400 mt-1 flex items-center gap-1"><AlertCircle size={11} /> {errors.end_time}</p>}
+              </div>
+            </div>
+            <div><label className="text-xs text-gray-400 mb-1.5 block font-medium">⚡ الأولوية</label>
+              <div className="grid grid-cols-4 gap-2">{Object.entries(PRIORITIES).map(([key, p]) => (
+                <button key={key} onClick={() => setForm({ ...form, priority: key })} className={`py-2.5 rounded-xl text-xs font-bold transition-all active:scale-95 min-h-[44px] ${form.priority === key ? `${p.bg} ${p.color} border border-current/30` : 'bg-white/5 text-gray-400'}`}>{p.label}</button>
+              ))}</div>
+            </div>
+            <div><label className="text-xs text-gray-400 mb-1.5 block font-medium">📂 التصنيف</label>
+              <div className="grid grid-cols-3 gap-2">{Object.entries(CATEGORIES).map(([key, c]) => (
+                <button key={key} onClick={() => setForm({ ...form, category: key })} className={`py-2.5 rounded-xl text-xs transition-all active:scale-95 min-h-[44px] ${form.category === key ? 'bg-primary-500/20 text-primary-400 border border-primary-500/30' : 'bg-white/5 text-gray-400'}`}>{c.emoji} {c.label}</button>
+              ))}</div>
+            </div>
+          </div>
+        </div>
+        <div className="sticky bottom-0 p-5 pt-3 border-t border-white/5" style={{ background: 'inherit' }}>
+          <button onClick={handleSubmit} disabled={isPending || !form.title.trim()}
+            className="w-full py-4 font-bold rounded-xl transition-all text-base active:scale-[0.98] shadow-lg min-h-[48px] bg-primary-500 hover:bg-primary-600 text-white shadow-primary-500/20 disabled:opacity-50">
+            {isPending ? <span className="flex items-center justify-center gap-2"><RefreshCw size={16} className="animate-spin" /> جاري الحفظ...</span> : '💾 حفظ التعديلات'}
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
 // ─── Main TasksView ─────────────────────────────────────────────────────────
 
 export default function TasksView() {
   const [viewMode, setViewMode] = useState('today');
   const [showAdd, setShowAdd] = useState(false);
+  const [editingTask, setEditingTask] = useState(null);
   const [collapsedSections, setCollapsedSections] = useState({});
   const queryClient = useQueryClient();
   const { invalidateAll, recordAction } = useSyncStore();
@@ -552,8 +672,21 @@ export default function TasksView() {
     },
   });
 
+  const updateMutation = useMutation({
+    mutationFn: ({ id, data }) => taskAPI.updateTask(id, data),
+    onSuccess: () => {
+      invalidateAll();
+      recordAction('task_updated');
+      toast.success('تم تعديل المهمة ✏️');
+      setEditingTask(null);
+    },
+    onError: (e) => toast.error(e.message || 'فشل في التعديل'),
+  });
+
   const handleComplete = useCallback((id) => completeMutation.mutate(id), [completeMutation]);
   const handleDelete = useCallback((id) => deleteMutation.mutate(id), [deleteMutation]);
+  const handleEdit = useCallback((task) => setEditingTask(task), []);
+  const handleUpdate = useCallback((id, data) => updateMutation.mutate({ id, data }), [updateMutation]);
 
   // Log recommendation click
   const handleRecommendClick = useCallback((id) => {
@@ -568,11 +701,20 @@ export default function TasksView() {
 
   // Extract data from backend response and re-sort by time
   const overdueTasks = data?.overdue || [];
-  const todayTasks = useMemo(() => sortTasksByTime(data?.today || []), [data?.today]);
+  const allTodayTasks = data?.today || [];
+  // Separate today's pending from today's completed
+  const todayPending = useMemo(() => sortTasksByTime(allTodayTasks.filter(t => t.status !== 'completed')), [allTodayTasks]);
+  const todayCompleted = useMemo(() => allTodayTasks.filter(t => t.status === 'completed'), [allTodayTasks]);
   const upcomingTasks = data?.upcoming || [];
-  const completedTasks = data?.completed || [];
+  // "All completed" = backend completed minus today's completed (avoid duplicates)
+  const allCompleted = useMemo(() => {
+    const todayCompletedIds = new Set(todayCompleted.map(t => t.id));
+    return (data?.completed || []).filter(t => !todayCompletedIds.has(t.id));
+  }, [data?.completed, todayCompleted]);
   const recommendedId = data?.recommendedTaskId;
   const stats = data?.stats || {};
+  // Fix completed count: only count actual completed tasks for today
+  const actualCompletedToday = todayCompleted.length;
 
   // Mark overdue tasks for display
   const overdueWithFlag = useMemo(() =>
@@ -582,9 +724,9 @@ export default function TasksView() {
 
   // Determine visible groups based on viewMode
   const showUpcoming = viewMode === 'all';
-  const showCompleted = viewMode === 'all';
+  const showAllCompleted = viewMode === 'all';
 
-  const isEmpty = overdueTasks.length === 0 && todayTasks.length === 0 &&
+  const isEmpty = overdueTasks.length === 0 && todayPending.length === 0 &&
     (!showUpcoming || upcomingTasks.length === 0);
 
   return (
@@ -597,10 +739,10 @@ export default function TasksView() {
             📋 المهام
           </h2>
           <p className="text-xs text-gray-400 mt-0.5">
-            {stats.today || 0} اليوم
-            {stats.overdue > 0 && <span className="text-red-400 font-bold"> · {stats.overdue} متأخرة</span>}
-            {stats.upcoming > 0 && <span> · {stats.upcoming} قادمة</span>}
-            {' · '}{stats.completed || 0} مكتملة
+            {todayPending.length} اليوم
+            {overdueTasks.length > 0 && <span className="text-red-400 font-bold"> · {overdueTasks.length} متأخرة</span>}
+            {upcomingTasks.length > 0 && <span> · {upcomingTasks.length} قادمة</span>}
+            {' · '}{actualCompletedToday} مكتملة اليوم
           </p>
         </div>
         <button onClick={() => setShowAdd(true)}
@@ -638,7 +780,9 @@ export default function TasksView() {
       ) : (
         <div className="space-y-4">
 
-          {/* Overdue section */}
+          {/* ═══ SECTION ORDER: Overdue → Today Pending → Completed Today → All Completed → Upcoming ═══ */}
+
+          {/* 1. Overdue section */}
           {overdueWithFlag.length > 0 && (
             <div>
               <SectionHeader
@@ -657,6 +801,7 @@ export default function TasksView() {
                         isRecommended={recommendedId === t.id}
                         onComplete={handleComplete}
                         onDelete={handleDelete}
+                        onEdit={handleEdit}
                         onRecommendClick={handleRecommendClick} />
                     ))}
                   </AnimatePresence>
@@ -665,30 +810,31 @@ export default function TasksView() {
             </div>
           )}
 
-          {/* Today section */}
+          {/* 2. Today section (pending only) */}
           <div>
             <SectionHeader
               icon="📅"
-              label="اليوم"
-              count={todayTasks.length}
+              label="مهام اليوم"
+              count={todayPending.length}
               color="text-white"
               collapsed={collapsedSections.today}
               onToggle={() => toggleSection('today')}
             />
-            {!collapsedSections.today && todayTasks.length > 0 && (
+            {!collapsedSections.today && todayPending.length > 0 && (
               <div className="space-y-2">
                 <AnimatePresence mode="popLayout">
-                  {todayTasks.map(t => (
+                  {todayPending.map(t => (
                     <TaskItem key={t.id} task={t}
                       isRecommended={recommendedId === t.id}
                       onComplete={handleComplete}
                       onDelete={handleDelete}
+                      onEdit={handleEdit}
                       onRecommendClick={handleRecommendClick} />
                   ))}
                 </AnimatePresence>
               </div>
             )}
-            {!collapsedSections.today && todayTasks.length === 0 && overdueTasks.length === 0 && (
+            {!collapsedSections.today && todayPending.length === 0 && overdueTasks.length === 0 && (
               <div className="text-center py-8">
                 <div className="text-4xl mb-3">☀️</div>
                 <p className="text-sm text-gray-400">لا توجد مهام لليوم</p>
@@ -700,7 +846,64 @@ export default function TasksView() {
             )}
           </div>
 
-          {/* Upcoming section (all mode only) */}
+          {/* 3. Completed today section — ALWAYS shown (both today & all modes) */}
+          {todayCompleted.length > 0 && (
+            <div>
+              <SectionHeader
+                icon="✅"
+                label="مكتملة اليوم"
+                count={actualCompletedToday}
+                color="text-green-500"
+                collapsed={!!collapsedSections.todayCompleted}
+                onToggle={() => toggleSection('todayCompleted')}
+              />
+              {!collapsedSections.todayCompleted && (
+                <div className="space-y-2">
+                  {todayCompleted.map(t => (
+                    <TaskItem key={t.id} task={t}
+                      isRecommended={false}
+                      onComplete={() => {}}
+                      onDelete={handleDelete}
+                      onEdit={handleEdit}
+                      onRecommendClick={() => {}} />
+                  ))}
+                  <div className="text-center py-2">
+                    <p className="text-xs text-green-400/70">
+                      🎉 {actualCompletedToday} {actualCompletedToday === 1 ? 'مهمة مكتملة' : 'مهام مكتملة'} اليوم
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 4. All completed section (in 'all' view mode) — shown BEFORE upcoming */}
+          {showAllCompleted && allCompleted.length > 0 && (
+            <div>
+              <SectionHeader
+                icon="🏆"
+                label="كل المكتملة"
+                count={allCompleted.length}
+                color="text-gray-400"
+                collapsed={collapsedSections.allCompleted !== false}
+                onToggle={() => toggleSection('allCompleted')}
+              />
+              {collapsedSections.allCompleted === false && (
+                <div className="space-y-2">
+                  {allCompleted.slice(0, 20).map(t => (
+                    <TaskItem key={t.id} task={t}
+                      isRecommended={false}
+                      onComplete={() => {}}
+                      onDelete={handleDelete}
+                      onEdit={handleEdit}
+                      onRecommendClick={() => {}} />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 5. Upcoming section (all mode only) — shown LAST */}
           {showUpcoming && upcomingTasks.length > 0 && (
             <div>
               <SectionHeader
@@ -719,34 +922,10 @@ export default function TasksView() {
                         isRecommended={false}
                         onComplete={handleComplete}
                         onDelete={handleDelete}
+                        onEdit={handleEdit}
                         onRecommendClick={handleRecommendClick} />
                     ))}
                   </AnimatePresence>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Completed section (all mode, collapsible) */}
-          {showCompleted && completedTasks.length > 0 && (
-            <div>
-              <SectionHeader
-                icon="✅"
-                label="مكتملة"
-                count={completedTasks.length}
-                color="text-gray-500"
-                collapsed={collapsedSections.completed !== false}
-                onToggle={() => toggleSection('completed')}
-              />
-              {collapsedSections.completed === false && (
-                <div className="space-y-2">
-                  {completedTasks.slice(0, 10).map(t => (
-                    <TaskItem key={t.id} task={t}
-                      isRecommended={false}
-                      onComplete={() => {}}
-                      onDelete={handleDelete}
-                      onRecommendClick={() => {}} />
-                  ))}
                 </div>
               )}
             </div>
@@ -774,6 +953,14 @@ export default function TasksView() {
         {showAdd && (
           <AddTaskModal isOpen={showAdd} onClose={() => setShowAdd(false)}
             onSubmit={d => createMutation.mutate(d)} isPending={createMutation.isPending} />
+        )}
+      </AnimatePresence>
+
+      {/* Edit Task Modal */}
+      <AnimatePresence>
+        {editingTask && (
+          <EditTaskModal isOpen={!!editingTask} onClose={() => setEditingTask(null)}
+            task={editingTask} onSubmit={handleUpdate} isPending={updateMutation.isPending} />
         )}
       </AnimatePresence>
     </div>

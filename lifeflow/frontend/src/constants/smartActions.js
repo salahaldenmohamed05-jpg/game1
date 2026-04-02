@@ -84,6 +84,6 @@ export const QUICK_HINTS = SMART_ACTIONS.map(a => a.label + '...');
 export const WELCOME_MSG = {
   id: 'welcome',
   role: 'assistant',
-  content: 'أهلاً! أنا مساعدك الذكي في LifeFlow\n\nأعرف مهامك، عاداتك، مزاجك وطاقتك. اسألني أي شيء!',
-  suggestions: ['اعطيني خطة اليوم', 'أفضل إجراء الآن', 'كيف طاقتي؟'],
+  content: 'أهلاً! 👋 أنا عارف كل حاجة عن مهامك وعاداتك وطاقتك. قولّي عايز تعمل إيه!',
+  suggestions: ['ابدأ يومي', 'إيه الأهم دلوقتي؟', 'طاقتي عاملة إزاي؟'],
 };

@@ -210,7 +210,7 @@ function AddHabitModal({ isOpen, onClose, onSubmit, isPending }) {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" onClick={onClose}>
+    <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center" onClick={onClose}>
       {/* Backdrop — solid dark overlay */}
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
         className="absolute inset-0 bg-black/80" />
@@ -221,7 +221,7 @@ function AddHabitModal({ isOpen, onClose, onSubmit, isPending }) {
         exit={{ opacity: 0, y: 100 }}
         transition={{ type: 'spring', damping: 25, stiffness: 300 }}
         onClick={e => e.stopPropagation()}
-        className="relative w-full sm:max-w-lg modal-solid rounded-t-3xl sm:rounded-2xl shadow-2xl border border-white/10 max-h-[90vh] overflow-hidden z-10"
+        className="relative w-full sm:max-w-lg modal-solid rounded-t-3xl sm:rounded-2xl shadow-2xl border border-white/10 max-h-[85vh] sm:max-h-[90vh] overflow-hidden z-10 mb-[76px] sm:mb-0"
         dir="rtl"
       >
         {/* Drag handle */}

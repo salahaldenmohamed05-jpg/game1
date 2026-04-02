@@ -164,21 +164,133 @@ router.post('/', writeLimiter, validateCalendarEvent, async (req, res) => {
 });
 
 router.get('/google/auth', async (req, res) => {
-  const setupGuide = {
-    step1: 'اذهب إلى https://console.cloud.google.com/',
-    step2: 'أنشئ مشروعاً جديداً',
-    step3: 'فعّل Google Calendar API',
-    step4: 'أنشئ OAuth 2.0 credentials',
-    step5: 'أضف GOOGLE_CLIENT_ID و GOOGLE_CLIENT_SECRET و GOOGLE_REDIRECT_URI في backend/.env',
-    step6: 'أعد تشغيل الخادم',
-  };
-  res.json({
-    success: true,
-    status: 'setup_required',
-    message: 'يحتاج إعداد Google OAuth',
-    setup_guide: setupGuide,
-    setup_url: 'https://console.cloud.google.com/',
-  });
+  try {
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    const redirectUri = process.env.GOOGLE_REDIRECT_URI;
+
+    if (!clientId || !redirectUri) {
+      return res.json({
+        success: true,
+        status: 'setup_required',
+        message: 'يحتاج إعداد Google OAuth — أضف GOOGLE_CLIENT_ID و GOOGLE_CLIENT_SECRET و GOOGLE_REDIRECT_URI',
+        setup_guide: {
+          step1: 'اذهب إلى https://console.cloud.google.com/',
+          step2: 'أنشئ مشروعاً وفعّل Google Calendar API',
+          step3: 'أنشئ OAuth 2.0 credentials',
+          step4: 'أضف المتغيرات في backend/.env',
+        },
+        setup_url: 'https://console.cloud.google.com/',
+      });
+    }
+
+    const { google } = require('googleapis');
+    const oauth2Client = new google.auth.OAuth2(clientId, process.env.GOOGLE_CLIENT_SECRET, redirectUri);
+    const authUrl = oauth2Client.generateAuthUrl({
+      access_type: 'offline',
+      scope: ['https://www.googleapis.com/auth/calendar.readonly', 'https://www.googleapis.com/auth/calendar.events'],
+      state: req.user.id,
+      prompt: 'consent',
+    });
+
+    res.json({ success: true, status: 'redirect', auth_url: authUrl });
+  } catch (err) {
+    logger.error('[CALENDAR] Google auth error:', err.message);
+    res.status(500).json({ success: false, message: 'خطأ في إعداد Google Calendar' });
+  }
+});
+
+// Google OAuth callback
+router.get('/google/callback', async (req, res) => {
+  try {
+    const { code, state: userId } = req.query;
+    if (!code) return res.status(400).json({ success: false, message: 'Missing authorization code' });
+
+    const { google } = require('googleapis');
+    const oauth2Client = new google.auth.OAuth2(
+      process.env.GOOGLE_CLIENT_ID,
+      process.env.GOOGLE_CLIENT_SECRET,
+      process.env.GOOGLE_REDIRECT_URI
+    );
+    const { tokens } = await oauth2Client.getToken(code);
+    oauth2Client.setCredentials(tokens);
+
+    // Store tokens in connected integrations
+    try {
+      const ConnectedIntegration = require('../models/connected_integration.model');
+      await ConnectedIntegration.upsert({
+        user_id: userId,
+        integration_type: 'google_calendar',
+        display_name: 'Google Calendar',
+        is_active: true,
+        credentials: JSON.stringify(tokens),
+        last_synced: new Date(),
+      });
+    } catch (e) {
+      logger.warn('[CALENDAR] Store integration error:', e.message);
+    }
+
+    // Redirect back to app
+    res.redirect('/?view=calendar&google_connected=true');
+  } catch (err) {
+    logger.error('[CALENDAR] Google callback error:', err.message);
+    res.status(500).json({ success: false, message: 'خطأ في ربط Google Calendar' });
+  }
+});
+
+// Sync Google Calendar events
+router.post('/google/sync', async (req, res) => {
+  try {
+    const ConnectedIntegration = require('../models/connected_integration.model');
+    const integration = await ConnectedIntegration.findOne({
+      where: { user_id: req.user.id, integration_type: 'google_calendar', is_active: true },
+    });
+
+    if (!integration || !integration.credentials) {
+      return res.json({ success: false, message: 'Google Calendar غير مربوط. يرجى الربط أولاً.', status: 'not_connected' });
+    }
+
+    const { google } = require('googleapis');
+    const oauth2Client = new google.auth.OAuth2(
+      process.env.GOOGLE_CLIENT_ID,
+      process.env.GOOGLE_CLIENT_SECRET,
+      process.env.GOOGLE_REDIRECT_URI
+    );
+    const tokens = JSON.parse(integration.credentials);
+    oauth2Client.setCredentials(tokens);
+
+    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+    const response = await calendar.events.list({
+      calendarId: 'primary',
+      timeMin: new Date().toISOString(),
+      maxResults: 50,
+      singleEvents: true,
+      orderBy: 'startTime',
+    });
+
+    const events = (response.data.items || []).map(evt => ({
+      id: `gcal_${evt.id}`,
+      title: evt.summary || 'بدون عنوان',
+      start: evt.start?.dateTime || evt.start?.date,
+      end: evt.end?.dateTime || evt.end?.date,
+      source: 'google_calendar',
+      type: 'external',
+      color: '#4285F4',
+      location: evt.location,
+      description: evt.description,
+    }));
+
+    // Update last_synced
+    await integration.update({ last_synced: new Date() });
+
+    res.json({
+      success: true,
+      data: { events, total: events.length },
+      message: `تم مزامنة ${events.length} حدث من Google Calendar`,
+    });
+  } catch (err) {
+    logger.error('[CALENDAR] Google sync error:', err.message);
+    res.status(500).json({ success: false, message: 'خطأ في المزامنة مع Google Calendar' });
+  }
 });
 
 router.get('/outlook/auth', async (req, res) => {

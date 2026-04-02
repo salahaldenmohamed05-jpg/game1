@@ -40,6 +40,12 @@ function getPlanning() {
 function getDecisionEngine() {
   try { return require('./decision.engine.service'); } catch (_e) { logger.debug(`[ORCHESTRATOR_SERVICE] Module './decision.engine.service' not available: ${_e.message}`); return null; }
 }
+function getUnifiedDecision() {
+  try { return require('./unified.decision.service'); } catch (_e) { logger.debug(`[ORCHESTRATOR_SERVICE] Module './unified.decision.service' not available: ${_e.message}`); return null; }
+}
+function getLLMOrchestrator() {
+  try { return require('./llm.orchestrator.service'); } catch (_e) { logger.debug(`[ORCHESTRATOR_SERVICE] Module './llm.orchestrator.service' not available: ${_e.message}`); return null; }
+}
 function getExplainability() {
   try { return require('./explainability.service'); } catch (_e) { logger.debug(`[ORCHESTRATOR_SERVICE] Module './explainability.service' not available: ${_e.message}`); return null; }
 }
@@ -58,6 +64,287 @@ function getEnergyService() {
 }
 function getExecutionEngine() {
   try { return require('./execution.engine.service'); } catch (_e) { return null; }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DECISION-DRIVEN QUERY DETECTION
+// Detect whether the user is asking "what should I do?" type questions
+// These MUST be answered from the Decision Engine, never from LLM alone.
+// ═══════════════════════════════════════════════════════════════════════════════
+const DECISION_QUERY_PATTERNS = [
+  // Arabic: what should I do / what's next / start my day
+  'ايش اسوي', 'ايش أسوي', 'اعمل ايه', 'أعمل إيه', 'أعمل ايه', 'اعمل إيه',
+  'ابدأ بايه', 'أبدأ بإيه', 'ابدأ بإيه', 'أبدأ بايه', 'ابدأ يومي', 'ابدأ اليوم',
+  'ايه الأهم', 'ايش الاهم', 'إيه الأهم', 'الأهم الحين', 'المهم دلوقتي',
+  'ايه اللي أعمله', 'ايش اسوي دحين', 'أبدأ بأيه', 'اقترح', 'اقترح لي',
+  'شغلني', 'وجّهني', 'ايه الخطوة', 'الخطوة الجاية', 'ايه التالي', 'ايش التالي',
+  'أعمل ايش', 'ابدأ من وين', 'اسوي ايش', 'ايش أسوي الحين',
+  'ايش أبدأ', 'ابدأ بأي', 'ما المهمة', 'وش اسوي', 'وش أسوي',
+  'ابدأ في ايه', 'ابدأ في إيه', 'ايه المهمة', 'المهمة الجاية',
+  'عايز ابدأ', 'محتاج ابدأ', 'عاوز أشتغل',
+  'كيف حالي', 'كيف وضعي', 'كيف يومي', 'وضعي اليوم', 'حالتي اليوم',
+  'طاقتي', 'تركيزي', 'إنتاجيتي',
+  'ايه اهم حاجة', 'ايه أهم حاجة', 'اهم حاجة',
+  // English fallbacks
+  'what should i do', 'what next', 'start my day', 'what\'s next',
+  'next task', 'what to do', 'suggest', 'guide me',
+];
+
+function isDecisionQuery(message) {
+  const lower = message.toLowerCase().trim();
+  return DECISION_QUERY_PATTERNS.some(p => lower.includes(p));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RESPONSE SANITIZATION — Phase Q
+// Strips non-Arabic/non-Latin characters (Chinese, Japanese, Korean etc.)
+// Removes canned bot phrases that make the assistant sound robotic.
+// ═══════════════════════════════════════════════════════════════════════════════
+const BANNED_PHRASES = [
+  'أنا هنا عشان أساعدك', 'أنا هنا لمساعدتك', 'لا تتردد', 'بكل سرور',
+  'يسعدني مساعدتك', 'يسعدني', 'هل تحتاج مساعدة أخرى', 'هل هناك شيء آخر',
+  'إذا كنت تحتاج أي شيء', 'أتمنى لك يوماً سعيداً', 'أتمنى لك يومًا',
+  'شكراً لاستخدامك', 'شكرا لاستخدامك',
+  'في خدمتك', 'تحت أمرك دائماً',
+];
+
+function sanitizeReply(text) {
+  if (!text || typeof text !== 'string') return text;
+
+  // Remove Chinese/Japanese/Korean characters (CJK Unified Ideographs + extensions)
+  let clean = text.replace(/[\u4E00-\u9FFF\u3400-\u4DBF\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\uF900-\uFAFF\u2E80-\u2EFF]+/g, '');
+
+  // Remove banned bot phrases
+  for (const phrase of BANNED_PHRASES) {
+    clean = clean.replace(new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '');
+  }
+
+  // Clean up multiple spaces/newlines from removals
+  clean = clean.replace(/\n{3,}/g, '\n\n').replace(/ {2,}/g, ' ').trim();
+
+  return clean;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SESSION-LEVEL REPETITION TRACKER (Phase N — Phase 6)
+// Tracks recent reply structures per user to avoid repeating phrasing.
+// ═══════════════════════════════════════════════════════════════════════════════
+const _replyHistory = new Map(); // userId → { replies: string[], structureIdx: number, nudgeIdx: number }
+const MAX_REPLY_HISTORY = 8;
+
+function getReplySession(userId) {
+  if (!_replyHistory.has(userId)) {
+    _replyHistory.set(userId, { replies: [], structureIdx: 0, nudgeIdx: 0, greetIdx: 0, ts: Date.now() });
+  }
+  const s = _replyHistory.get(userId);
+  // Reset if stale (>30 min)
+  if (Date.now() - s.ts > 30 * 60 * 1000) {
+    s.replies = []; s.structureIdx = 0; s.nudgeIdx = 0; s.greetIdx = 0;
+  }
+  s.ts = Date.now();
+  return s;
+}
+
+function recordReply(userId, reply) {
+  const s = getReplySession(userId);
+  s.replies.push(reply.slice(0, 120)); // store fingerprint
+  if (s.replies.length > MAX_REPLY_HISTORY) s.replies.shift();
+}
+
+function pickRotating(arr, session, key) {
+  const idx = session[key] % arr.length;
+  session[key] = (session[key] + 1) % (arr.length * 3); // cycle through 3x before repeating
+  return arr[idx];
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BEHAVIOR-AWARE EXECUTION COACH (Phase N — Phases 1-5)
+// Replaces the old templated buildDecisionDrivenReply.
+// Generates dynamic, human, situational, behavior-driven replies.
+// No fixed templates. No repeated sentence structures.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── Micro-coaching nudges (Phase Q — more natural, less preachy) ──
+const MICRO_NUDGES = [
+  'اقفل الموبايل وركّز',
+  'ابدأ 5 دقايق بس وشوف إيه اللي هيحصل',
+  'اشرب ماية وابدأ على طول',
+  'حط تايمر 10 دقايق وادخل فيها',
+  'افتح المهمة واكتب أول سطر',
+  'ماتفكرش كتير — ابدأ وبس',
+  'لو خلصتها هتحس بارتياح',
+  'الخطوة الأولى هي الأصعب وانت عملتها خلاص',
+  'جرّب تشتغل 15 دقيقة بس',
+  'ركّز على المهمة دي بس',
+];
+
+// ── Behavioral greeting pools (varied per state, Phase Q — pure Egyptian) ──
+const GREETINGS = {
+  avoidance: [
+    (n, d) => `${n}، بلاش تأجيل… المهمة دي متأخرة ${d} يوم`,
+    (n, d) => `${n}، لاحظت إنك بتأجل — عادي بس خلينا نبدأ دلوقتي`,
+    (n) => `${n}، مش هسألك ليه — بس يلا نبدأ`,
+    (n) => `${n}، كفاية تأجيل — نبدأ في حاجة صغيرة`,
+    (n, d) => `${n}، المهمة مستنياك من ${d} يوم. يلا بينا`,
+  ],
+  overwhelmed: [
+    (n) => `${n}، مش محتاج تعمل كل ده… نبدأ بحاجة صغيرة`,
+    (n) => `${n}، الحمل كبير — بس المطلوب منك حاجة واحدة بس`,
+    (n) => `${n}، سيب كل حاجة وركّز على اللي هقولك عليه`,
+    (n) => `${n}، عارف إن الضغط كبير — خلينا نسهّلها عليك`,
+  ],
+  productive: [
+    (n) => `${n}، ماشي كويس… يلا نرفع المستوى`,
+    (n) => `${n}، الزخم ده ممتاز — استغله في حاجة صعبة`,
+    (n) => `${n}، أداؤك النهارده قوي — كمّل كده`,
+    (n) => `${n}، فرصة تخلص المهمة الصعبة وانت في أحسن حالاتك`,
+  ],
+  coasting: [
+    (n) => `${n}، أنجزت مهام سهلة — بس الشغل الحقيقي لسه`,
+    (n) => `${n}، كفاية مهام خفيفة. يلا ندخل في الجد`,
+    (n) => `${n}، انت جاهز لتحدي أكبر — ماتضيعش طاقتك على السهل`,
+  ],
+  low_energy: [
+    (n) => `${n}، طاقتك مش عالية — عشان كده اخترنا حاجة خفيفة`,
+    (n) => `${n}، جسمك محتاج رفق — نشتغل بالراحة`,
+    (n) => `${n}، مش لازم تحمّل نفسك فوق طاقتك`,
+  ],
+  focused: [
+    (n) => `${n}، تركيزك عالي دلوقتي — ادخل في وضع الشغل العميق`,
+    (n) => `${n}، استغل حالة التركيز دي — ماتضيعهاش`,
+    (n) => `${n}، أحسن وقت للمهام الثقيلة — تركيزك في القمة`,
+  ],
+  starting: [
+    (n) => `${n}، يلا نبدأ — دي أهم حاجة دلوقتي`,
+    (n) => `${n}، جاهز؟ يلا نخلص الأهم الأول`,
+    (n) => `${n}، يلا نبدأ يومك صح`,
+  ],
+};
+
+// ── Response structure variants (Phase 3) ──
+// Each returns a function(parts) → string to avoid template repetition
+const RESPONSE_STRUCTURES = [
+  // Structure A: Direct command → reason → nudge
+  (p) => [p.greeting, p.taskDirective, p.reason, p.nudge].filter(Boolean).join('\n'),
+  // Structure B: Greeting + task inline → signal + nudge
+  (p) => [p.greeting, `${p.taskDirective}\n${p.reason}`, `${p.signalLine} — ${p.nudge}`].filter(Boolean).join('\n'),
+  // Structure C: Short push → task → alternative
+  (p) => [p.greeting, p.taskDirective, p.nudge, p.alternative].filter(Boolean).join('\n'),
+  // Structure D: Reason first → task → nudge
+  (p) => [p.reason, p.taskDirective, p.greeting, p.nudge].filter(Boolean).join('\n'),
+  // Structure E: Challenge/question → task → signal
+  (p) => [p.greeting, p.taskDirective, p.signalLine, p.nudge].filter(Boolean).join('\n'),
+];
+
+function buildDecisionDrivenReply(decision, userName, userId) {
+  const name = userName || 'صديقي';
+  const focus = decision.currentFocus;
+  const why = decision.why || [];
+  const nextSteps = focus?.next_steps || [];
+  const signals = decision.signalsUsed || {};
+  const behavior = decision.behaviorState || {};
+  const alternatives = decision.alternatives || [];
+
+  const session = getReplySession(userId || 'default');
+
+  // ── Detect behavioral mode (Phase 2) ──
+  const energy = signals.energy || 50;
+  const focusVal = signals.focus || 50;
+  const burnout = signals.burnout || 0;
+  const procrastination = signals.procrastination || 0;
+  const rawState = behavior.state || 'starting';
+
+  let mode;
+  if (rawState === 'avoidance' || procrastination >= 0.5) mode = 'avoidance';
+  else if (rawState === 'overwhelmed' || (signals.overwhelm || 0) >= 0.6) mode = 'overwhelmed';
+  else if (rawState === 'productive' && (signals.completion || 0) >= 0.6) mode = 'productive';
+  else if (rawState === 'coasting') mode = 'coasting';
+  else if (energy < 35 || burnout >= 0.5) mode = 'low_energy';
+  else if (focusVal >= 70 && energy >= 60) mode = 'focused';
+  else mode = rawState === 'productive' ? 'productive' : 'starting';
+
+  // ── Build overdue days context (Phase 4) ──
+  let daysOverdue = 0;
+  if (focus.due_date) {
+    const now = new Date();
+    const due = new Date(focus.due_date);
+    daysOverdue = Math.max(0, Math.floor((now - due) / 86400000));
+  }
+
+  // ── Greeting (Phase 2 — varied by mode) ──
+  const greetPool = GREETINGS[mode] || GREETINGS.starting;
+  const greetFn = pickRotating(greetPool, session, 'greetIdx');
+  const greeting = greetFn(name, daysOverdue);
+
+  // ── Task directive (Phase Q — natural Egyptian, not raw data) ──
+  let taskDirective = '';
+  if (focus.type === 'task') {
+    const dur = focus.estimated_duration ? ` (${focus.estimated_duration} دقيقة)` : '';
+    if (mode === 'avoidance' && daysOverdue > 0) {
+      taskDirective = `📌 "${focus.title}"${dur} — متأخرة ${daysOverdue} يوم. ابدأها دلوقتي.`;
+    } else if (mode === 'overwhelmed') {
+      taskDirective = `دي بس: "${focus.title}"${dur}. سيب أي حاجة تانية.`;
+    } else if (mode === 'productive') {
+      taskDirective = `🎯 "${focus.title}"${dur} — التحدي اللي يستاهل طاقتك.`;
+    } else if (mode === 'coasting') {
+      taskDirective = `التحدي الحقيقي: "${focus.title}"${dur}. الوقت دلوقتي.`;
+    } else if (mode === 'low_energy') {
+      taskDirective = `مهمة خفيفة: "${focus.title}"${dur}.`;
+    } else {
+      taskDirective = `📌 "${focus.title}"${dur}`;
+    }
+  } else if (focus.type === 'habit') {
+    taskDirective = `🔄 "${focus.title}" — سلسلة ${focus.streak || 0} يوم. ماتقطعهاش.`;
+  } else if (focus.type === 'break') {
+    taskDirective = '💆 جسمك محتاج راحة. وقّف كل حاجة وارتاح 15 دقيقة.';
+  } else if (focus.type === 'celebration') {
+    taskDirective = '🎉 خلّصت كل حاجة! كافئ نفسك — تستاهل.';
+  }
+
+  // ── Reason — one line, natural, not a data dump (Phase 4) ──
+  let reason = '';
+  if (why.length > 0) {
+    // Pick the most relevant reason, not all of them
+    const bestReason = why[0];
+    // If reason has task name already, use it; otherwise add context
+    reason = bestReason;
+  }
+
+  // ── Signal line — only when relevant, not always (Phase 4) ──
+  let signalLine = '';
+  if (mode === 'low_energy') {
+    signalLine = `⚡ طاقة ${energy}% — عشان كده اخترنا حاجة تناسبك`;
+  } else if (mode === 'focused') {
+    signalLine = `🎯 تركيز ${focusVal}% + طاقة ${energy}% — حالتك مثالية للشغل العميق`;
+  } else if (burnout >= 0.5) {
+    signalLine = `⚠️ إجهاد ${Math.round(burnout * 100)}% — لازم تراعي نفسك`;
+  }
+  // For other modes, don't dump signals — keep it human
+
+  // ── Micro-coaching nudge (Phase 5) ──
+  const nudge = `💡 ${pickRotating(MICRO_NUDGES, session, 'nudgeIdx')}`;
+
+  // ── Alternative (only sometimes) ──
+  let alternative = '';
+  if (alternatives.length > 0 && focus.type !== 'celebration' && Math.random() > 0.4) {
+    alternative = `بديل: "${alternatives[0].title}"`;
+  }
+
+  // ── Pick response structure (Phase 3 + Phase 6) ──
+  const structureFn = pickRotating(RESPONSE_STRUCTURES, session, 'structureIdx');
+  const reply = structureFn({
+    greeting,
+    taskDirective,
+    reason,
+    signalLine,
+    nudge,
+    alternative,
+  });
+
+  // Record for repetition avoidance (Phase 6)
+  recordReply(userId || 'default', reply);
+
+  return reply;
 }
 
 // ─── Mode Detection ───────────────────────────────────────────────────────────
@@ -97,16 +384,31 @@ function buildContextBlock(ctx, profile, historyStr, snapshot = null, learningPr
   parts.push(`المزاج اليوم: ${ctx.todayMood ? ctx.todayMood + '/10' : 'لم يُسجَّل'}`);
   parts.push(`الإنتاجية (7 أيام): ${ctx.productivity || 55}/100`);
 
-  // Tasks — Phase 6: inject REAL task details
+  // Tasks — Phase 6+Q: inject REAL task details with full context for AI awareness
   if (ctx.tasks?.length > 0) {
     parts.push(`مهام معلقة: ${ctx.tasks.length}`);
-    // List actual task titles so AI references them
-    const taskList = ctx.tasks.slice(0, 5).map(t => {
+    // List actual task details so AI understands the NATURE of each task
+    const taskDetails = ctx.tasks.slice(0, 5).map(t => {
       let info = `"${t.title}" (${t.priority || 'medium'})`;
+      if (t.category) info += ` [${t.category}]`;
+      if (t.description) info += ` — ${t.description.slice(0, 120)}`;
+      if (t.estimated_duration) info += ` (${t.estimated_duration} دقيقة)`;
       if (t.start_time) info += ` الساعة ${new Date(t.start_time).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Cairo' })}`;
+      if (t.subtasks?.length > 0) info += ` (${t.subtasks.length} خطوات فرعية)`;
+      // Auto-classify task nature for AI awareness
+      const titleLower = (t.title || '').toLowerCase();
+      const descLower = (t.description || '').toLowerCase();
+      const combined = titleLower + ' ' + descLower;
+      if (/مذاكر|دراس|مراجع|امتحان|study|exam|review/.test(combined)) info += ' [طبيعة: مذاكرة]';
+      else if (/كود|برمج|develop|code|debug|pr|deploy|git/.test(combined)) info += ' [طبيعة: برمجة]';
+      else if (/رياض|تمرين|gym|sport|exercise|جري|مشي/.test(combined)) info += ' [طبيعة: رياضة]';
+      else if (/اجتماع|meeting|call|مكالم|zoom/.test(combined)) info += ' [طبيعة: اجتماع]';
+      else if (/قراء|كتاب|read|book/.test(combined)) info += ' [طبيعة: قراءة]';
+      else if (/كتاب|مقال|تقرير|report|writ|blog/.test(combined)) info += ' [طبيعة: كتابة]';
+      else if (/تصميم|design|creative|فوتوشوب|figma/.test(combined)) info += ' [طبيعة: تصميم]';
       return info;
-    }).join(' | ');
-    parts.push(`قائمة المهام: ${taskList}`);
+    }).join('\n- ');
+    parts.push(`قائمة المهام:\n- ${taskDetails}`);
   }
   if (ctx.urgentTasks?.length > 0) {
     parts.push(`مهام عاجلة: ${ctx.urgentTasks.length} (${ctx.urgentTasks.slice(0, 3).map(t => t.title).join('، ')})`);
@@ -285,9 +587,114 @@ async function orchestrate({
       }
     } catch (_e) { logger.debug(`[ORCHESTRATOR_SERVICE] Non-critical operation failed: ${_e.message}`); }
 
-    // ── STEP 5: Decision Evaluation (for action enrichment) ───────────────────
-    let decisionResult = null;
+    // ═══════════════════════════════════════════════════════════════════════════
+    // STEP 5: UNIFIED DECISION ENGINE — THE CORE BRAIN (Phase M upgrade)
+    // ALWAYS called. Provides the ground truth for ALL assistant responses.
+    // For decision queries → builds deterministic reply, no LLM.
+    // For other queries → injects decision context into LLM prompt.
+    // ═══════════════════════════════════════════════════════════════════════════
+    let unifiedDecision = null;
     let confidence     = 70;
+    let explanation    = [];
+    const isDecisionQ  = isDecisionQuery(message);
+
+    try {
+      const unifiedSvc = getUnifiedDecision();
+      if (unifiedSvc?.getUnifiedDecision) {
+        unifiedDecision = await unifiedSvc.getUnifiedDecision(userId, {
+          timezone,
+          energy: snapshot?.energy?.score,
+          mood:   snapshot?.mood?.score,
+        });
+        if (unifiedDecision) {
+          confidence = unifiedDecision.confidence || 70;
+          explanation = unifiedDecision.why || [];
+          logger.info(`[ORCHESTRATOR] Decision Engine: focus=${unifiedDecision.currentFocus?.type}/${unifiedDecision.currentFocus?.action} behavior=${unifiedDecision.behaviorState?.state} tasks=${unifiedDecision.debug?.total_candidates} [${unifiedDecision.debug?.computation_ms}ms]`);
+        }
+      }
+    } catch (_e) {
+      logger.warn(`[ORCHESTRATOR] Unified Decision Engine failed: ${String(_e.message).slice(0, 200)}`);
+    }
+
+    // ── STEP 5b: SHORT-CIRCUIT for decision queries ──────────────────────────
+    // If the user asks "what should I do?", return Decision Engine data directly.
+    // Decision Engine provides the WHAT. Optional LLM provides PHRASING ONLY.
+    if (isDecisionQ && unifiedDecision?.currentFocus) {
+      const userName = userCtx?.name || 'صديقي';
+      let directReply = buildDecisionDrivenReply(unifiedDecision, userName, userId);
+
+      // ── Phase N (Phase 7): Optional LLM phrasing layer ──────────────────
+      // LLM ONLY rephrases the coach reply for tone variation.
+      // It NEVER changes the task, signals, or decision.
+      // If LLM fails or is unavailable, the coach reply is already human-quality.
+      let coaching = null;
+      try {
+        const llmOrch = getLLMOrchestrator();
+        if (llmOrch) {
+          coaching = await llmOrch.generateCoaching(unifiedDecision.signalsUsed || {});
+          // Try to rephrase the reply for tone variation (non-blocking, fast)
+          try {
+            const rephrased = await llmOrch.rephraseCoachedReply?.(directReply, {
+              behaviorState: unifiedDecision.behaviorState?.state,
+              taskTitle: unifiedDecision.currentFocus?.title,
+              energy: unifiedDecision.signalsUsed?.energy,
+            });
+            if (rephrased && rephrased.length > 20 && rephrased.includes(unifiedDecision.currentFocus?.title || '---')) {
+              directReply = rephrased; // Only use if it still mentions the task
+            }
+          } catch (_re) { /* phrasing layer is optional */ }
+        }
+      } catch (_e) { /* non-critical */ }
+
+      // Build contextual suggestions from alternatives
+      const decisionSuggestions = [];
+      if (unifiedDecision.alternatives?.length > 0) {
+        decisionSuggestions.push(...unifiedDecision.alternatives.slice(0, 2).map(a => a.title));
+      }
+      decisionSuggestions.push('سجّل مزاجي');
+
+      // Store in memory
+      // Phase Q: sanitize decision reply
+      directReply = sanitizeReply(directReply);
+      memory.addShortTerm(userId, 'user', message, { intent: 'decision_query', mode });
+      memory.addShortTerm(userId, 'assistant', directReply, { mode: 'decision_engine', is_fallback: false, confidence });
+      memory.incrementStat(userId, 'totalMessages');
+
+      const elapsed = Date.now() - startMs;
+      logger.info(`[ORCHESTRATOR] Decision-driven reply: user=${userId} focus=${unifiedDecision.currentFocus?.title} confidence=${confidence}% [${elapsed}ms]`);
+
+      return {
+        reply       : directReply,
+        mode        : 'decision_engine',
+        actions     : [],
+        suggestions : decisionSuggestions,
+        is_fallback : false,
+        intentCategory: 'decision_query',
+        confidence,
+        explanation,
+        planningTip : coaching?.message || null,
+        snapshot    : snapshot ? {
+          energy : snapshot.energy,
+          mood   : snapshot.mood,
+          signals: snapshot.signals?.slice(0, 3) || [],
+        } : null,
+        prediction  : null,
+        // Phase M: Decision Engine data in response
+        decisionData: {
+          currentFocus:   unifiedDecision.currentFocus,
+          why:            unifiedDecision.why,
+          signalsUsed:    unifiedDecision.signalsUsed,
+          behaviorState:  unifiedDecision.behaviorState,
+          alternatives:   unifiedDecision.alternatives?.slice(0, 3),
+          rules_applied:  unifiedDecision.rules_applied,
+          next_steps:     unifiedDecision.currentFocus?.next_steps,
+        },
+        pipeline_ms : elapsed,
+      };
+    }
+
+    // ── STEP 5c: Legacy decision engine (for action enrichment) ───────────────
+    let decisionResult = null;
     if (mode === 'manager' && intentCategory === 'task_action') {
       try {
         const engine = getDecisionEngine();
@@ -302,29 +709,30 @@ async function orchestrate({
             priority   : actionResult?.task?.priority || 'medium',
             itemCount  : 1,
           });
-          confidence = decisionResult?.confidence || 70;
+          if (!unifiedDecision) confidence = decisionResult?.confidence || 70;
         }
       } catch (_e) { logger.debug(`[ORCHESTRATOR_SERVICE] Non-critical operation failed: ${_e.message}`); }
     }
 
     // ── STEP 6: Explainability ────────────────────────────────────────────────
-    let explanation = null;
-    try {
-      const explSvc = getExplainability();
-      if (explSvc && (decisionResult || mode !== 'companion')) {
-        const explResult = explSvc.explainDecision({
-          action      : actionResult?.action || intentCategory,
-          userId,
-          energy      : snapshot?.energy?.score || 55,
-          mood        : snapshot?.mood?.score   || 5,
-          priority    : actionResult?.task?.priority || 'medium',
-          risk        : decisionResult?.risk || 'low',
-          overdueCount: userCtx?.overdueTasks?.length || 0,
-        });
-        explanation = explResult?.why || [];
-        if (explResult?.confidence) confidence = explResult.confidence;
-      }
-    } catch (_e) { logger.debug(`[ORCHESTRATOR_SERVICE] Non-critical operation failed: ${_e.message}`); }
+    if (explanation.length === 0) {
+      try {
+        const explSvc = getExplainability();
+        if (explSvc && (decisionResult || mode !== 'companion')) {
+          const explResult = explSvc.explainDecision({
+            action      : actionResult?.action || intentCategory,
+            userId,
+            energy      : snapshot?.energy?.score || 55,
+            mood        : snapshot?.mood?.score   || 5,
+            priority    : actionResult?.task?.priority || 'medium',
+            risk        : decisionResult?.risk || 'low',
+            overdueCount: userCtx?.overdueTasks?.length || 0,
+          });
+          explanation = explResult?.why || [];
+          if (explResult?.confidence && !unifiedDecision) confidence = explResult.confidence;
+        }
+      } catch (_e) { logger.debug(`[ORCHESTRATOR_SERVICE] Non-critical operation failed: ${_e.message}`); }
+    }
 
     // ── STEP 7: Build Conversation Context ────────────────────────────────────
     const historyStr = memory.buildHistoryString(userId, 6);
@@ -363,6 +771,24 @@ async function orchestrate({
     // Add planning tip to message if available
     if (planningTip && mode !== 'companion') {
       userMsgForAI += `\n\n[تلميح تخطيط: ${planningTip}]`;
+    }
+
+    // ── STEP 9b: Inject Decision Engine context into LLM prompt ────────────────
+    // Even for non-decision queries, the LLM must know the current decision state.
+    if (unifiedDecision?.currentFocus) {
+      const df = unifiedDecision.currentFocus;
+      const ds = unifiedDecision.signalsUsed || {};
+      const db = unifiedDecision.behaviorState || {};
+      const decisionContext = [
+        `\n[═══ قرار محرك الذكاء الحالي ═══]`,
+        `المهمة الموصى بها: "${df.title || df.action}" (${df.type})`,
+        `الأسباب: ${(unifiedDecision.why || []).join(' | ')}`,
+        `الحالة السلوكية: ${db.state || 'starting'} — ${db.description || ''}`,
+        `الطاقة: ${ds.energy || 50}% | التركيز: ${ds.focus || 50}% | الإجهاد: ${Math.round((ds.burnout || 0) * 100)}%`,
+        `الثقة: ${unifiedDecision.confidence}%`,
+        `[قاعدة صارمة: استخدم هذه البيانات الحقيقية في ردك. لا تخترع مهام. لا ترد بشكل عام. اذكر اسم المهمة "${df.title || ''}" في ردك.]`,
+      ].join('\n');
+      userMsgForAI += decisionContext;
     }
 
     const { reply, is_fallback } = await safeExecute(
@@ -409,12 +835,11 @@ async function orchestrate({
     );
 
     // If safeExecute caught INTELLIGENT_FALLBACK error, reply will be the contextual message
-    // (safeExecute classifies it as UNKNOWN and uses buildContextualFallback)
     // We need to check if we have a better intelligent reply available
     let finalReply = reply;
     let finalIsFallback = is_fallback;
 
-    // Check if the reply is a generic error message — if so, build intelligent fallback
+    // Check if the reply is a generic error message — if so, use Decision Engine data
     const genericPhrases = [
       'حصل مشكلة مؤقتة',
       'حاول تاني',
@@ -424,14 +849,21 @@ async function orchestrate({
     ];
     const isGenericReply = genericPhrases.some(phrase => reply?.includes(phrase));
 
-    if (isGenericReply || (is_fallback && reply === DEFAULT_FALLBACK)) {
+    // Phase M: ALWAYS prefer Decision Engine data over generic fallbacks
+    if ((isGenericReply || (is_fallback && reply === DEFAULT_FALLBACK)) && unifiedDecision?.currentFocus) {
+      // Use Decision Engine to build a real, specific reply
+      const userName = userCtx?.name || 'صديقي';
+      finalReply = buildDecisionDrivenReply(unifiedDecision, userName, userId);
+      finalIsFallback = false; // This is real data, not a fallback!
+      logger.info('[ORCHESTRATOR] Replaced generic fallback with Decision Engine reply');
+    } else if (isGenericReply || (is_fallback && reply === DEFAULT_FALLBACK)) {
       finalReply = buildIntelligentFallback(message, {
         intentCategory,
         mode,
         userName: userCtx?.name,
         tasks   : userCtx?.urgentTasks || [],
       });
-      finalIsFallback = true; // Still mark as fallback — was not real AI
+      finalIsFallback = true;
       logger.info('[ORCHESTRATOR] Replaced generic error with intelligent fallback');
     }
 
@@ -469,6 +901,8 @@ async function orchestrate({
     }
 
     // ── STEP 13: Store in Memory ──────────────────────────────────────────────
+    // Phase Q: sanitize reply before storing and returning
+    finalReply = sanitizeReply(finalReply);
     memory.addShortTerm(userId, 'user', message, { intent: intentCategory, mode });
     memory.addShortTerm(userId, 'assistant', finalReply, { mode, is_fallback: !!finalIsFallback, confidence });
     memory.incrementStat(userId, 'totalMessages');
@@ -531,19 +965,41 @@ async function orchestrate({
         burnout_risk               : prediction.burnout_risk,
         focus_score                : prediction.focus_score,
       } : null,
+      // Phase M: Decision Engine data in response
+      decisionData  : unifiedDecision ? {
+        currentFocus:   unifiedDecision.currentFocus,
+        why:            unifiedDecision.why,
+        signalsUsed:    unifiedDecision.signalsUsed,
+        behaviorState:  unifiedDecision.behaviorState,
+        alternatives:   unifiedDecision.alternatives?.slice(0, 3),
+        rules_applied:  unifiedDecision.rules_applied,
+        next_steps:     unifiedDecision.currentFocus?.next_steps,
+      } : null,
       pipeline_ms   : elapsed,
     };
 
   } catch (err) {
     logger.error('[ORCHESTRATOR] Critical error:', err.message);
 
+    // Phase M: Even on critical error, try Decision Engine
+    let emergencyReply = DEFAULT_FALLBACK;
+    try {
+      const unifiedSvc = getUnifiedDecision();
+      if (unifiedSvc?.getUnifiedDecision) {
+        const emergencyDecision = await unifiedSvc.getUnifiedDecision(userId, { timezone });
+        if (emergencyDecision?.currentFocus) {
+          emergencyReply = buildDecisionDrivenReply(emergencyDecision, 'صديقي', userId);
+        }
+      }
+    } catch (_e) { /* truly last resort */ }
+
     return {
-      reply      : DEFAULT_FALLBACK,
+      reply      : emergencyReply,
       mode       : 'hybrid',
       actions    : [],
       suggestions: getSuggestions('default'),
-      is_fallback: true,
-      confidence : 0,
+      is_fallback: emergencyReply === DEFAULT_FALLBACK,
+      confidence : emergencyReply === DEFAULT_FALLBACK ? 0 : 60,
       explanation: [],
       planningTip: null,
       snapshot   : null,
@@ -570,6 +1026,20 @@ async function companionChat(userId, message, timezone, userCtx = null) {
 function detectIntentCategory(message) {
   const lower = message.toLowerCase().trim();
 
+  // Task help — "how do I do this?" type questions (check FIRST)
+  const taskHelpPatterns = [
+    'أذاكر إزاي', 'اذاكر ازاي', 'أعملها إزاي', 'اعملها ازاي',
+    'أبدأ فيها إزاي', 'ابدأ فيها ازاي', 'أنفذها إزاي', 'انفذها ازاي',
+    'ساعدني في', 'ساعدني فيها', 'أعمل إيه في', 'اعمل ايه في',
+    'طريقة المذاكرة', 'كيف أذاكر', 'كيف اذاكر', 'نصيحة للمذاكرة',
+    'إزاي أخلص', 'ازاي اخلص', 'how to', 'how do i',
+    'أعملها ازاي', 'أعملها إزاي', 'اشتغل عليها ازاي',
+    'إزاي أعمل', 'ازاي اعمل', 'help me with', 'how should i',
+    'طريقة عمل', 'خطوات', 'نصيحة لل', 'tips for',
+    'أذاكر المادة', 'اذاكر المادة', 'اشتغل على',
+    'أخلصها إزاي', 'اخلصها ازاي', 'أنجزها إزاي',
+  ];
+
   const taskPatterns = [
     'اضف','أضف','ضيف','ضف','عندي مهمة','لازم','محتاج','اعمل مهمة',
     'خلص','انتهيت','عملت','أجّل','أجل','أخّر','احذف','حذف','ألغِ',
@@ -586,6 +1056,7 @@ function detectIntentCategory(message) {
     'ما','ماذا','كيف','هل','متى','أين','من','ليه','لماذا','?','؟','شرح','اشرح',
   ];
 
+  if (taskHelpPatterns.some(p => lower.includes(p))) return 'task_help';
   if (taskPatterns.some(p => lower.includes(p)))   return 'task_action';
   if (advicePatterns.some(p => lower.includes(p))) return 'advice';
   if (questionPatterns.some(p => lower.includes(p))) return 'question';

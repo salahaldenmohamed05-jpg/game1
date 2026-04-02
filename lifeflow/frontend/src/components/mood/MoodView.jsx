@@ -84,9 +84,37 @@ export default function MoodView() {
   } : null;
 
   const statsRaw = statsData?.data?.data || statsData?.data; // backend: { success, data: { average_mood, ... } }
+  // Fix streak calculation: count consecutive days ending at today (or yesterday)
+  const computeStreak = (moodByDay) => {
+    if (!Array.isArray(moodByDay) || moodByDay.length === 0) return 0;
+    // Get unique dates sorted descending
+    const dates = [...new Set(moodByDay.map(d => d.date).filter(Boolean))].sort().reverse();
+    if (dates.length === 0) return 0;
+
+    // Get today in Cairo timezone for comparison
+    const todayCairo = new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Cairo' });
+    const yesterdayCairo = new Date(Date.now() - 86400000).toLocaleDateString('en-CA', { timeZone: 'Africa/Cairo' });
+
+    // Streak must include today or yesterday to be "current"
+    const mostRecent = dates[0];
+    if (mostRecent !== todayCairo && mostRecent !== yesterdayCairo) return 0;
+
+    let streak = 1;
+    for (let i = 1; i < dates.length; i++) {
+      const prevDate = new Date(dates[i - 1] + 'T12:00:00Z');
+      const currDate = new Date(dates[i] + 'T12:00:00Z');
+      const diffDays = Math.round((prevDate - currDate) / 86400000);
+      if (diffDays === 1) {
+        streak++;
+      } else {
+        break; // Gap found — streak ends
+      }
+    }
+    return streak;
+  };
   const stats = statsRaw ? {
     average:       parseFloat(statsRaw.average_mood) || 0,
-    streak:        statsRaw.analytics?.total_entries || statsRaw.streak || 0,
+    streak:        statsRaw.streak || computeStreak(statsRaw.mood_by_day || statsRaw.mood_trend) || 0,
     total_entries: statsRaw.total_entries || statsRaw.mood_by_day?.length || 0,
     ai_insight:    statsRaw.ai_insight,
   } : null;

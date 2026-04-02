@@ -6,8 +6,9 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, Mic, MicOff, Volume2, Loader, Brain, Sparkles } from 'lucide-react';
+import { Send, Mic, MicOff, Volume2, Loader, Brain, Sparkles, ThumbsUp, ThumbsDown, MessageCircle } from 'lucide-react';
 import { aiAPI } from '../../utils/api';
+import api from '../../utils/api';
 import toast from 'react-hot-toast';
 
 const QUICK_PROMPTS = [
@@ -103,6 +104,18 @@ export default function AIChat() {
     recognition.start();
   };
 
+  // Send learning feedback
+  const sendFeedback = async (responseText, satisfaction) => {
+    try {
+      await api.post('/voice/learn', {
+        text: messages.filter(m => m.role === 'user').pop()?.content || '',
+        response: responseText,
+        satisfaction,
+      });
+      toast.success(satisfaction === 'positive' ? 'شكرًا! المساعد بيتعلم' : 'تم تسجيل ملاحظتك', { duration: 2000 });
+    } catch { /* non-critical */ }
+  };
+
   const speakText = (text) => {
     if (!('speechSynthesis' in window)) return;
     const utterance = new SpeechSynthesisUtterance(text);
@@ -121,7 +134,7 @@ export default function AIChat() {
             <Sparkles size={24} className="text-primary-400" />
             المساعد الذكي
           </h2>
-          <p className="text-sm text-gray-400">LifeFlow AI • يتحدث العربية</p>
+          <p className="text-sm text-gray-400">LifeFlow AI • يتعلم أسلوبك ويتكلم زيك</p>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -176,10 +189,22 @@ export default function AIChat() {
                 </div>
 
                 {msg.role === 'assistant' && !msg.isError && (
-                  <button onClick={() => speakText(msg.content)}
-                    className="mt-1 text-xs text-gray-600 hover:text-primary-400 transition-colors flex items-center gap-1 mr-2">
-                    <Volume2 size={10} /> استمع
-                  </button>
+                  <div className="mt-1 flex items-center gap-3 mr-2">
+                    <button onClick={() => speakText(msg.content)}
+                      className="text-xs text-gray-600 hover:text-primary-400 transition-colors flex items-center gap-1">
+                      <Volume2 size={10} /> استمع
+                    </button>
+                    <button onClick={() => sendFeedback(msg.content, 'positive')}
+                      className="text-xs text-gray-600 hover:text-green-400 transition-colors flex items-center gap-1"
+                      title="إجابة مفيدة">
+                      <ThumbsUp size={10} />
+                    </button>
+                    <button onClick={() => sendFeedback(msg.content, 'negative')}
+                      className="text-xs text-gray-600 hover:text-red-400 transition-colors flex items-center gap-1"
+                      title="إجابة غير مفيدة">
+                      <ThumbsDown size={10} />
+                    </button>
+                  </div>
                 )}
               </div>
             </motion.div>

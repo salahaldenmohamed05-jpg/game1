@@ -47,6 +47,9 @@ function initScheduler(io) {
   // Weekly audit data generation - Monday 2:00 AM (generates audit for previous week)
   cron.schedule('0 2 * * 1', () => generateAllWeeklyAudits(), { timezone: 'Africa/Cairo' });
 
+  // Task reminders — check every 5 minutes for tasks due soon (uses reminder_before from form)
+  cron.schedule('*/5 * * * *', () => checkTaskReminders(), { timezone: 'Africa/Cairo' });
+
   // Overdue tasks check - every 2 hours during work hours
   cron.schedule('0 9,11,13,15,17 * * *', () => checkOverdueTasks(), { timezone: 'Africa/Cairo' });
 
@@ -259,6 +262,79 @@ async function sendEveningSummary() {
     }
   } catch (error) {
     logger.error('Evening summary cron error:', error);
+  }
+}
+
+/**
+ * Check task reminders — fires exactly at (task_time - reminder_before)
+ * This runs every 5 minutes and checks for tasks that need reminding.
+ * Uses the reminder_before field from the task creation form.
+ */
+async function checkTaskReminders() {
+  try {
+    const now = moment().tz('Africa/Cairo');
+    const today = now.format('YYYY-MM-DD');
+    const currentMinutes = now.hours() * 60 + now.minutes();
+
+    // Find today's pending tasks with a due_time set
+    const tasks = await Task.findAll({
+      where: {
+        status: { [Op.in]: ['pending', 'in_progress'] },
+        due_date: today,
+        due_time: { [Op.ne]: null },
+      },
+      attributes: ['id', 'user_id', 'title', 'due_time', 'priority', 'category', 'reminder_before'],
+    });
+
+    for (const task of tasks) {
+      try {
+        const dueTimeParts = String(task.due_time).split(':').map(Number);
+        const dueMinutes = (dueTimeParts[0] || 0) * 60 + (dueTimeParts[1] || 0);
+        const reminderBefore = task.reminder_before || 15; // default 15 min
+        const reminderAtMinutes = dueMinutes - reminderBefore;
+
+        // Check if current time is within the 5-minute window for this reminder
+        if (currentMinutes >= reminderAtMinutes && currentMinutes < reminderAtMinutes + 5) {
+          // Check if we already sent a reminder for this task today
+          const existingNotif = await Notification.findOne({
+            where: {
+              user_id: task.user_id,
+              type: 'task_reminder',
+              'data.task_id': task.id,
+              created_at: { [Op.gte]: `${today}T00:00:00` },
+            },
+          }).catch(() => null);
+
+          if (!existingNotif) {
+            const minsLeft = dueMinutes - currentMinutes;
+            const timeStr = task.due_time.substring(0, 5);
+            const notification = await Notification.create({
+              user_id: task.user_id,
+              type: 'task_reminder',
+              title: `⏰ تذكير: ${task.title}`,
+              body: minsLeft <= 0
+                ? `حان موعد "${task.title}" الآن! (${timeStr})`
+                : `"${task.title}" بعد ${minsLeft} دقيقة (${timeStr}) — استعد!`,
+              data: {
+                type: 'task_reminder',
+                task_id: task.id,
+                due_time: task.due_time,
+                priority: task.priority,
+              },
+              sent_at: new Date(),
+              is_sent: true,
+            });
+
+            ioInstance?.to(`user_${task.user_id}`).emit('notification', notification);
+            logger.info(`[SCHEDULER] Task reminder sent for "${task.title}" (user ${task.user_id}, due ${timeStr})`);
+          }
+        }
+      } catch (err) {
+        logger.error(`Task reminder failed for task ${task.id}:`, err.message);
+      }
+    }
+  } catch (error) {
+    logger.error('Task reminder cron error:', error);
   }
 }
 

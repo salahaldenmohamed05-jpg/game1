@@ -102,6 +102,7 @@ router.get('/profile', async (req, res) => {
         email: req.user.email,
         avatar: req.user.avatar,
         phone: req.user.phone,
+        timezone: req.user.timezone || 'Africa/Cairo',
         // Life Context
         role: profile.role,
         focus_areas: profile.focus_areas,

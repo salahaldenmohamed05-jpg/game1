@@ -23,8 +23,9 @@ import {
   Brain, Sparkles, Zap, Shield, Trash2, Download, LogOut, Key,
   ChevronDown, ChevronUp, Moon, Sun, CheckCircle, AlertTriangle,
   ToggleLeft, ToggleRight, RefreshCw, Eye, EyeOff,
+  MessageSquare, Mail, Phone, Gauge,
 } from 'lucide-react';
-import { settingsAPI } from '../../utils/api';
+import { settingsAPI, vaAPI } from '../../utils/api';
 import useAuthStore from '../../store/authStore';
 import useThemeStore from '../../store/themeStore';
 import toast from 'react-hot-toast';
@@ -439,6 +440,136 @@ export default function SettingsView() {
           <Toggle
             value={settings.smart_reminders ?? true}
             onChange={(v) => updateSetting('smart_reminders', v)}
+          />
+        </SettingRow>
+      </SectionCard>
+
+      {/* ═══ Section 3.5: External VA (WhatsApp + Email) ═══ */}
+      <SectionCard title="المساعد الخارجي" icon={MessageSquare} description="واتساب وبريد إلكتروني — المساعد يتابعك خارج التطبيق" iconColor="text-green-400" bgColor="bg-green-500/15">
+        <div className="bg-green-500/5 border border-green-500/20 rounded-xl p-3 mb-3">
+          <p className="text-green-300 text-xs font-bold flex items-center gap-1">
+            <MessageSquare size={12} /> تفعيل هذه القنوات يسمح للمساعد بإرسال تذكيرات خارجية
+          </p>
+          <p className="text-gray-400 text-[11px] mt-1">لن يتم إرسال رسائل مزعجة — النظام يحترم حدود التكرار والصمت الذكي</p>
+        </div>
+
+        {/* WhatsApp Toggle */}
+        <SettingRow icon={Phone} label="واتساب" description="تذكيرات ورسائل متابعة عبر واتساب">
+          <Toggle
+            value={settings.whatsapp_enabled ?? false}
+            onChange={(v) => updateSetting('whatsapp_enabled', v)}
+          />
+        </SettingRow>
+
+        {/* WhatsApp Phone Input */}
+        <AnimatePresence>
+          {settings.whatsapp_enabled && (
+            <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}
+              className="overflow-hidden">
+              <div className="py-2">
+                <label className="text-xs text-gray-400 block mb-1.5">رقم الواتساب (مع كود الدولة)</label>
+                <div className="flex gap-2 items-center" dir="ltr">
+                  <span className="text-xs text-gray-500 flex-shrink-0">+</span>
+                  <input
+                    type="tel"
+                    inputMode="numeric"
+                    value={settings.whatsapp_phone || ''}
+                    onChange={(e) => updateSetting('whatsapp_phone', e.target.value.replace(/[^\d+]/g, ''))}
+                    placeholder="20XXXXXXXXXX"
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:border-primary-500 focus:outline-none font-mono tracking-wide"
+                    maxLength={15}
+                    dir="ltr"
+                  />
+                </div>
+                <p className="text-[10px] text-gray-500 mt-1">مثال: 201XXXXXXXXX (مصر) أو 966XXXXXXXXX (السعودية)</p>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* WhatsApp Frequency */}
+        {settings.whatsapp_enabled && (
+          <SettingRow icon={Clock} label="تكرار الواتساب">
+            <OptionSelect
+              options={[{ id: 'low', label: 'قليل' }, { id: 'normal', label: 'عادي' }, { id: 'high', label: 'كثير' }]}
+              value={settings.whatsapp_frequency || 'normal'}
+              onChange={(v) => updateSetting('whatsapp_frequency', v)}
+            />
+          </SettingRow>
+        )}
+
+        {/* Email Toggle */}
+        <SettingRow icon={Mail} label="تقارير البريد الإلكتروني" description="ملخصات يومية وأسبوعية عبر البريد">
+          <Toggle
+            value={settings.email_reports_enabled ?? true}
+            onChange={(v) => updateSetting('email_reports_enabled', v)}
+          />
+        </SettingRow>
+
+        {/* Email Frequency */}
+        {settings.email_reports_enabled && (
+          <div className="bg-white/[0.02] rounded-xl p-3 mt-2 space-y-0">
+            {[
+              { key: 'email_daily',  label: 'ملخص يومي',    icon: '📅' },
+              { key: 'email_weekly', label: 'تقرير أسبوعي', icon: '📊' },
+            ].map(({ key, label, icon }) => (
+              <div key={key} className="flex items-center justify-between py-2 border-b border-white/[0.03] last:border-0">
+                <span className="text-gray-300 text-xs flex items-center gap-2">
+                  <span>{icon}</span> {label}
+                </span>
+                <Toggle
+                  value={settings[key] ?? true}
+                  onChange={(v) => updateSetting(key, v)}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Pressure Level */}
+        <div className="mt-3">
+          <label className="text-xs text-gray-400 block mb-2 font-medium flex items-center gap-1">
+            <Gauge size={12} /> مستوى الضغط
+          </label>
+          <p className="text-[10px] text-gray-500 mb-2">يتحكم في تكرار وشدة الرسائل الخارجية</p>
+          <div className="grid grid-cols-3 gap-2">
+            {[
+              { id: 'gentle', label: 'لطيف', desc: 'رسائل خفيفة', icon: '🌸', color: 'border-green-500/30 bg-green-500/5' },
+              { id: 'moderate', label: 'متوسط', desc: 'تذكيرات منتظمة', icon: '💡', color: 'border-yellow-500/30 bg-yellow-500/5' },
+              { id: 'persistent', label: 'مثابر', desc: 'متابعة نشطة', icon: '🔥', color: 'border-red-500/30 bg-red-500/5' },
+            ].map(opt => (
+              <button
+                key={opt.id}
+                onClick={() => updateSetting('nudge_intensity', opt.id)}
+                className={`p-3 rounded-xl border text-center transition-all ${
+                  settings.nudge_intensity === opt.id
+                    ? `${opt.color} ring-1 ring-primary-500/50`
+                    : 'border-white/[0.06] bg-white/[0.02] hover:bg-white/5'
+                }`}
+              >
+                <span className="text-lg block">{opt.icon}</span>
+                <span className="text-white text-xs font-bold block mt-1">{opt.label}</span>
+                <span className="text-gray-500 text-[10px] block">{opt.desc}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Smart Silence */}
+        <div className="mt-3">
+          <SettingRow icon={VolumeX} label="الصمت الذكي" description="إيقاف الرسائل الخارجية أثناء استخدام التطبيق">
+            <Toggle
+              value={settings.smart_silence ?? true}
+              onChange={(v) => updateSetting('smart_silence', v)}
+            />
+          </SettingRow>
+        </div>
+
+        {/* Anti-Spam */}
+        <SettingRow icon={Shield} label="حماية من الإزعاج" description="إيقاف تلقائي بعد تجاهل 6 رسائل متتالية">
+          <Toggle
+            value={settings.anti_spam_enabled ?? true}
+            onChange={(v) => updateSetting('anti_spam_enabled', v)}
           />
         </SettingRow>
       </SectionCard>

@@ -1,0 +1,21 @@
+{
+  "name": "LifeFlow - مساعدك الشخصي الذكي",
+  "short_name": "LifeFlow",
+  "description": "نظّم حياتك الشخصية والمهنية بالذكاء الاصطناعي",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0a1a",
+  "theme_color": "#6C63FF",
+  "dir": "rtl",
+  "lang": "ar",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "64x64",
+      "type": "image/x-icon"
+    }
+  ],
+  "categories": ["productivity", "lifestyle"],
+  "prefer_related_applications": false
+}
