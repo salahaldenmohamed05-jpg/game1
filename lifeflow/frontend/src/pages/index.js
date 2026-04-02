@@ -157,15 +157,15 @@ function DashboardWithOnboarding() {
 
   if (!checked) return null; // Instant — no loading screen for localStorage check
 
-  return (
-    <>
-      {showOnboarding && (
-        <OnboardingFlow
-          onComplete={handleOnboardingComplete}
-          userName={user?.name?.split(' ')[0]}
-        />
-      )}
-      <Dashboard />
-    </>
-  );
+  // Force onboarding: block dashboard until onboarding is complete
+  if (showOnboarding) {
+    return (
+      <OnboardingFlow
+        onComplete={handleOnboardingComplete}
+        userName={user?.name?.split(' ')[0]}
+      />
+    );
+  }
+
+  return <Dashboard />;
 }

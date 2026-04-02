@@ -174,7 +174,11 @@ async function generateFromOnboarding(userId, role, focusAreas) {
         'days'
       ).format('YYYY-MM-DD');
 
-      const goal = await Goal.create({
+      // Deduplication: skip if goal with same title already exists for user
+      const existingGoal = await Goal.findOne({
+        where: { user_id: userId, title: template.title },
+      });
+      const goal = existingGoal || await Goal.create({
         user_id: userId,
         title: template.title,
         description: template.description,
@@ -194,6 +198,9 @@ async function generateFromOnboarding(userId, role, focusAreas) {
           time_bound: targetDate,
         },
       });
+      if (existingGoal) {
+        logger.info(`[GOAL-ENGINE] Duplicate prevented: "${template.title}" already exists for user ${userId}`);
+      }
 
       results.goals.push({
         id: goal.id,

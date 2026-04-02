@@ -72,6 +72,7 @@ router.get('/today-flow', async (req, res) => {
 
   // Build nextAction from unified decision (backward-compatible shape)
   let nextAction = null;
+  let goalContext = null;
   if (decision?.currentFocus) {
     const focus = decision.currentFocus;
     nextAction = {
@@ -94,6 +95,25 @@ router.get('/today-flow', async (req, res) => {
       behaviorState: decision.behaviorState,
       source: 'unified_decision_engine',
     };
+    // Extract goal context from the focus
+    goalContext = focus.goal_context || null;
+  }
+
+  // Fetch goal context separately if not from decision
+  if (!goalContext) {
+    try {
+      const goalEngine = require('../services/goal.engine.service');
+      if (goalEngine?.getGoalContext) {
+        const gctx = await goalEngine.getGoalContext(userId, timezone);
+        if (gctx.activeGoals?.length > 0) {
+          goalContext = {
+            activeGoals: gctx.activeGoals.slice(0, 3),
+            summary: gctx.summary,
+            suggestions: (gctx.goalSuggestions || []).slice(0, 2),
+          };
+        }
+      }
+    } catch (_) {}
   }
 
   res.json({
@@ -102,6 +122,7 @@ router.get('/today-flow', async (req, res) => {
       nextAction,
       lifeFeed:      lifeFeed?.feed || lifeFeed || [],
       burnoutStatus: burnoutData,
+      goalContext,
       decision: decision ? {
         currentFocus: decision.currentFocus,
         why: decision.why,

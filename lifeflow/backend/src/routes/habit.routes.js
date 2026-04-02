@@ -12,6 +12,7 @@ router.use(protect);
 
 router.get('/', habitController.getHabits);
 router.get('/today-summary', habitController.getTodaySummary);
+router.get('/suggestions', habitController.getSmartSuggestions);
 
 // GET /habits/today — alias for today-summary
 router.get('/today', habitController.getTodaySummary);

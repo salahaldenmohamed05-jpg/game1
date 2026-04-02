@@ -168,7 +168,11 @@ exports.getDashboard = async (req, res) => {
           log: habitLogMap[h.id] || null,
         })),
         recent_insights: recentInsights,
-        active_goals: activeGoals,
+        active_goals: activeGoals.map(g => ({
+          ...(g.toJSON ? g.toJSON() : g),
+          linkedTasks: todayTasks.filter(t => t.goal_id === g.id).length,
+          completedTasks: todayTasks.filter(t => t.goal_id === g.id && t.status === 'completed').length,
+        })),
         week_progress: analyticsSummary?.week_progress ?? {
           total: weekTasks.length,
           completed: weekTasks.filter(t => t.status === 'completed').length,

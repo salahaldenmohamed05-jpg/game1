@@ -47,7 +47,7 @@ import {
   RefreshCw, Sparkles, Zap, Sun, Moon,
   Calendar, Target, Brain, Info, Play,
 } from 'lucide-react';
-import { taskAPI, habitAPI, dashboardAPI, assistantAPI, engineAPI } from '../../utils/api';
+import { taskAPI, habitAPI, dashboardAPI, assistantAPI, engineAPI, goalsAPI, analyticsAPI } from '../../utils/api';
 import { SMART_ACTIONS } from '../../constants/smartActions';
 import useSyncStore from '../../store/syncStore';
 import toast from 'react-hot-toast';
@@ -178,25 +178,51 @@ function getTaskDisplayTime(task) {
   return null;
 }
 
-// ─── Time-Aware Task Status (timezone-corrected) ─────────────────────────────
+// ─── Time-Aware Task Status (timezone-corrected, Phase 3 fix) ────────────────
+// FIX: Tasks are NOT overdue if due_time hasn't passed yet today.
+// A task due today at 14:00 is NOT overdue at 10:00.
+// Only overdue if: (a) due_date is in the past, OR (b) due_date is today AND due_time has passed.
 function getTaskTimeStatus(task) {
   if (!task || task.status === 'completed' || !task.due_date) return null;
   try {
     const now = getCairoNow();
-    const dueDate = new Date(task.due_date);
-    if (isNaN(dueDate.getTime())) return null;
+    const todayStr = now.toISOString().split('T')[0];
+    // Parse due_date as date-only string (YYYY-MM-DD)
+    const dueDateStr = typeof task.due_date === 'string'
+      ? task.due_date.split('T')[0].split(' ')[0]
+      : new Date(task.due_date).toISOString().split('T')[0];
+
+    // If due date is in the future (not today), not overdue
+    if (dueDateStr > todayStr) return null;
+
+    // If due date is in the past (before today)
+    if (dueDateStr < todayStr) {
+      return { label: 'متأخرة', color: 'text-red-400 bg-red-500/10', isOverdue: true };
+    }
+
+    // Due date IS today — check due_time
     if (task.due_time) {
       const parts = task.due_time.split(':').map(Number);
+      const dueDate = new Date(now);
       dueDate.setHours(parts[0] || 0, parts[1] || 0, 0, 0);
-    } else {
-      dueDate.setHours(23, 59, 0, 0);
+      const diffMs = dueDate.getTime() - now.getTime();
+      const diffMin = diffMs / 60000;
+
+      // Only overdue if due_time has actually passed
+      if (diffMin < -30) return { label: 'متأخرة', color: 'text-red-400 bg-red-500/10', isOverdue: true };
+      if (diffMin < 0) return { label: 'الآن!', color: 'text-orange-400 bg-orange-500/10', isOverdue: false };
+      if (diffMin < 30) return { label: 'الآن', color: 'text-yellow-400 bg-yellow-500/10', isOverdue: false };
+      if (diffMin < 120) return { label: 'قادمة', color: 'text-blue-400 bg-blue-500/10', isOverdue: false };
+      // More than 2 hours away — no status badge needed
+      return null;
     }
-    const diffMs = dueDate.getTime() - now.getTime();
-    const diffMin = diffMs / 60000;
-    if (diffMin < -60) return { label: 'متأخرة', color: 'text-red-400 bg-red-500/10', isOverdue: true };
-    if (diffMin < 0) return { label: 'متأخرة', color: 'text-red-400 bg-red-500/10', isOverdue: true };
-    if (diffMin < 30) return { label: 'الآن', color: 'text-yellow-400 bg-yellow-500/10', isOverdue: false };
-    if (diffMin < 120) return { label: 'قادمة', color: 'text-blue-400 bg-blue-500/10', isOverdue: false };
+
+    // Due today with no specific time — NOT overdue until end of day
+    const endOfDay = new Date(now);
+    endOfDay.setHours(23, 59, 0, 0);
+    if (now > endOfDay) {
+      return { label: 'متأخرة', color: 'text-red-400 bg-red-500/10', isOverdue: true };
+    }
     return null;
   } catch { return null; }
 }
@@ -273,8 +299,8 @@ function SectionSkeleton({ lines = 3 }) {
 function DoNowCard({ todayFlowData, isLoading, isError, refetch, onViewChange, onCompleteTask }) {
   // Data from today-flow
   const action = todayFlowData?.nextAction || {};
-  const [completing, setCompleting] = useState(false);
   const [showWhy, setShowWhy] = useState(false);
+  const [completing, setCompleting] = useState(false);
 
   // Also fetch engine data for detailed reasoning
   const { data: engineRaw } = useQuery({
@@ -314,19 +340,18 @@ function DoNowCard({ todayFlowData, isLoading, isError, refetch, onViewChange, o
 
   const handleActNow = useCallback(async () => {
     if (completing) return;
-    if (action.task_id) {
-      setCompleting(true);
-      try {
-        await taskAPI.completeTask(action.task_id);
-        toast.success(`تم إكمال "${action.title || action.task_title}"! أحسنت`);
-        if (onCompleteTask) onCompleteTask();
-        refetch?.();
-      } catch {
-        toast.error('فشل الإكمال — جاري فتح المهام');
-        onViewChange?.('tasks');
-      } finally {
-        setCompleting(false);
-      }
+    // Record accepted suggestion feedback for adaptive planning
+    try {
+      const { decisionAPI } = await import('../../utils/api');
+      decisionAPI.sendFeedback({
+        action: action.action || 'start_task',
+        feedback: 'accepted',
+        task_id: action.task_id || engineAction.id || null,
+      }).catch(() => {});
+    } catch {}
+    // Route task actions through the Execution Screen (engine flow)
+    if (action.task_id || action.action === 'start_task') {
+      onViewChange?.('execution');
     } else if (action.action === 'ask_assistant' || action.type === 'assistant') {
       onViewChange?.('assistant');
     } else if (action.action === 'log_mood') {
@@ -336,11 +361,20 @@ function DoNowCard({ todayFlowData, isLoading, isError, refetch, onViewChange, o
     } else {
       onViewChange?.('execution');
     }
-  }, [completing, action, onCompleteTask, refetch, onViewChange]);
+  }, [completing, action, engineAction, onViewChange]);
 
   const handleReschedule = useCallback(async () => {
     if (!action.task_id) return;
     try {
+      // Record rejected suggestion feedback for adaptive planning
+      try {
+        const { decisionAPI } = await import('../../utils/api');
+        decisionAPI.sendFeedback({
+          action: action.action || 'start_task',
+          feedback: 'rejected',
+          task_id: action.task_id,
+        }).catch(() => {});
+      } catch {}
       const rs = action.reschedule_suggestion;
       const cairoNow = getCairoNow();
       const suggestedHour = Math.max(cairoNow.getHours() + 1, 10);
@@ -498,14 +532,11 @@ function DoNowCard({ todayFlowData, isLoading, isError, refetch, onViewChange, o
           <div className="flex gap-2 mt-3">
             <button
               onClick={handleActNow}
-              disabled={completing}
               className="flex-1 py-2.5 bg-gradient-to-l from-primary-500 to-purple-600 text-white text-sm font-bold rounded-xl
-                hover:from-primary-600 hover:to-purple-700 active:scale-[0.98] transition-all flex items-center justify-center gap-2
-                disabled:opacity-60"
+                hover:from-primary-600 hover:to-purple-700 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
             >
-              {completing ? <RefreshCw size={14} className="animate-spin" /> : <Play size={14} fill="white" />}
-              {completing ? 'جارٍ...' :
-                action.action === 'log_mood' ? 'سجّل الآن' :
+              <Play size={14} fill="white" />
+              {action.action === 'log_mood' ? 'سجّل الآن' :
                 action.action === 'check_habit' ? 'سجّل العادة' :
                 action.task_id ? 'ابدأ الآن' : 'افعل الآن'}
             </button>
@@ -932,24 +963,37 @@ function BehaviorIntelligenceCard({ habits, onLogHabit, onViewChange }) {
   const currentHour = getCairoNow().getHours();
 
   // Smart nudges and risk alerts
+  // FIX: Don't show "missed" nudge if habit's scheduled time hasn't arrived yet
   const nudges = useMemo(() => {
     const n = [];
     uncompleted.forEach(h => {
-      // Streak risk alert
-      if ((h.current_streak || 0) > 5 && !h.completed_today) {
-        n.push({ habit: h, message: `🔥 ${h.current_streak} يوم متتالي — لا تقطع السلسلة!`, type: 'streak_risk', priority: 1 });
-      }
-      // Time-match nudge
+      // Check if habit's time has passed or is near (don't nudge for future-scheduled habits)
       const targetTime = h.target_time || h.preferred_time || h.ai_best_time;
+      let isTimeRelevant = true; // default: relevant if no specific time
       if (targetTime) {
+        const parts = targetTime.split(':').map(Number);
+        const hh = parts[0] || 0;
+        // Habit is only relevant if current hour >= (target hour - 1)
+        // i.e., don't nudge a 20:00 habit at 10:00
+        isTimeRelevant = currentHour >= (hh - 1);
+      }
+
+      // Time-match nudge (highest priority when time matches)
+      if (targetTime && isTimeRelevant) {
         const parts = targetTime.split(':').map(Number);
         const hh = parts[0] || 0;
         if (Math.abs(currentHour - hh) <= 1) {
           n.push({ habit: h, message: `⏰ الآن وقت ${h.name}`, type: 'time_match', priority: 0 });
         }
       }
+
+      // Streak risk alert (only if time-relevant)
+      if ((h.current_streak || 0) > 5 && !h.completed_today && isTimeRelevant) {
+        n.push({ habit: h, message: `🔥 ${h.current_streak} يوم متتالي — لا تقطع السلسلة!`, type: 'streak_risk', priority: 1 });
+      }
+
       // Habit drop risk: had a streak > 3 but it's now 0 (recently broken)
-      if ((h.longest_streak || 0) > 3 && (h.current_streak || 0) === 0 && !h.completed_today) {
+      if ((h.longest_streak || 0) > 3 && (h.current_streak || 0) === 0 && !h.completed_today && isTimeRelevant) {
         n.push({ habit: h, message: `⚠️ "${h.name}" — السلسلة انكسرت. ابدأ من جديد اليوم!`, type: 'habit_drop', priority: 2 });
       }
     });
@@ -1047,6 +1091,193 @@ function BehaviorIntelligenceCard({ habits, onLogHabit, onViewChange }) {
         ))}
       </div>
     </div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GOAL CONTEXT CARD — Shows active goals, progress, and linked tasks
+// Makes goals VISIBLE in the daily flow (was completely hidden before)
+// ═════════════════════════════════════════════════════════════════════════════
+function GoalContextCard({ dashboardData, todayFlowData, onViewChange }) {
+  // Try to get goals from todayFlow (enriched) or dashboard (basic)
+  const flowGoals = todayFlowData?.goalContext?.activeGoals;
+  const dashGoals = dashboardData?.active_goals;
+  const goals = Array.isArray(flowGoals) && flowGoals.length > 0
+    ? flowGoals
+    : (Array.isArray(dashGoals) ? dashGoals : []);
+
+  const goalSuggestions = todayFlowData?.goalContext?.suggestions || [];
+  const summary = todayFlowData?.goalContext?.summary || {};
+
+  if (goals.length === 0) return null;
+
+  const QUADRANT_LABELS = {
+    urgent_important: { label: 'عاجل ومهم', color: 'text-red-400 bg-red-500/10' },
+    important: { label: 'مهم', color: 'text-blue-400 bg-blue-500/10' },
+    urgent: { label: 'عاجل', color: 'text-orange-400 bg-orange-500/10' },
+    neither: { label: 'عادي', color: 'text-gray-400 bg-white/5' },
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+      className="glass-card p-4" dir="rtl" role="region" aria-label="أهدافك"
+    >
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-sm font-bold text-white flex items-center gap-2">
+          <Target size={14} className="text-green-400" /> أهدافك النشطة
+          {summary.atRisk > 0 && (
+            <span className="text-[9px] bg-red-500/15 text-red-400 px-2 py-0.5 rounded-full">
+              {summary.atRisk} في خطر
+            </span>
+          )}
+        </h2>
+        <span className="text-[10px] text-gray-500">{goals.length} هدف</span>
+      </div>
+
+      <div className="space-y-2">
+        {goals.slice(0, 3).map((goal, idx) => {
+          const progress = goal.progress || 0;
+          const quadrant = QUADRANT_LABELS[goal.eisenhower_quadrant] || QUADRANT_LABELS.important;
+          const linked = goal.linkedTasks || goal.pendingTasks || 0;
+          const completed = goal.completedTasks || 0;
+          const daysLeft = goal.target_date
+            ? Math.max(0, Math.ceil((new Date(goal.target_date) - getCairoNow()) / 86400000))
+            : null;
+
+          return (
+            <motion.div
+              key={goal.id || idx}
+              initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: idx * 0.05 }}
+              className="p-2.5 rounded-xl bg-white/5 border border-white/5 hover:bg-white/8 transition-all"
+            >
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className="text-sm font-medium text-white flex-1 truncate">{goal.title}</span>
+                <span className={`text-[8px] px-1.5 py-0.5 rounded-md font-medium ${quadrant.color}`}>
+                  {quadrant.label}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="flex-1 h-1.5 bg-white/5 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-700 ${
+                      progress >= 80 ? 'bg-green-500' : progress >= 40 ? 'bg-primary-500' : 'bg-yellow-500'
+                    }`}
+                    style={{ width: `${Math.min(100, progress)}%` }}
+                  />
+                </div>
+                <span className="text-[10px] text-gray-400 font-medium w-8 text-left">{progress}%</span>
+              </div>
+              <div className="flex items-center gap-3 mt-1">
+                {linked > 0 && (
+                  <span className="text-[9px] text-gray-500">{completed}/{linked} مهمة</span>
+                )}
+                {daysLeft !== null && (
+                  <span className={`text-[9px] ${daysLeft <= 3 ? 'text-red-400' : daysLeft <= 7 ? 'text-yellow-400' : 'text-gray-500'}`}>
+                    {daysLeft === 0 ? 'ينتهي اليوم!' : `${daysLeft} يوم متبقي`}
+                  </span>
+                )}
+                {goal.linkedBehaviors?.length > 0 && (
+                  <span className="text-[9px] text-purple-400">
+                    {goal.linkedBehaviors.length} عادة مرتبطة
+                  </span>
+                )}
+              </div>
+            </motion.div>
+          );
+        })}
+      </div>
+
+      {/* Goal suggestions */}
+      {goalSuggestions.length > 0 && (
+        <div className="mt-2 pt-2 border-t border-white/5">
+          {goalSuggestions.slice(0, 2).map((s, i) => (
+            <p key={i} className="text-[10px] text-gray-500 flex items-center gap-1 mb-1">
+              <Sparkles size={9} className="text-primary-400 flex-shrink-0" />
+              <span className="truncate">{s.message}</span>
+            </p>
+          ))}
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// HABIT SUGGESTION WIDGET — Smart suggestions based on time, patterns, failures
+// Shows behavior_type (build/quit), links to decision engine
+// ═════════════════════════════════════════════════════════════════════════════
+function HabitSuggestionWidget({ onLogHabit, onViewChange }) {
+  const { data: suggestionsRaw, isLoading } = useQuery({
+    queryKey: ['habit-suggestions'],
+    queryFn: habitAPI.getSuggestions,
+    staleTime: 2 * 60 * 1000,
+    refetchInterval: 5 * 60 * 1000,
+    retry: 1,
+  });
+
+  const suggestions = suggestionsRaw?.data?.data || [];
+
+  if (isLoading || suggestions.length === 0) return null;
+
+  const BEHAVIOR_TYPE_LABELS = {
+    build: { label: 'بناء', icon: '🌱', color: 'text-green-400 bg-green-500/10' },
+    break: { label: 'تخلص', icon: '🚫', color: 'text-red-400 bg-red-500/10' },
+    maintain: { label: 'حافظ', icon: '🔄', color: 'text-blue-400 bg-blue-500/10' },
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+      className="glass-card p-4 bg-gradient-to-br from-purple-500/8 to-primary-500/5 border border-purple-500/15"
+      dir="rtl" role="region" aria-label="اقتراحات العادات"
+    >
+      <div className="flex items-center justify-between mb-2.5">
+        <h2 className="text-sm font-bold text-white flex items-center gap-2">
+          <Sparkles size={14} className="text-purple-400" /> اقتراحات ذكية
+        </h2>
+        <button onClick={() => onViewChange?.('habits')}
+          className="text-[10px] text-primary-400 hover:text-primary-300">
+          كل العادات
+        </button>
+      </div>
+
+      <div className="space-y-1.5">
+        {suggestions.slice(0, 3).map((s, idx) => {
+          const bt = BEHAVIOR_TYPE_LABELS[s.behavior_type] || BEHAVIOR_TYPE_LABELS.build;
+          return (
+            <motion.div
+              key={s.habit_id}
+              initial={{ opacity: 0, x: -4 }} animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: idx * 0.08 }}
+              className="flex items-center gap-2.5 p-2 rounded-lg bg-white/5 hover:bg-white/8 transition-all"
+            >
+              <span className="text-lg flex-shrink-0">{s.icon}</span>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <p className="text-xs text-white font-medium truncate">{s.name}</p>
+                  <span className={`text-[8px] px-1.5 py-0.5 rounded-md ${bt.color}`}>
+                    {bt.icon} {bt.label}
+                  </span>
+                  {s.current_streak > 0 && (
+                    <span className="text-[8px] text-orange-400">🔥{s.current_streak}</span>
+                  )}
+                </div>
+                <p className="text-[10px] text-gray-500 truncate">{s.reason}</p>
+              </div>
+              <button
+                onClick={() => onLogHabit(s.habit_id)}
+                className="text-[10px] px-2.5 py-1.5 bg-primary-500/15 text-primary-400 rounded-lg
+                  hover:bg-primary-500/25 transition-all active:scale-95 flex-shrink-0"
+              >
+                سجّل
+              </button>
+            </motion.div>
+          );
+        })}
+      </div>
+    </motion.div>
   );
 }
 
@@ -1326,6 +1557,13 @@ export default function DashboardHome({ dashboardData, isLoading, isError, onVie
         </div>
       )}
 
+      {/* ═══ Goal Context Card — active goals visible in daily flow ═══ */}
+      <GoalContextCard
+        dashboardData={dashboardData}
+        todayFlowData={todayFlowData}
+        onViewChange={onViewChange}
+      />
+
       {/* Dynamic Execution Timeline (replaces static Today's Tasks) */}
       <DynamicExecutionTimeline
         tasks={today_tasks}
@@ -1337,6 +1575,12 @@ export default function DashboardHome({ dashboardData, isLoading, isError, onVie
       {/* Behavior Intelligence Card (replaces simple Habits grid) */}
       <BehaviorIntelligenceCard
         habits={habits}
+        onLogHabit={(id) => logHabit.mutate(id)}
+        onViewChange={onViewChange}
+      />
+
+      {/* ═══ Smart Habit Suggestions — time/pattern/failure-based ═══ */}
+      <HabitSuggestionWidget
         onLogHabit={(id) => logHabit.mutate(id)}
         onViewChange={onViewChange}
       />

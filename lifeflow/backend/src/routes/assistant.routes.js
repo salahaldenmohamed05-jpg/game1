@@ -387,6 +387,25 @@ router.get('/context', async (req, res) => {
       return d === ctx.today;
     });
 
+    // Enrich with goal context (Phase G: assistant context enrichment)
+    let goalContext = null;
+    try {
+      const goalEngine = require('../services/goal.engine.service');
+      if (goalEngine?.getGoalSummaryForAI) {
+        goalContext = await goalEngine.getGoalSummaryForAI(req.user.id, tz);
+      } else if (goalEngine?.getGoalContext) {
+        const gCtx = await goalEngine.getGoalContext(req.user.id, tz);
+        goalContext = { summary: gCtx.summary, topGoals: (gCtx.activeGoals || []).slice(0, 3).map(g => g.title) };
+      }
+    } catch (_e) { /* goal engine optional */ }
+
+    // Enrich with analytics snapshot
+    let analyticsSnapshot = null;
+    try {
+      const analytics = require('../services/analytics.service');
+      analyticsSnapshot = await analytics.getAnalyticsSnapshot(req.user.id, tz);
+    } catch (_e) { /* analytics optional */ }
+
     res.json({
       success: true,
       data: {
@@ -402,6 +421,9 @@ router.get('/context', async (req, res) => {
         // Profile & Settings data for frontend personalization
         user_profile  : ctx.profile || null,
         user_settings : ctx.settings || null,
+        // Phase G: Goal & Analytics enrichment
+        goal_context  : goalContext,
+        analytics     : analyticsSnapshot,
       }
     });
   } catch (e) {

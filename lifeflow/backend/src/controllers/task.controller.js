@@ -21,6 +21,13 @@ function getBehaviorService() {
 function getUserModelService() {
   try { return require('../services/user.model.service'); } catch (_) { return null; }
 }
+// Step 3: Wire goal engine for auto-linking and progress
+function getGoalEngine() {
+  try { return require('../services/goal.engine.service'); } catch (_) { return null; }
+}
+function getGoalModel() {
+  try { return require('../models/goal.model'); } catch (_) { return null; }
+}
 
 /* ─── Smart Notification Helper ────────────────────────────────── */
 async function createTaskReminder(task, user) {
@@ -410,6 +417,38 @@ exports.createTask = async (req, res) => {
       taskData.end_time = utc && typeof utc.toISOString === 'function' ? utc.toISOString() : String(utc || taskData.end_time);
     }
 
+    // Auto-link to goal: if goal_id not explicitly provided, infer from category
+    if (!taskData.goal_id) {
+      try {
+        const Goal = getGoalModel();
+        if (Goal) {
+          // First try matching by category
+          const categoryGoal = taskData.category
+            ? await Goal.findOne({
+                where: { user_id: req.user.id, status: 'active', category: taskData.category },
+                attributes: ['id'],
+                order: [['priority_score', 'DESC']],
+                raw: true,
+              })
+            : null;
+          if (categoryGoal) {
+            taskData.goal_id = categoryGoal.id;
+          } else {
+            // Fallback: link to the highest-priority active goal
+            const topGoal = await Goal.findOne({
+              where: { user_id: req.user.id, status: 'active' },
+              attributes: ['id'],
+              order: [['priority_score', 'DESC']],
+              raw: true,
+            });
+            if (topGoal) taskData.goal_id = topGoal.id;
+          }
+        }
+      } catch (e) {
+        logger.debug('[TASK] Goal auto-link failed:', e.message);
+      }
+    }
+
     // AI auto-prioritize
     try {
       const aiPriority = await aiService.prioritizeTask(taskData, req.user);
@@ -482,6 +521,16 @@ exports.updateTask = async (req, res) => {
 
     await task.update(req.body);
 
+    // Update linked goal progress on completion
+    if (req.body.status === 'completed' && task.goal_id) {
+      const goalEngine = getGoalEngine();
+      if (goalEngine) {
+        goalEngine.autoUpdateProgress(task.goal_id, req.user.id).catch(e =>
+          logger.debug('[TASK] Goal progress update failed:', e.message)
+        );
+      }
+    }
+
     const io = req.app.get('io');
     io?.to(`user_${req.user.id}`).emit('task_updated', task);
 
@@ -529,6 +578,16 @@ exports.completeTask = async (req, res) => {
         energy_required: task.energy_required,
         category: task.category,
       }).catch(e => logger.debug('[TASK] UserModel update failed:', e.message));
+    }
+
+    // Step 3: Update linked goal progress
+    if (task.goal_id) {
+      const goalEngine = getGoalEngine();
+      if (goalEngine) {
+        goalEngine.autoUpdateProgress(task.goal_id, req.user.id).catch(e =>
+          logger.debug('[TASK] Goal progress update failed:', e.message)
+        );
+      }
     }
 
     if (task.is_recurring && task.recurrence_pattern) {

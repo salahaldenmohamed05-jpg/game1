@@ -551,28 +551,75 @@ async function buildNextAction(userId, timezone) {
     }
   }
 
-  // 2. TIME-OF-DAY FILTERING: Tag action suitability
-  if (next_action?.id && !next_action._reality_override) {
-    const isHeavyTask = next_action.is_deep_work || next_action.priority === 'urgent' || 
-                        (next_action.estimated_minutes && next_action.estimated_minutes > 45);
-    
-    if (isEvening && isHeavyTask) {
-      // Evening: prefer light tasks, warn about heavy ones
-      reasoning.unshift('🌆 مساءً — مهمة ثقيلة. يمكنك البدء أو تأجيلها للصباح.');
-      next_action._time_warning = 'heavy_evening';
-    }
-    
-    if (isLateNight) {
-      // Late night: only reflection/planning
-      reasoning.unshift('🌙 وقت متأخر — فقط تأمل وتخطيط.');
-      next_action._time_warning = 'late_night_override';
+  // 2. HARD OVERRIDES: Enforce energy + time rules (not just warnings)
+  const isHeavyTask = next_action?.id && !next_action._reality_override &&
+    (next_action.is_deep_work || next_action.priority === 'urgent' ||
+     (next_action.estimated_minutes && next_action.estimated_minutes > 45));
+  const isSleepTime = currentHour >= 22 || currentHour < 5;
+  const isVeryLowEnergy = energyLevel < 20;
+
+  // HARD OVERRIDE: Very low energy + sleep time → force break
+  if (isVeryLowEnergy && isSleepTime && next_action?.id && !next_action._reality_override) {
+    next_action = {
+      type: 'break', id: null,
+      title: '😴 وقت الراحة — طاقتك منخفضة جداً',
+      message: 'الطاقة أقل من 20% والوقت متأخر. نم جيداً واستعد لغد أفضل.',
+      cta_label: 'فهمت', cta_action: 'navigate',
+      priority: 'low', category: null,
+      estimated_minutes: null, due_time: null,
+      next_steps: ['أغلق الشاشات', 'نم مبكراً', 'غداً يوم جديد'],
+      is_deep_work: false, is_quick_task: false,
+      _reality_override: true,
+      _reality_reason: 'low_energy_sleep_time',
+    };
+    reasoning = ['😴 طاقتك منخفضة جداً والوقت متأخر — الراحة ضرورة وليست كسلاً'];
+    confidence = 98;
+  }
+  // HARD OVERRIDE: Block deep work when low energy (below 30)
+  else if (isHeavyTask && energyLevel < 30 && !next_action._reality_override) {
+    reasoning.unshift('⚡ طاقتك منخفضة — المهمة ثقيلة. اخترنا لك مهمة أخف.');
+    next_action._time_warning = 'low_energy_block';
+    // Try to find a lighter alternative from the list
+    const lighterAlt = alternatives.find(a => a.estimated_minutes && a.estimated_minutes <= 15);
+    if (lighterAlt) {
+      alternatives.unshift({
+        type: next_action.type, id: next_action.id, title: next_action.title,
+        score: confidence, priority: next_action.priority,
+        estimated_minutes: next_action.estimated_minutes,
+        message: '⚡ مهمة ثقيلة — مؤجلة لوقت أفضل',
+      });
+      next_action = { ...next_action, id: lighterAlt.id, title: lighterAlt.title,
+        priority: lighterAlt.priority, estimated_minutes: lighterAlt.estimated_minutes,
+        _reality_override: true, _reality_reason: 'low_energy_swap' };
     }
   }
+  // HARD OVERRIDE: Block deep work past sleep time (22:00+)
+  else if (isHeavyTask && isSleepTime && !next_action._reality_override) {
+    reasoning.unshift('🌙 الساعة متأخرة — لا ننصح بمهام ثقيلة. اختر شيء خفيف أو خطط للغد.');
+    next_action._time_warning = 'sleep_time_block';
+    // Swap to lighter if available
+    const lighterAlt = alternatives.find(a => a.estimated_minutes && a.estimated_minutes <= 15);
+    if (lighterAlt) {
+      alternatives.unshift({
+        type: next_action.type, id: next_action.id, title: next_action.title,
+        score: confidence, priority: next_action.priority,
+        estimated_minutes: next_action.estimated_minutes,
+        message: '🌙 مهمة ثقيلة — مؤجلة للصباح',
+      });
+      next_action = { ...next_action, id: lighterAlt.id, title: lighterAlt.title,
+        priority: lighterAlt.priority, estimated_minutes: lighterAlt.estimated_minutes,
+        _reality_override: true, _reality_reason: 'sleep_time_swap' };
+    }
+  }
+  // SOFT WARNING: Evening heavy task (original behavior)
+  else if (isEvening && isHeavyTask && !next_action._reality_override) {
+    reasoning.unshift('🌆 مساءً — مهمة ثقيلة. يمكنك البدء أو تأجيلها للصباح.');
+    next_action._time_warning = 'heavy_evening';
+  }
 
-  // 3. HIGH BURNOUT: Suggest rest
+  // 3. HIGH BURNOUT: Suggest rest (HARD at 0.7+, was 0.8)
   if (highBurnout && next_action?.id && !next_action._reality_override) {
-    reasoning.unshift('🔥 مستوى الإرهاق مرتفع — خذ استراحة أو اختر مهمة خفيفة.');
-    if (burnoutRisk >= 0.8) {
+    if (burnoutRisk >= 0.7) {
       next_action = {
         type: 'break', id: null,
         title: '🧘 خذ استراحة — طاقتك منخفضة',
@@ -587,6 +634,8 @@ async function buildNextAction(userId, timezone) {
       };
       reasoning = ['🔥 مستوى الإرهاق مرتفع جداً — الراحة أولوية'];
       confidence = 90;
+    } else {
+      reasoning.unshift('🔥 مستوى الإرهاق مرتفع — خذ استراحة أو اختر مهمة خفيفة.');
     }
   }
 
@@ -715,6 +764,80 @@ async function buildNextAction(userId, timezone) {
     score: Math.round(energyLevel),
     label: energyLevel >= 70 ? 'طاقة عالية ⚡' : energyLevel >= 45 ? 'طاقة متوسطة 💪' : 'طاقة منخفضة 😴',
   };
+
+  // ═══ HABIT ↔ TASK COMPETITION ═════════════════════════════════════════
+  // In morning routines or low-energy states, a habit may beat a task
+  // ════════════════════════════════════════════════════════════════════
+  if (next_action?.id && next_action?.type === 'task' && !next_action._reality_override && progress) {
+    const undoneHabits = (progress.today_habits || []).filter(
+      h => !(progress.done_habit_ids || []).includes(h.id)
+    );
+
+    // Morning routine priority: before noon, habits with morning cue win
+    if (isMorning && undoneHabits.length > 0) {
+      const morningHabit = undoneHabits.find(h => {
+        const ht = h.target_time || h.preferred_time;
+        if (!ht) return false;
+        const hh = parseInt(String(ht).split(':')[0]) || 0;
+        return hh >= 5 && hh < 12;
+      });
+      // Streak protection: prioritize habits with streaks at risk
+      const streakAtRisk = undoneHabits.find(h => (h.current_streak || 0) >= 3);
+      const habitToSuggest = streakAtRisk || morningHabit;
+
+      if (habitToSuggest) {
+        // Move current task to alternatives, suggest habit
+        alternatives.unshift({
+          type: next_action.type, id: next_action.id, title: next_action.title,
+          score: confidence, priority: next_action.priority,
+          estimated_minutes: next_action.estimated_minutes,
+          message: 'مهمة — بعد العادة الصباحية',
+        });
+        const habitName = habitToSuggest.name_ar || habitToSuggest.name;
+        next_action = {
+          type: 'habit',
+          id: habitToSuggest.id,
+          title: habitName,
+          message: streakAtRisk ? `🔥 سلسلة ${streakAtRisk.current_streak} يوم — لا تقطعها!` : `⏰ وقت العادة الصباحية`,
+          cta_label: 'سجّل',
+          cta_action: 'log',
+          priority: 'medium',
+          category: null,
+          estimated_minutes: 5,
+          due_time: null,
+          next_steps: [],
+          is_deep_work: false,
+          is_quick_task: true,
+        };
+        reasoning.unshift(streakAtRisk
+          ? `🔥 عادة "${habitName}" فيها سلسلة ${streakAtRisk.current_streak} يوم — سجّلها الأول`
+          : `⏰ صباحاً — ابدأ بعادتك "${habitName}" ثم انتقل للمهام`);
+      }
+    }
+
+    // Low energy: suggest micro-habit instead of task
+    if (energyLevel < 30 && undoneHabits.length > 0 && next_action?.type === 'task') {
+      const easyHabit = undoneHabits[0]; // Just pick first undone habit
+      if (easyHabit) {
+        reasoning.unshift(`😴 طاقتك منخفضة — جرّب عادة خفيفة بدل المهمة`);
+        alternatives.unshift({
+          type: 'habit', id: easyHabit.id, title: easyHabit.name_ar || easyHabit.name,
+          score: 60, priority: 'medium', estimated_minutes: 5,
+          message: '😴 مناسبة للطاقة المنخفضة',
+        });
+      }
+    }
+  }
+
+  // Resolve goal_context if not already set and next_action has an id
+  if (!goal_context && next_action?.id && next_action?.type) {
+    const goalEngine = getGoalEngine();
+    if (goalEngine) {
+      try {
+        goal_context = await goalEngine.getGoalForAction(next_action.type, next_action.id, userId);
+      } catch (_) {}
+    }
+  }
 
   return { next_action, reasoning, confidence, mode, alternatives, progress, energy, signals, goal_context, behavior_context };
 }
@@ -1840,6 +1963,38 @@ router.post('/onboarding', async (req, res) => {
       ).catch(() => {});
     }
 
+    // Create a quick-win first task (2 minutes) linked to the first goal
+    let quickWinTask = null;
+    if (models.Task && result.goals.length > 0) {
+      try {
+        const todayStr = moment().tz('Africa/Cairo').format('YYYY-MM-DD');
+        quickWinTask = await models.Task.create({
+          user_id: userId,
+          title: 'ابدأ بأول خطوة (2 دقيقة)',
+          description: 'مهمة صغيرة لتبدأ يومك بإنجاز سريع — راجع أهدافك أو اكتب خطتك اليومية.',
+          category: result.goals[0].category || 'personal',
+          priority: 'medium',
+          status: 'pending',
+          due_date: todayStr,
+          estimated_duration: 2,
+          goal_id: result.goals[0].id,
+          energy_required: 'low',
+        });
+        logger.info(`[ENGINE] Quick-win task created for user ${userId}: ${quickWinTask.id}`);
+      } catch (e) {
+        logger.debug('[ENGINE] Quick-win task creation failed:', e.message);
+      }
+    }
+
+    // Build first_action from quick-win task or onboarding result
+    const firstAction = quickWinTask ? {
+      type: 'task',
+      id: quickWinTask.id,
+      title: quickWinTask.title,
+      message: 'مهمة 2 دقيقة — ابدأ فوراً وحقق أول إنجاز!',
+      estimated_minutes: 2,
+    } : result.first_action;
+
     logger.info(`[ENGINE] /onboarding user=${userId} role=${role} areas=${(focus_areas || []).join(',')} goals=${result.goals.length}`);
 
     res.json({
@@ -1847,7 +2002,7 @@ router.post('/onboarding', async (req, res) => {
       data: {
         goals: result.goals,
         behaviors: result.behaviors,
-        first_action: result.first_action,
+        first_action: firstAction,
         message: `تم إنشاء ${result.goals.length} أهداف و${result.behaviors.length} سلوكيات — ابدأ الآن!`,
       },
     });
@@ -1875,6 +2030,68 @@ router.get('/goals', async (req, res) => {
   } catch (err) {
     logger.error('[ENGINE] /goals error:', err.message);
     res.json({ success: true, data: { activeGoals: [], summary: { total: 0 } } });
+  }
+});
+
+// POST /engine/goals — Create a new goal with optional SMART criteria
+// ═════════════════════════════════════════════════════════════════════════════
+router.post('/goals', async (req, res) => {
+  const userId = req.user.id;
+  try {
+    const Goal = getModels().Goal;
+    if (!Goal) return res.status(500).json({ success: false, message: 'نموذج الأهداف غير متاح' });
+
+    const { title, description, category, target_date, goal_type, time_horizon,
+            eisenhower_quadrant, smart_criteria, success_metric } = req.body;
+
+    if (!title) return res.status(400).json({ success: false, message: 'عنوان الهدف مطلوب' });
+
+    const goal = await Goal.create({
+      user_id: userId,
+      title,
+      description: description || '',
+      category: category || 'general',
+      target_date: target_date || null,
+      goal_type: goal_type || 'outcome',
+      time_horizon: time_horizon || 'monthly',
+      eisenhower_quadrant: eisenhower_quadrant || 'important',
+      smart_criteria: smart_criteria || {},
+      success_metric: success_metric || {},
+      source: 'user_created',
+      auto_progress: true,
+    });
+
+    logger.info(`[ENGINE] Created goal "${title}" for user ${userId}`);
+    res.status(201).json({ success: true, data: goal, message: `تم إنشاء هدف "${title}" بنجاح 🎯` });
+  } catch (err) {
+    logger.error('[ENGINE] POST /goals error:', err.message);
+    res.status(500).json({ success: false, message: 'فشل في إنشاء الهدف' });
+  }
+});
+
+// PUT /engine/goals/:id — Update a goal
+// ═════════════════════════════════════════════════════════════════════════════
+router.put('/goals/:id', async (req, res) => {
+  const userId = req.user.id;
+  try {
+    const Goal = getModels().Goal;
+    if (!Goal) return res.status(500).json({ success: false, message: 'نموذج الأهداف غير متاح' });
+
+    const goal = await Goal.findOne({ where: { id: req.params.id, user_id: userId } });
+    if (!goal) return res.status(404).json({ success: false, message: 'الهدف غير موجود' });
+
+    const allowedFields = ['title', 'description', 'category', 'target_date', 'goal_type',
+      'time_horizon', 'eisenhower_quadrant', 'smart_criteria', 'success_metric',
+      'status', 'progress', 'milestones', 'auto_progress'];
+    const updates = {};
+    allowedFields.forEach(f => { if (req.body[f] !== undefined) updates[f] = req.body[f]; });
+
+    await goal.update(updates);
+    logger.info(`[ENGINE] Updated goal "${goal.title}" for user ${userId}`);
+    res.json({ success: true, data: goal, message: 'تم تحديث الهدف' });
+  } catch (err) {
+    logger.error('[ENGINE] PUT /goals/:id error:', err.message);
+    res.status(500).json({ success: false, message: 'فشل في تحديث الهدف' });
   }
 });
 

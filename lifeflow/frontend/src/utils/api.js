@@ -218,12 +218,20 @@ export const taskAPI = {
 export const habitAPI = {
   getHabits: () => api.get('/habits'),
   getTodaySummary: () => api.get('/habits/today-summary'),
+  getSuggestions: () => api.get('/habits/suggestions'),
   createHabit: (data) => api.post('/habits', data),
   updateHabit: (id, data) => api.put(`/habits/${id}`, data),
   deleteHabit: (id) => api.delete(`/habits/${id}`),
   checkIn: (id, data) => api.post(`/habits/${id}/check-in`, data),
   logValue: (id, data) => api.post(`/habits/${id}/log`, data),
   getStats: (id) => api.get(`/habits/${id}/stats`),
+};
+
+// ─── Goals API ───────────────────────────────────────────────────────────────
+export const goalsAPI = {
+  getGoals: () => api.get('/engine/goals'),
+  createGoal: (data) => api.post('/engine/goals', data),
+  updateGoal: (id, data) => api.put(`/engine/goals/${id}`, data),
 };
 
 // ─── Mood API ─────────────────────────────────────────────────────────────────

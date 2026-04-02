@@ -524,6 +524,19 @@ async function createBehaviorFromOnboarding(userId, area, goalId = null) {
   try {
     const fullSpec = { ...DEFAULT_BEHAVIOR_SPEC, ...template.spec };
 
+    // Deduplication: check if habit with same name already exists for user
+    const existingHabit = await Habit.findOne({
+      where: { user_id: userId, name: template.name },
+    });
+    if (existingHabit) {
+      logger.info(`[BEHAVIOR-ENGINE] Duplicate prevented: "${template.name}" already exists for user ${userId}`);
+      // Update goal_id if missing
+      if (goalId && !existingHabit.goal_id) {
+        await existingHabit.update({ goal_id: goalId });
+      }
+      return existingHabit;
+    }
+
     const habit = await Habit.create({
       user_id: userId,
       name: template.name,

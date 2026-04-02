@@ -166,6 +166,10 @@ exports.createHabit = async (req, res) => {
       preferred_time,
       reminder_before = 15,
       reminder_enabled = true,
+      // Phase 3: behavior_type support (build/quit)
+      behavior_type = 'build', // 'build' | 'break' | 'maintain'
+      replaces_behavior,       // what negative behavior this replaces (for quit habits)
+      goal_id,                 // link to a goal
     } = req.body;
 
     // Resolve frequency_type: use explicit field, fallback to frequency
@@ -193,7 +197,24 @@ exports.createHabit = async (req, res) => {
       count_label: count_label || unit || 'مرة',
       reminder_before: parseInt(reminder_before) || 15,
       reminder_enabled: reminder_enabled !== false,
+      behavior_type: behavior_type || 'build',
+      replaces_behavior: replaces_behavior || null,
+      goal_id: goal_id || null,
     };
+
+    // Deduplication: check if habit with same name already exists for this user
+    const existingHabit = await Habit.findOne({
+      where: { user_id: req.user.id, name: habitData.name },
+    });
+    if (existingHabit) {
+      logger.info(`[HABIT] Duplicate prevented: "${habitData.name}" already exists for user ${req.user.id}`);
+      return res.status(200).json({
+        success: true,
+        message: `العادة "${habitData.name}" موجودة بالفعل`,
+        data: existingHabit,
+        duplicate: true,
+      });
+    }
 
     const habit = await Habit.create(habitData);
 
@@ -228,6 +249,7 @@ exports.updateHabit = async (req, res) => {
       'target_time', 'duration_minutes',
       'target_value', 'unit', 'description', 'is_active',
       'habit_type', 'count_label', 'reminder_enabled', 'reminder_times',
+      'behavior_type', 'replaces_behavior', 'goal_id',
     ];
 
     const updates = {};
@@ -543,6 +565,100 @@ exports.getHabitSchedule = async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ success: false, message: 'فشل في جلب جدول العادة' });
+  }
+};
+
+/**
+ * @route   GET /api/v1/habits/suggestions
+ * @desc    Smart habit suggestions based on time, patterns, and failures
+ */
+exports.getSmartSuggestions = async (req, res) => {
+  try {
+    const timezone = req.user.timezone || 'Africa/Cairo';
+    const now = moment().tz(timezone);
+    const today = now.format('YYYY-MM-DD');
+    const currentHour = now.hour();
+
+    const habits = await Habit.findAll({ where: { user_id: req.user.id, is_active: true } });
+    const todayLogs = await HabitLog.findAll({
+      where: { user_id: req.user.id, log_date: today, habit_id: { [Op.in]: habits.map(h => h.id) } },
+    });
+    const logMap = {};
+    todayLogs.forEach(l => { logMap[l.habit_id] = l; });
+
+    const suggestions = [];
+
+    for (const habit of habits) {
+      const log = logMap[habit.id];
+      const isDone = habit.habit_type === 'count'
+        ? (log?.value || 0) >= (habit.target_value || 1)
+        : (log?.completed || false);
+      if (isDone) continue;
+      if (!isScheduledForDate(habit, today)) continue;
+
+      let priority = 50;
+      let reason = '';
+
+      // Time match: current hour near preferred/best time
+      const targetTime = habit.preferred_time || habit.ai_best_time || habit.target_time;
+      if (targetTime) {
+        const hh = parseInt(targetTime.split(':')[0]) || 0;
+        const diff = Math.abs(currentHour - hh);
+        if (diff === 0) {
+          priority += 40;
+          reason = `⏰ الآن وقت ${habit.name_ar || habit.name}`;
+        } else if (diff === 1) {
+          priority += 25;
+          reason = `⏳ قرب موعد ${habit.name_ar || habit.name}`;
+        } else if (diff <= 2) {
+          priority += 10;
+          reason = `📅 ${habit.name_ar || habit.name} في خلال ${diff} ساعة`;
+        }
+      }
+
+      // Streak at risk
+      if ((habit.current_streak || 0) >= 3) {
+        priority += 20;
+        reason = reason || `🔥 سلسلة ${habit.current_streak} يوم — لا تقطعها!`;
+      }
+
+      // Broken streak recovery
+      if ((habit.longest_streak || 0) > 5 && (habit.current_streak || 0) === 0) {
+        priority += 15;
+        reason = reason || `⚠️ ${habit.name_ar || habit.name} — ابدأ سلسلة جديدة!`;
+      }
+
+      // Quit habit urgency
+      if (habit.behavior_type === 'break') {
+        priority += 10;
+        reason = reason || `🚫 ${habit.name_ar || habit.name} — عادة تحاول التخلص منها`;
+      }
+
+      if (!reason) {
+        reason = `📋 ${habit.name_ar || habit.name} — لم تسجلها بعد اليوم`;
+      }
+
+      suggestions.push({
+        habit_id: habit.id,
+        name: habit.name_ar || habit.name,
+        icon: habit.icon || '⭐',
+        color: habit.color || '#6C63FF',
+        category: habit.category,
+        behavior_type: habit.behavior_type || 'build',
+        current_streak: habit.current_streak || 0,
+        priority,
+        reason,
+        target_time: targetTime,
+      });
+    }
+
+    // Sort by priority descending, return top 5
+    suggestions.sort((a, b) => b.priority - a.priority);
+
+    res.json({ success: true, data: suggestions.slice(0, 5) });
+  } catch (error) {
+    logger.error('Habit suggestions error:', error);
+    res.status(500).json({ success: false, message: 'فشل في جلب الاقتراحات' });
   }
 };
 
