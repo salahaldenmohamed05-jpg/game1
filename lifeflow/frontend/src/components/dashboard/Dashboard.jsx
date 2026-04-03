@@ -34,6 +34,7 @@ import ProfileView from '../profile/ProfileView';
 import SettingsView from '../settings/SettingsView';
 import FocusTimerView from '../focus/FocusTimerView';
 import ExecutionScreen from '../execution/ExecutionScreen';
+import DailyExecutionFlow from '../execution/DailyExecutionFlow';
 import ExportView from '../export/ExportView';
 import useAuthStore from '../../store/authStore';
 import ErrorBoundary from '../common/ErrorBoundary';
@@ -44,6 +45,7 @@ import QuickWidget from '../widget/QuickWidget';
 
 const VIEWS = {
   dashboard:     DashboardHome,
+  daily_flow:    DailyExecutionFlow,
   execution:     ExecutionScreen,
   tasks:         TasksView,
   habits:        HabitsView,

@@ -529,6 +529,18 @@ export const exportAPI = {
   exportSummary: (period = 'month') => api.post('/export/summary', { period }),
 };
 
+// ─── Daily Flow API (Phase 4: Daily Execution Flow) ─────────────────────────
+export const dailyFlowAPI = {
+  getStatus:      ()     => api.get('/daily-flow/status'),
+  startDay:       ()     => api.post('/daily-flow/start-day'),
+  getPlan:        ()     => api.get('/daily-flow/plan'),
+  completeBlock:  (data) => api.post('/daily-flow/complete-block', data),
+  skipBlock:      (data) => api.post('/daily-flow/skip-block', data),
+  checkHabit:     (data) => api.post('/daily-flow/check-habit', data),
+  endDay:         (data) => api.post('/daily-flow/end-day', data),
+  getNarrative:   ()     => api.get('/daily-flow/narrative'),
+};
+
 export const vaAPI = {
   // Phase 1: VA Presence Layer
   getPresence:       ()     => api.get('/va/presence'),

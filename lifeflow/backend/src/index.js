@@ -53,6 +53,7 @@ const engineRoutes       = require('./routes/engine.routes');     // Execution E
 const vaRoutes           = require('./routes/va.routes');          // Full Adaptive VA: Presence + Follow-up + Communication
 const searchRoutes       = require('./routes/search.routes');      // Global Search
 const exportRoutes       = require('./routes/export.routes');      // Data Export (CSV/JSON/PDF)
+const dailyFlowRoutes    = require('./routes/daily-flow.routes');  // Phase 4: Daily Execution Flow
 
 // Import scheduler
 const { initScheduler } = require('./services/scheduler.service');
@@ -152,6 +153,7 @@ app.use(`${API}/engine`,           engineRoutes);       // Execution Engine: Lif
 app.use(`${API}/va`,               vaRoutes);             // Full Adaptive VA: Presence + Communication + Follow-up
 app.use(`${API}/search`,           searchLimiter, searchRoutes);     // Global Search
 app.use(`${API}/export`,           exportLimiter, exportRoutes);     // Data Export
+app.use(`${API}/daily-flow`,       dailyFlowRoutes);                 // Phase 4: Daily Execution Flow
 
 // ============================================
 // Health Check

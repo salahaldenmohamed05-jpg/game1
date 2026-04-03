@@ -36,8 +36,8 @@ export function persistView(view) {
 // ─── Primary nav items (always visible) ───────────────────────────
 const NAV_ITEMS = [
   { id: 'dashboard', icon: Home,        label: 'الرئيسية' },
+  { id: 'daily_flow', icon: Rocket,     label: 'يومك' },
   { id: 'tasks',     icon: CheckSquare, label: 'المهام',   badge: 'tasks' },
-  { id: 'habits',    icon: Target,      label: 'العادات' },
   { id: 'assistant', icon: Sparkles,    label: 'المساعد' },
   { id: '__more__',  icon: MoreHorizontal, label: 'المزيد' },
 ];
