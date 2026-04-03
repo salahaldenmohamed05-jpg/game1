@@ -539,6 +539,7 @@ export const dailyFlowAPI = {
   checkHabit:     (data) => api.post('/daily-flow/check-habit', data),
   endDay:         (data) => api.post('/daily-flow/end-day', data),
   getNarrative:   ()     => api.get('/daily-flow/narrative'),
+  resetDay:       ()     => api.post('/daily-flow/reset-day'),
 };
 
 export const vaAPI = {

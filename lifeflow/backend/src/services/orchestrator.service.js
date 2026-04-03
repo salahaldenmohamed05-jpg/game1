@@ -76,22 +76,30 @@ const DECISION_QUERY_PATTERNS = [
   'ايش اسوي', 'ايش أسوي', 'اعمل ايه', 'أعمل إيه', 'أعمل ايه', 'اعمل إيه',
   'ابدأ بايه', 'أبدأ بإيه', 'ابدأ بإيه', 'أبدأ بايه', 'ابدأ يومي', 'ابدأ اليوم',
   'ايه الأهم', 'ايش الاهم', 'إيه الأهم', 'الأهم الحين', 'المهم دلوقتي',
-  'ايه اللي أعمله', 'ايش اسوي دحين', 'أبدأ بأيه', 'اقترح', 'اقترح لي',
+  'ايه اللي أعمله', 'ايش اسوي دحين', 'أبدأ بأيه',
   'شغلني', 'وجّهني', 'ايه الخطوة', 'الخطوة الجاية', 'ايه التالي', 'ايش التالي',
   'أعمل ايش', 'ابدأ من وين', 'اسوي ايش', 'ايش أسوي الحين',
   'ايش أبدأ', 'ابدأ بأي', 'ما المهمة', 'وش اسوي', 'وش أسوي',
   'ابدأ في ايه', 'ابدأ في إيه', 'ايه المهمة', 'المهمة الجاية',
   'عايز ابدأ', 'محتاج ابدأ', 'عاوز أشتغل',
-  'كيف حالي', 'كيف وضعي', 'كيف يومي', 'وضعي اليوم', 'حالتي اليوم',
-  'طاقتي', 'تركيزي', 'إنتاجيتي',
   'ايه اهم حاجة', 'ايه أهم حاجة', 'اهم حاجة',
   // English fallbacks
   'what should i do', 'what next', 'start my day', 'what\'s next',
-  'next task', 'what to do', 'suggest', 'guide me',
+  'next task', 'what to do', 'guide me',
+];
+
+// Patterns that should NOT trigger decision query even if matched above
+// (casual greetings, general questions)
+const NON_DECISION_PATTERNS = [
+  'مرحبا', 'أهلا', 'اهلا', 'السلام', 'كيف حالك', 'كيفك',
+  'hello', 'hi', 'hey', 'good morning', 'good evening',
+  'شكرا', 'يعطيك العافية', 'thank',
 ];
 
 function isDecisionQuery(message) {
   const lower = message.toLowerCase().trim();
+  // Skip if it's a casual/greeting message
+  if (NON_DECISION_PATTERNS.some(p => lower.includes(p))) return false;
   return DECISION_QUERY_PATTERNS.some(p => lower.includes(p));
 }
 
@@ -780,13 +788,12 @@ async function orchestrate({
       const ds = unifiedDecision.signalsUsed || {};
       const db = unifiedDecision.behaviorState || {};
       const decisionContext = [
-        `\n[═══ قرار محرك الذكاء الحالي ═══]`,
-        `المهمة الموصى بها: "${df.title || df.action}" (${df.type})`,
+        `\n[═══ سياق محرك الذكاء ═══]`,
+        `المهمة ذات الأولوية: "${df.title || df.action}" (${df.type})`,
         `الأسباب: ${(unifiedDecision.why || []).join(' | ')}`,
         `الحالة السلوكية: ${db.state || 'starting'} — ${db.description || ''}`,
         `الطاقة: ${ds.energy || 50}% | التركيز: ${ds.focus || 50}% | الإجهاد: ${Math.round((ds.burnout || 0) * 100)}%`,
-        `الثقة: ${unifiedDecision.confidence}%`,
-        `[قاعدة صارمة: استخدم هذه البيانات الحقيقية في ردك. لا تخترع مهام. لا ترد بشكل عام. اذكر اسم المهمة "${df.title || ''}" في ردك.]`,
+        `[تعليمات: أجب على سؤال المستخدم مباشرة أولاً. يمكنك الإشارة للمهمة ذات الأولوية إذا كان السؤال عن ماذا يعمل. لا تكرر نفس النصيحة. نوّع أسلوبك. إذا سأل عن شيء مختلف أجبه عنه.]`,
       ].join('\n');
       userMsgForAI += decisionContext;
     }

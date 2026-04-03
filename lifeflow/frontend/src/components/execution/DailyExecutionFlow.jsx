@@ -16,10 +16,10 @@ import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  Play, Pause, Check, X, Clock, Timer, Flame, Award,
+  Play, Pause, Check, CheckSquare, X, Clock, Timer, Flame, Award,
   SkipForward, Target, ChevronDown, ChevronUp,
   Sun, Moon, Sunrise, Zap, TrendingUp, Star,
-  Coffee, BookOpen, ArrowRight, RefreshCw, Heart,
+  Coffee, BookOpen, ArrowRight, RefreshCw, Heart, RotateCcw,
 } from 'lucide-react';
 import { dailyFlowAPI } from '../../utils/api';
 import toast from 'react-hot-toast';
@@ -43,11 +43,15 @@ const BLOCK_ICONS = {
 // ═══════════════════════════════════════════════════════════════════════════════
 // STAGE 1: START DAY SCREEN
 // ═══════════════════════════════════════════════════════════════════════════════
-function StartDayScreen({ onStartDay, isLoading }) {
+function StartDayScreen({ onStartDay, isLoading, stats }) {
   const hour = new Date().getHours();
   const timeIcon = hour < 12 ? <Sunrise size={24} className="text-amber-400" /> :
                    hour < 17 ? <Sun size={24} className="text-yellow-400" /> :
                    <Moon size={24} className="text-indigo-400" />;
+
+  const taskCount = stats?.total_tasks || 0;
+  const habitCount = stats?.total_habits || 0;
+  const overdueCount = stats?.overdue_count || 0;
 
   return (
     <motion.div
@@ -71,7 +75,7 @@ function StartDayScreen({ onStartDay, isLoading }) {
         {timeIcon}
       </motion.div>
 
-      {/* Greeting placeholder — will be replaced after API call */}
+      {/* Greeting */}
       <motion.h1
         initial={{ y: 10, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
@@ -90,27 +94,34 @@ function StartDayScreen({ onStartDay, isLoading }) {
         جاهز نبدأ يوم بسيط ومنظم؟ 💪
       </motion.p>
 
-      {/* Day snapshot cards */}
+      {/* Day snapshot cards — real data */}
       <motion.div
         initial={{ y: 20, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         transition={{ delay: 0.5 }}
-        className="flex gap-3 mb-8"
+        className="flex gap-3 mb-8 flex-wrap justify-center"
       >
         <div className="glass-card px-4 py-3 text-center min-w-[80px]">
-          <Target size={16} className="text-primary-400 mx-auto mb-1" />
-          <p className="text-xs text-gray-500">أهدافك</p>
-          <p className="text-sm font-bold text-white">نشطة</p>
+          <CheckSquare size={16} className="text-blue-400 mx-auto mb-1" />
+          <p className="text-xs text-gray-500">المهام</p>
+          <p className="text-sm font-bold text-white">{taskCount}</p>
         </div>
+        <div className="glass-card px-4 py-3 text-center min-w-[80px]">
+          <Target size={16} className="text-green-400 mx-auto mb-1" />
+          <p className="text-xs text-gray-500">العادات</p>
+          <p className="text-sm font-bold text-white">{habitCount}</p>
+        </div>
+        {overdueCount > 0 && (
+          <div className="glass-card px-4 py-3 text-center min-w-[80px] border-red-500/20">
+            <Flame size={16} className="text-red-400 mx-auto mb-1" />
+            <p className="text-xs text-gray-500">متأخرة</p>
+            <p className="text-sm font-bold text-red-400">{overdueCount}</p>
+          </div>
+        )}
         <div className="glass-card px-4 py-3 text-center min-w-[80px]">
           <Zap size={16} className="text-amber-400 mx-auto mb-1" />
           <p className="text-xs text-gray-500">الطاقة</p>
           <p className="text-sm font-bold text-white">{hour < 14 ? 'عالية' : hour < 18 ? 'متوسطة' : 'هادئة'}</p>
-        </div>
-        <div className="glass-card px-4 py-3 text-center min-w-[80px]">
-          <Clock size={16} className="text-green-400 mx-auto mb-1" />
-          <p className="text-xs text-gray-500">الوقت</p>
-          <p className="text-sm font-bold text-white">{hour < 12 ? 'صباح' : hour < 17 ? 'ظهر' : 'مساء'}</p>
         </div>
       </motion.div>
 
@@ -643,12 +654,12 @@ function DayNarrative({ narrative, onRestart }) {
 
       {/* Tomorrow CTA */}
       <div className="text-center mt-6">
-        <p className="text-sm text-gray-400 mb-3">{tomorrow_preview}</p>
+        <p className="text-sm text-gray-400 mb-3">{tomorrow_preview || 'بكرة يوم جديد — جاهز تبدأ؟'}</p>
         <button
           onClick={onRestart}
           className="px-8 py-3 bg-gradient-to-l from-primary-500 to-secondary-500 text-white font-bold rounded-2xl shadow-glow hover:shadow-xl transition-all"
         >
-          <span className="flex items-center gap-2"><Sunrise size={16} /> استعد لبكرة</span>
+          <span className="flex items-center gap-2"><RotateCcw size={16} /> ابدأ يوم جديد</span>
         </button>
       </div>
     </motion.div>
@@ -670,39 +681,41 @@ export default function DailyExecutionFlow({ onViewChange }) {
   const [progress, setProgress] = useState(null);
   const [lastReward, setLastReward] = useState(null);
   const [narrative, setNarrative] = useState(null);
+  const [dayStats, setDayStats] = useState(null);
 
   // ── Check day status on mount ─────────────────────────────────────────────
-  useEffect(() => {
-    (async () => {
-      try {
-        const resp = await dailyFlowAPI.getStatus();
-        const data = resp?.data?.data || {};
-        if (data.state === 'completed') {
-          // Day ended — show narrative
-          const narResp = await dailyFlowAPI.getNarrative();
-          setNarrative(narResp?.data?.data || null);
-          setStage('narrative');
-        } else if (data.state === 'active' || data.plan_exists) {
-          // Day started — load plan
-          const planResp = await dailyFlowAPI.getPlan();
-          const planData = planResp?.data?.data;
-          if (planData?.plan) {
-            setPlan(planData.plan);
-            setCurrentBlock(planData.current_block);
-            setProgress(planData.progress);
-            setStage('plan');
-          } else {
-            setStage('start');
-          }
+  const loadDayStatus = useCallback(async () => {
+    try {
+      const resp = await dailyFlowAPI.getStatus();
+      const data = resp?.data?.data || {};
+      setDayStats(data.stats);
+      if (data.state === 'completed') {
+        // Day ended — show narrative
+        const narResp = await dailyFlowAPI.getNarrative();
+        setNarrative(narResp?.data?.data || null);
+        setStage('narrative');
+      } else if (data.state === 'active' || data.plan_exists) {
+        // Day started — load plan
+        const planResp = await dailyFlowAPI.getPlan();
+        const planData = planResp?.data?.data;
+        if (planData?.plan) {
+          setPlan(planData.plan);
+          setCurrentBlock(planData.current_block);
+          setProgress(planData.progress);
+          setStage('plan');
         } else {
           setStage('start');
         }
-      } catch (err) {
-        console.warn('[DailyFlow] Status check failed:', err.message);
+      } else {
         setStage('start');
       }
-    })();
+    } catch (err) {
+      console.warn('[DailyFlow] Status check failed:', err.message);
+      setStage('start');
+    }
   }, []);
+
+  useEffect(() => { loadDayStatus(); }, [loadDayStatus]);
 
   // ── Start Day ──────────────────────────────────────────────────────────────
   const startDayMutation = useMutation({
@@ -806,14 +819,23 @@ export default function DailyExecutionFlow({ onViewChange }) {
     endDayMutation.mutate('');
   }, []);
 
-  const handleRestart = useCallback(() => {
-    // Reset to start for new day (or go back to dashboard)
-    if (onViewChange) {
-      onViewChange('dashboard');
-    } else {
+  const handleRestart = useCallback(async () => {
+    // Reset day state and go back to start screen
+    try {
+      await dailyFlowAPI.resetDay();
+      setStage('loading');
+      setPlan(null);
+      setCurrentBlock(null);
+      setProgress(null);
+      setLastReward(null);
+      setNarrative(null);
+      // Reload fresh
+      loadDayStatus();
+      toast.success('يوم جديد — يلا نبدأ! 🔄');
+    } catch {
       setStage('start');
     }
-  }, [onViewChange]);
+  }, [loadDayStatus]);
 
   const handleBackToPlan = useCallback(() => {
     setStage('plan');
@@ -829,7 +851,7 @@ export default function DailyExecutionFlow({ onViewChange }) {
   }
 
   if (stage === 'start') {
-    return <StartDayScreen onStartDay={handleStartDay} isLoading={startDayMutation.isPending} />;
+    return <StartDayScreen onStartDay={handleStartDay} isLoading={startDayMutation.isPending} stats={dayStats} />;
   }
 
   if (stage === 'plan') {

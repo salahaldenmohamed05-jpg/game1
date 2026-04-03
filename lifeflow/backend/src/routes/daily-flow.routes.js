@@ -256,10 +256,21 @@ router.get('/status', async (req, res) => {
     if (dayEnded) state = 'completed';
     else if (dayStarted) state = 'active';
 
-    // Quick stats
+    // Quick stats — include overdue tasks too (not just today)
     const { Task, Habit, HabitLog } = getModels();
     const [tasks, habits, habitLogs] = await Promise.all([
-      Task ? Task.findAll({ where: { user_id: userId, status: { [Op.in]: ['pending', 'in_progress'] }, due_date: today }, raw: true, limit: 20 }) : [],
+      Task ? Task.findAll({
+        where: {
+          user_id: userId,
+          status: { [Op.in]: ['pending', 'in_progress'] },
+          [Op.or]: [
+            { due_date: { [Op.lte]: today } },
+            { due_date: null },
+          ],
+        },
+        raw: true,
+        limit: 20,
+      }) : [],
       Habit ? Habit.findAll({ where: { user_id: userId, is_active: true }, raw: true }) : [],
       HabitLog ? HabitLog.findAll({ where: { user_id: userId, log_date: today }, raw: true }) : [],
     ]);
@@ -303,14 +314,19 @@ router.post('/start-day', async (req, res) => {
     const { Task, Habit, HabitLog, Goal } = getModels();
 
     // Fetch all data in parallel
+    // Include overdue tasks (due_date <= today) + pending/in_progress with no date
     const [tasks, habits, habitLogs, goals] = await Promise.all([
       Task ? Task.findAll({
         where: {
           user_id: userId,
           status: { [Op.in]: ['pending', 'in_progress'] },
-          [Op.or]: [{ due_date: today }, { due_date: null }, { status: 'in_progress' }],
+          [Op.or]: [
+            { due_date: { [Op.lte]: today } },   // today + overdue
+            { due_date: null },                    // no due date
+            { status: 'in_progress' },             // in progress regardless
+          ],
         },
-        order: [['priority', 'ASC'], ['ai_priority_score', 'DESC']],
+        order: [['priority', 'ASC'], ['due_date', 'ASC'], ['ai_priority_score', 'DESC']],
         limit: 15,
         raw: true,
       }) : [],
@@ -337,8 +353,12 @@ router.post('/start-day', async (req, res) => {
     // Main goal for today
     const mainGoal = goals.length > 0 ? (goals[0].title || goals[0].title_ar || 'تحقيق أهدافك') : 'تنظيم يومك';
 
-    // Build plan blocks
-    const blocks = buildPlanBlocks(todayTasks, habits, habitLogs, hour, energy);
+    // Build plan blocks — include ALL pending tasks (overdue + today + no date)
+    // Overdue tasks get priority; they appear at the top
+    const allPendingTasks = [...overdueTasks, ...todayTasks, ...tasks.filter(t => !t.due_date)]
+      // Deduplicate by id
+      .filter((t, idx, arr) => arr.findIndex(x => x.id === t.id) === idx);
+    const blocks = buildPlanBlocks(allPendingTasks, habits, habitLogs, hour, energy);
 
     // Store plan in memory (per user per day)
     const plan = {
@@ -380,10 +400,10 @@ router.post('/start-day', async (req, res) => {
       success: true,
       data: {
         greeting,
-        context: `${todayTasks.length} مهمة اليوم • هدفك الرئيسي: ${mainGoal}`,
+        context: `${allPendingTasks.length} مهمة (${overdueTasks.length} متأخرة) • هدفك: ${mainGoal}`,
         energy_estimate: energy,
         day_snapshot: {
-          tasks_count: todayTasks.length,
+          tasks_count: allPendingTasks.length,
           habits_count: habits.length,
           overdue_count: overdueTasks.length,
           main_goal: mainGoal,
@@ -866,6 +886,35 @@ router.get('/narrative', async (req, res) => {
   } catch (err) {
     logger.error('[DAILY-FLOW] /narrative error:', err.message);
     res.status(500).json({ success: false, message: 'خطأ' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// POST /daily-flow/reset-day — Reset day state (allows restart)
+// ═══════════════════════════════════════════════════════════════════════════════
+router.post('/reset-day', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const tz = req.user.timezone || 'Africa/Cairo';
+    const today = moment.tz(tz).format('YYYY-MM-DD');
+
+    // Clear all day state for this user+date
+    const prefix = `${userId}:${today}:`;
+    for (const key of localStorage_dayState.keys()) {
+      if (key.startsWith(prefix)) {
+        localStorage_dayState.delete(key);
+      }
+    }
+
+    logger.info(`[DAILY-FLOW] Day reset for user ${userId} on ${today}`);
+
+    res.json({
+      success: true,
+      data: { message: 'تم إعادة تعيين اليوم — يمكنك البدء من جديد! 🔄', date: today },
+    });
+  } catch (err) {
+    logger.error('[DAILY-FLOW] /reset-day error:', err.message);
+    res.status(500).json({ success: false, message: 'خطأ في إعادة التعيين' });
   }
 });
 
