@@ -19,7 +19,8 @@ const { connectDB } = require('./config/database');
 const { setupRedis } = require('./config/redis');
 const logger = require('./utils/logger');
 const { handleError, registerProcessHandlers } = require('./utils/errorHandler');
-const { authLimiter, aiLimiter, writeLimiter, globalLimiter } = require('./middleware/rateLimiter');
+const { authLimiter, aiLimiter, aiStrictLimiter, writeLimiter, searchLimiter, exportLimiter, globalLimiter } = require('./middleware/rateLimiter');
+const { cacheMiddleware, getCacheStats } = require('./config/redis');
 
 // Register process-level error handlers (uncaughtException, unhandledRejection)
 registerProcessHandlers();
@@ -45,6 +46,14 @@ const assistantRoutes    = require('./routes/assistant.routes');
 const chatRoutes         = require('./routes/chat.routes');        // Phase 16: chat sessions
 const { router: logsRoutes } = require('./routes/logs.routes');
 const profileRoutes      = require('./routes/profile.routes');   // Profile & Settings system
+const decisionRoutes     = require('./routes/decision.routes');  // Phase K: Core Brain Decision Engine
+const analyticsRoutes    = require('./routes/analytics.routes'); // Phase O: Single Source of Truth Analytics
+const userModelRoutes    = require('./routes/user-model.routes'); // Phase P: Persistent Per-User Intelligence
+const engineRoutes       = require('./routes/engine.routes');     // Execution Engine: Life Execution System
+const vaRoutes           = require('./routes/va.routes');          // Full Adaptive VA: Presence + Follow-up + Communication
+const searchRoutes       = require('./routes/search.routes');      // Global Search
+const exportRoutes       = require('./routes/export.routes');      // Data Export (CSV/JSON/PDF)
+const dailyFlowRoutes    = require('./routes/daily-flow.routes');  // Phase 4: Daily Execution Flow
 
 // Import scheduler
 const { initScheduler } = require('./services/scheduler.service');
@@ -126,17 +135,25 @@ app.use(`${API}/insights`, insightRoutes);
 app.use(`${API}/notifications`, notificationRoutes);
 app.use(`${API}/calendar`, calendarRoutes);
 app.use(`${API}/voice`, voiceRoutes);
-app.use(`${API}/ai/v2`,        aiLimiter, aiCentralRoutes);  // Centralized AI layer (Gemini/Groq) — registered BEFORE old ai routes
+app.use(`${API}/ai/v2`,        aiStrictLimiter, aiCentralRoutes);  // Centralized AI layer (Gemini/Groq) — strict rate limit
 app.use(`${API}/ai`, aiLimiter, aiRoutes);
-app.use(`${API}/dashboard`, dashboardRoutes);
-app.use(`${API}/performance`, performanceRoutes);
+app.use(`${API}/dashboard`, cacheMiddleware(60, 'dashboard'), dashboardRoutes); // Cache 60s
+app.use(`${API}/performance`, cacheMiddleware(120, 'perf'), performanceRoutes); // Cache 2min
 app.use(`${API}/subscription`, subscriptionRoutes);
-app.use(`${API}/intelligence`, intelligenceRoutes);
+app.use(`${API}/intelligence`, cacheMiddleware(120, 'intel'), intelligenceRoutes); // Cache 2min
 app.use(`${API}/adaptive`,     adaptiveRoutes);
 app.use(`${API}/assistant`,    aiLimiter, assistantRoutes);  // New: AI Personal Assistant
 app.use(`${API}/chat`,         aiLimiter, chatRoutes);        // Phase 16: Persistent chat sessions
 app.use(`${API}/logs`,         logsRoutes);        // Error & activity logging
 app.use(`${API}/profile-settings`, profileRoutes);   // Profile & Settings core system
+app.use(`${API}/decision`,         decisionRoutes);   // Phase K: Core Brain Decision Engine
+app.use(`${API}/analytics`,        cacheMiddleware(180, 'analytics'), analyticsRoutes); // Cache 3min
+app.use(`${API}/user-model`,       userModelRoutes);   // Phase P: Persistent Per-User Intelligence
+app.use(`${API}/engine`,           engineRoutes);       // Execution Engine: Life Execution System
+app.use(`${API}/va`,               vaRoutes);             // Full Adaptive VA: Presence + Communication + Follow-up
+app.use(`${API}/search`,           searchLimiter, searchRoutes);     // Global Search
+app.use(`${API}/export`,           exportLimiter, exportRoutes);     // Data Export
+app.use(`${API}/daily-flow`,       dailyFlowRoutes);                 // Phase 4: Daily Execution Flow
 
 // ============================================
 // Health Check
@@ -150,6 +167,9 @@ const healthHandler = (req, res) => {
     logger.warn('[HEALTH] AI status unavailable:', e.message);
     aiStatus = { healthy: false, error: e.message };
   }
+  let cacheStatus = {};
+  try { cacheStatus = getCacheStats(); } catch {}
+  
   res.json({
     status: 'ok',
     app: 'LifeFlow API',
@@ -157,6 +177,7 @@ const healthHandler = (req, res) => {
     timestamp: new Date().toISOString(),
     timezone: process.env.DEFAULT_TIMEZONE || 'Africa/Cairo',
     ai: aiStatus,
+    cache: cacheStatus,
     uptime: Math.round(process.uptime()),
     memory: Math.round(process.memoryUsage().rss / 1024 / 1024) + 'MB',
   });
@@ -213,8 +234,22 @@ async function startServer() {
     initProactiveMonitor(io);
     logger.info('✅ Proactive AI monitor started');
 
-    // Start HTTP server
-    server.listen(PORT, () => {
+    // Start HTTP server with EADDRINUSE protection
+    server.on('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        logger.warn(`⚠️ Port ${PORT} is already in use. Attempting to recover...`);
+        // Try to kill the existing process and retry after 2 seconds
+        setTimeout(() => {
+          server.close();
+          server.listen(PORT, '0.0.0.0');
+        }, 2000);
+      } else {
+        logger.error('❌ Server error:', err);
+        process.exit(1);
+      }
+    });
+
+    server.listen(PORT, '0.0.0.0', () => {
       logger.info(`🚀 LifeFlow server running on port ${PORT}`);
       logger.info(`🌐 API: http://localhost:${PORT}/api/v1`);
       logger.info(`🏥 Health: http://localhost:${PORT}/health`);

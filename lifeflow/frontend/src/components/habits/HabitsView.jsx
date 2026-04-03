@@ -96,6 +96,15 @@ function HabitCard({ habit, onCheckIn, onLogValue, onDelete, isChecking }) {
               </p>
               <div className="flex items-center gap-2 mt-1 flex-wrap">
                 <span className="text-xs text-gray-500 bg-white/5 px-2 py-0.5 rounded-md">{scheduleInfo}</span>
+                {/* Behavior type badge */}
+                {habit.behavior_type && habit.behavior_type !== 'build' && (
+                  <span className={`text-[9px] px-1.5 py-0.5 rounded-md font-medium ${
+                    habit.behavior_type === 'break' ? 'text-red-400 bg-red-500/10' :
+                    'text-blue-400 bg-blue-500/10'
+                  }`}>
+                    {habit.behavior_type === 'break' ? '🚫 تخلص' : '🔄 حافظ'}
+                  </span>
+                )}
                 {habit.preferred_time && (
                   <span className="text-xs text-blue-400 flex items-center gap-0.5">
                     <Clock size={9} /> {habit.preferred_time}
@@ -168,6 +177,8 @@ function AddHabitModal({ isOpen, onClose, onSubmit, isPending }) {
     habit_type: 'boolean', target_value: 1, count_label: 'مرة',
     preferred_time: '', frequency_type: 'daily', custom_days: [], monthly_days: [],
     reminder_before: 15,
+    behavior_type: 'build', // build | break | maintain
+    replaces_behavior: '',
   });
   const [error, setError] = useState('');
 
@@ -198,19 +209,21 @@ function AddHabitModal({ isOpen, onClose, onSubmit, isPending }) {
       custom_days: (form.frequency_type === 'weekly' || form.frequency_type === 'custom') ? form.custom_days : null,
       monthly_days: form.frequency_type === 'monthly' ? form.monthly_days : null,
       reminder_before: form.reminder_before, reminder_enabled: true,
+      behavior_type: form.behavior_type,
+      replaces_behavior: form.behavior_type === 'break' ? form.replaces_behavior : null,
     });
     setForm({
       name_ar: '', category: 'health', icon: '⭐', color: '#6C63FF',
       habit_type: 'boolean', target_value: 1, count_label: 'مرة',
       preferred_time: '', frequency_type: 'daily', custom_days: [], monthly_days: [],
-      reminder_before: 15,
+      reminder_before: 15, behavior_type: 'build', replaces_behavior: '',
     });
   };
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" onClick={onClose}>
+    <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center" onClick={onClose}>
       {/* Backdrop — solid dark overlay */}
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
         className="absolute inset-0 bg-black/80" />
@@ -221,7 +234,7 @@ function AddHabitModal({ isOpen, onClose, onSubmit, isPending }) {
         exit={{ opacity: 0, y: 100 }}
         transition={{ type: 'spring', damping: 25, stiffness: 300 }}
         onClick={e => e.stopPropagation()}
-        className="relative w-full sm:max-w-lg modal-solid rounded-t-3xl sm:rounded-2xl shadow-2xl border border-white/10 max-h-[90vh] overflow-hidden z-10"
+        className="relative w-full sm:max-w-lg modal-solid rounded-t-3xl sm:rounded-2xl shadow-2xl border border-white/10 max-h-[85vh] sm:max-h-[90vh] overflow-hidden z-10 mb-[76px] sm:mb-0"
         dir="rtl"
       >
         {/* Drag handle */}
@@ -366,6 +379,37 @@ function AddHabitModal({ isOpen, onClose, onSubmit, isPending }) {
                 </div>
               </div>
             </div>
+
+            {/* Behavior Type (build / break / maintain) */}
+            <div>
+              <label className="text-xs text-gray-300 mb-1.5 block font-medium">🌱 نوع السلوك</label>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { key: 'build', label: '🌱 بناء', desc: 'عادة جديدة' },
+                  { key: 'break', label: '🚫 تخلص', desc: 'توقف عن عادة' },
+                  { key: 'maintain', label: '🔄 حافظ', desc: 'عادة موجودة' },
+                ].map(bt => (
+                  <button key={bt.key} onClick={() => setForm({ ...form, behavior_type: bt.key })}
+                    className={`py-2.5 rounded-xl text-xs font-bold active:scale-95 transition-all min-h-[44px] ${
+                      form.behavior_type === bt.key ? 'bg-primary-500/20 text-primary-400 border border-primary-500/30' : 'bg-white/5 text-gray-400'
+                    }`}>
+                    <div>{bt.label}</div>
+                    <div className="text-[9px] text-gray-500 font-normal mt-0.5">{bt.desc}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Replaces behavior (for quit/break habits) */}
+            {form.behavior_type === 'break' && (
+              <div>
+                <label className="text-xs text-gray-300 mb-1 block">العادة السيئة اللي عايز تتخلص منها</label>
+                <input value={form.replaces_behavior}
+                  onChange={e => setForm({ ...form, replaces_behavior: e.target.value })}
+                  placeholder="مثلاً: التدخين, السهر..."
+                  className="w-full rounded-xl px-4 py-3 focus:outline-none" />
+              </div>
+            )}
 
             {/* Color */}
             <div>

@@ -1,10 +1,10 @@
 /**
- * Dashboard Routes
- * ==================
+ * Dashboard Routes v2.0 — Behavior-Aware
+ * =========================================
  * GET /dashboard             — main dashboard data
  * GET /dashboard/stats       — alias
  * GET /dashboard/overview    — alias
- * GET /dashboard/today-flow  — unified endpoint: nextAction + summary + lifeFeed + burnout
+ * GET /dashboard/today-flow  — unified: nextAction + summary + lifeFeed + burnout + behavior
  */
 const express = require('express');
 const router = express.Router();
@@ -14,53 +14,30 @@ const logger = require('../utils/logger');
 
 router.use(protect);
 router.get('/', dashboardController.getDashboard);
-
-// GET /dashboard/stats — alias used by frontend dashboardAPI.getQuickStats
 router.get('/stats', dashboardController.getDashboard);
-
-// GET /dashboard/overview — alias
 router.get('/overview', dashboardController.getDashboard);
 
 /**
  * GET /dashboard/today-flow
- * Unified endpoint — replaces 4 separate API calls with ONE.
- * Returns: { dashboard, nextAction, lifeFeed, burnoutStatus }
- * Frontend calls this once, gets everything for DashboardHome.
+ * Phase L: Behavior-aware unified endpoint.
+ * Returns: { nextAction, lifeFeed, burnoutStatus, decision, behaviorState }
  */
 router.get('/today-flow', async (req, res) => {
   const userId   = req.user.id;
   const timezone = req.user.timezone || 'Africa/Cairo';
 
-  // Collect results — each sub-call is fail-safe
-  const results = {
-    nextAction:    null,
-    lifeFeed:      null,
-    burnoutStatus: null,
-  };
-
-  // Helper: safely call a lazy-loaded service
   const safeCall = async (label, fn) => {
     try { return await fn(); }
-    catch (e) { logger.debug(`[today-flow] ${label} failed: ${e.message}`); return null; }
+    catch (e) { logger.debug(`[today-flow] ${label} failed: ${String(e.message).slice(0, 150)}`); return null; }
   };
 
-  // Run all sub-calls in parallel
-  const [nextAction, lifeFeed, burnoutStatus] = await Promise.allSettled([
-    // Next Action
-    safeCall('next-action', async () => {
+  const [decisionResult, lifeFeedResult, burnoutResult] = await Promise.allSettled([
+    // Primary: Core Brain unified decision v2
+    safeCall('unified-decision', async () => {
       let svc;
-      try { svc = require('../services/next.action.service'); } catch { return null; }
-      if (!svc?.getNextBestAction) return null;
-      const action = await svc.getNextBestAction(userId, { timezone });
-      // Enrich with task data if available
-      if (action?.task_id) {
-        try {
-          const Task = require('../models/task.model');
-          const t = await Task.findOne({ where: { id: action.task_id, user_id: userId } });
-          if (t) action.task_title = t.title;
-        } catch {}
-      }
-      return action;
+      try { svc = require('../services/unified.decision.service'); } catch { return null; }
+      if (!svc?.getUnifiedDecision) return null;
+      return await svc.getUnifiedDecision(userId, { timezone });
     }),
     // Life Feed
     safeCall('life-feed', async () => {
@@ -69,25 +46,92 @@ router.get('/today-flow', async (req, res) => {
       if (!svc?.getLifeFeed) return null;
       return await svc.getLifeFeed(userId, { timezone });
     }),
-    // Burnout Status
+    // Burnout from Intelligence signals
     safeCall('burnout', async () => {
       let svc;
-      try { svc = require('../services/burnout.service'); } catch { return null; }
-      if (!svc?.getBurnoutStatus) return null;
-      return await svc.getBurnoutStatus(userId, { timezone });
+      try { svc = require('../services/intelligence.service'); } catch { return null; }
+      if (!svc?.getIntelligenceSignals) return null;
+      const signals = await svc.getIntelligenceSignals(userId, { timezone });
+      const risk = signals.burnout_risk?.value || 0;
+      const riskLevel = risk >= 0.65 ? 'high' : risk >= 0.4 ? 'medium' : 'low';
+      return {
+        burnout_risk: risk,
+        risk_level: riskLevel,
+        risk_percent: Math.round(risk * 100),
+        energy_level: signals.energy_level?.value || 50,
+        focus_score: signals.focus_score?.value || 50,
+        overwhelm_index: signals.overwhelm_index?.value || 0,
+        momentum_state: signals.momentum_state?.value || 'starting',
+      };
     }),
   ]);
 
-  results.nextAction    = nextAction.status === 'fulfilled'    ? nextAction.value    : null;
-  results.lifeFeed      = lifeFeed.status === 'fulfilled'      ? lifeFeed.value      : null;
-  results.burnoutStatus = burnoutStatus.status === 'fulfilled' ? burnoutStatus.value  : null;
+  const decision    = decisionResult.status === 'fulfilled' ? decisionResult.value : null;
+  const lifeFeed    = lifeFeedResult.status === 'fulfilled' ? lifeFeedResult.value : null;
+  const burnoutData = burnoutResult.status === 'fulfilled' ? burnoutResult.value : null;
+
+  // Build nextAction from unified decision (backward-compatible shape)
+  let nextAction = null;
+  let goalContext = null;
+  if (decision?.currentFocus) {
+    const focus = decision.currentFocus;
+    nextAction = {
+      action:     focus.action || 'review_plan',
+      task_id:    focus.id || null,
+      title:      focus.title || 'راجع خطتك',
+      task_title: focus.title || null,
+      message:    focus.message || decision.why?.join(' — ') || '',
+      reason:     decision.why || [],
+      explanation: decision.why || [],
+      confidence: decision.confidence || 70,
+      urgency:    focus.priority === 'urgent' ? 'critical' : focus.priority === 'high' ? 'high' : 'medium',
+      energy_match: true,
+      ml_driven:  true,
+      suggestions: decision.alternatives?.slice(0, 3).map(a => a.title) || [],
+      // v2: proactive data
+      next_steps: focus.next_steps || [],
+      signalsUsed: decision.signalsUsed,
+      alternatives: decision.alternatives,
+      behaviorState: decision.behaviorState,
+      source: 'unified_decision_engine',
+    };
+    // Extract goal context from the focus
+    goalContext = focus.goal_context || null;
+  }
+
+  // Fetch goal context separately if not from decision
+  if (!goalContext) {
+    try {
+      const goalEngine = require('../services/goal.engine.service');
+      if (goalEngine?.getGoalContext) {
+        const gctx = await goalEngine.getGoalContext(userId, timezone);
+        if (gctx.activeGoals?.length > 0) {
+          goalContext = {
+            activeGoals: gctx.activeGoals.slice(0, 3),
+            summary: gctx.summary,
+            suggestions: (gctx.goalSuggestions || []).slice(0, 2),
+          };
+        }
+      }
+    } catch (_) {}
+  }
 
   res.json({
     success: true,
     data: {
-      nextAction:    results.nextAction,
-      lifeFeed:      results.lifeFeed?.feed || results.lifeFeed || [],
-      burnoutStatus: results.burnoutStatus,
+      nextAction,
+      lifeFeed:      lifeFeed?.feed || lifeFeed || [],
+      burnoutStatus: burnoutData,
+      goalContext,
+      decision: decision ? {
+        currentFocus: decision.currentFocus,
+        why: decision.why,
+        confidence: decision.confidence,
+        signalsUsed: decision.signalsUsed,
+        alternatives: decision.alternatives,
+        rules_applied: decision.rules_applied,
+        behaviorState: decision.behaviorState,
+      } : null,
       generated_at:  new Date().toISOString(),
     },
   });

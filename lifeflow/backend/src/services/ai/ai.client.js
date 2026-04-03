@@ -21,7 +21,7 @@ const https  = require('https');
 const http   = require('http');
 const logger = require('../../utils/logger');
 const cache  = require('./ai.cache');
-const { DEFAULT_FALLBACK, validateResponse, safeParseJSON } = require('./ai.error.handler');
+const { DEFAULT_FALLBACK, validateResponse, safeParseJSON, sanitizeAIText, sanitizeAIResponse } = require('./ai.error.handler');
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const REQUEST_TIMEOUT_MS = 15_000;  // 15 seconds hard limit
@@ -131,14 +131,31 @@ function getGroqKey() {
 }
 
 // ─── Prompt Sanitizer ────────────────────────────────────────────────────────
-function sanitizePrompt(text) {
+// Arabic enforcement suffix appended to system prompts
+// Enforces: Arabic-only output, natural conversational tone, no CJK characters
+const ARABIC_ENFORCEMENT = `
+
+هام جداً:
+١. أجب فقط باللغة العربية. لا تستخدم أي لغة أخرى. لا تكتب أحرفاً صينية أو يابانية أو كورية.
+٢. استخدم أسلوباً طبيعياً في الكلام كأنك تتحدث مع صديق. لا تكن رسمياً أكثر من اللازم.
+٣. استخدم جمل قصيرة وواضحة. تجنب الجمل الطويلة المعقدة.
+٤. يمكنك استخدام العامية المصرية الخفيفة أحياناً لتكون أكثر قرباً (مثل: "يلا نبدأ"، "تمام"، "أيوه").
+٥. أضف التشكيل على الكلمات المهمة عند الإمكان لتسهيل القراءة الصوتية.
+٦. استخدم فقط الحروف العربية والأرقام وعلامات الترقيم العربية (، ؟ !) والإيموجي.`;
+
+function sanitizePrompt(text, isSystem = false) {
   if (typeof text !== 'string') return '';
-  return text
+  let cleaned = text
     .replace(/\b[\w.+-]+@[\w-]+\.[a-z]{2,}\b/gi, '[EMAIL]')
     .replace(/\b\d{10,}\b/g, '[NUMBER]')
     .replace(/\s{3,}/g, '  ')
     .trim()
     .slice(0, 4000);
+  // Enforce Arabic on system prompts
+  if (isSystem && !cleaned.includes('أجب فقط باللغة العربية')) {
+    cleaned += ARABIC_ENFORCEMENT;
+  }
+  return cleaned;
 }
 
 // ─── HTTP POST with Timeout ───────────────────────────────────────────────────
@@ -198,7 +215,7 @@ async function callGemini(systemPrompt, userPrompt, opts = {}) {
 
   const model     = opts.model || process.env.GEMINI_MODEL || 'gemini-2.0-flash';
   const url       = `${GEMINI_BASE}/${model}:generateContent?key=${apiKey}`;
-  const cleanSys  = sanitizePrompt(systemPrompt);
+  const cleanSys  = sanitizePrompt(systemPrompt, true);
   const cleanUser = sanitizePrompt(userPrompt);
   const fullPrompt = `${cleanSys}\n\n${cleanUser}`;
 
@@ -249,14 +266,14 @@ async function callGemini(systemPrompt, userPrompt, opts = {}) {
   logger.debug('[AI-CLIENT] Gemini response OK', { chars: text.length });
 
   if (opts.jsonMode) {
-    return safeParseJSON(text) || { raw: text };
+    return sanitizeAIResponse(safeParseJSON(text) || { raw: text });
   }
-  return text;
+  return sanitizeAIText(text);
 }
 
 // ─── Groq Client (single model) ──────────────────────────────────────────────
 async function callGroqModel(apiKey, model, systemPrompt, userPrompt, opts = {}) {
-  const cleanSys  = sanitizePrompt(systemPrompt);
+  const cleanSys  = sanitizePrompt(systemPrompt, true);
   const cleanUser = sanitizePrompt(userPrompt);
 
   const payload = {
@@ -309,9 +326,9 @@ async function callGroqModel(apiKey, model, systemPrompt, userPrompt, opts = {})
   logger.debug('[AI-CLIENT] Groq response OK', { chars: content.length, model });
 
   if (opts.jsonMode) {
-    return safeParseJSON(content) || { raw: content };
+    return sanitizeAIResponse(safeParseJSON(content) || { raw: content });
   }
-  return content;
+  return sanitizeAIText(content);
 }
 
 // ─── Groq Client with Multi-Model Fallback ───────────────────────────────────
@@ -361,14 +378,34 @@ async function callGroq(systemPrompt, userPrompt, opts = {}) {
 function buildIntelligentFallback(userPrompt, opts = {}) {
   if (!userPrompt || typeof userPrompt !== 'string') return DEFAULT_FALLBACK;
 
-  const msg             = userPrompt.toLowerCase();
-  const intent          = opts.intentCategory || '';
-  const mode            = opts.mode || '';
-  const name            = opts.userName ? opts.userName.split(' ')[0] : 'صديقي';
-  const tasks           = Array.isArray(opts.tasks) ? opts.tasks : [];
-  const taskList        = tasks.slice(0, 3).map((t, i) => `${i + 1}. ${t.title}`).join('\n');
-  const hasTasks        = tasks.length > 0;
-  const greeting        = `مرحباً ${name}! `;
+  const msg    = userPrompt.toLowerCase();
+  const intent = opts.intentCategory || '';
+  const mode   = opts.mode || '';
+  const name   = opts.userName ? opts.userName.split(' ')[0] : 'صديقي';
+  const tasks  = Array.isArray(opts.tasks) ? opts.tasks : [];
+  const hasTasks = tasks.length > 0;
+
+  // Detect English
+  const isEnglish = /^[a-zA-Z0-9\s.,!?'"@#$%&*()\-+=:;/\\<>{}[\]|~`]+$/.test(userPrompt.trim());
+
+  if (isEnglish) {
+    const eName = opts.userName ? opts.userName.split(' ')[0] : 'friend';
+    if (intent === 'task_action' || msg.includes('task') || msg.includes('start') || msg.includes('priority')) {
+      if (hasTasks) return `${eName}, your top priority right now is "${tasks[0].title}". Start with that and we'll handle the rest.`;
+      return `${eName}, I don't see any tasks logged. Tell me what you need to do and we'll organize it.`;
+    }
+    if (mode === 'companion' || msg.includes('tired') || msg.includes('stressed') || msg.includes('sad')) {
+      return `${eName}, it's okay to feel tired — take a 5 minute break, drink some water, and we'll start with something light 💙`;
+    }
+    if (msg.includes('plan') || msg.includes('schedule') || msg.includes('organize')) {
+      if (hasTasks) return `${eName}, let's organize your day — you have ${tasks.length} tasks. Start with "${tasks[0].title}" while your energy is high.`;
+      return `${eName}, let's plan your day. Tell me what tasks you have and I'll prioritize them.`;
+    }
+    if (msg.includes('mood') || msg.includes('feeling') || msg.includes('status') || msg.includes('how am i')) {
+      return `${eName}, how are you really doing? Rate your energy 1-10 and tell me how you feel, and I'll help you better.`;
+    }
+    return `${eName}, what do you need — tasks, planning, advice, or just a chat? I'm here 👋`;
+  }
 
   // Task/priority management
   if (
@@ -377,18 +414,10 @@ function buildIntelligentFallback(userPrompt, opts = {}) {
     msg.includes('ترتيب') || msg.includes('أبدأ') || msg.includes('ابدأ') ||
     msg.includes('أولوية')
   ) {
-    const taskSection = hasTasks
-      ? `\n\n**مهامك العاجلة دلوقتي:**\n${taskList}\n\nابدأ بالأولى — هي الأكثر أهمية وفق أولوياتك.`
-      : '\n\nلسه ما عندكش مهام مسجّلة. قولي مهامك وهساعدك ترتبها.';
-
-    return `${greeting}أفهم إنك عايز تحدد أولوياتك 📋
-
-**الطريقة الأسرع:**
-1. حدد المهمة الأكثر إلحاحاً (موعد تسليم قريب؟)
-2. ابدأ بالمهمة اللي تاخد أقل من 5 دقائق — خلص منها فوراً
-3. اقسم المهام الكبيرة لخطوات صغيرة
-
-**نصيحة:** افعل أصعب مهمة أول الصبح — دماغك يكون في أفضل حالاته 🐸${taskSection}`;
+    if (hasTasks) {
+      return `${name}، أهم حاجة دلوقتي هي "${tasks[0].title}". ابدأ فيها وبعدين نشوف الباقي.`;
+    }
+    return `${name}، مش شايف مهام مسجّلة عندك. قولّي إيه اللي محتاج تعمله وهنرتبه مع بعض.`;
   }
 
   // Fatigue/emotional support
@@ -400,19 +429,7 @@ function buildIntelligentFallback(userPrompt, opts = {}) {
     msg.includes('ضغط') || msg.includes('توتر') ||
     msg.includes('حزين') || msg.includes('زهقت')
   ) {
-    return `${greeting}أنا حاسس بيك 💙 التعب حاجة طبيعية ولازم نأخدها بجدية.
-
-**أول 3 حاجات دلوقتي:**
-1. 🌊 اشرب كوب مية كامل — الجفاف بيسبب تعب مش متوقع
-2. 😮‍💨 خد 5 نفسات عميقة — بجد بتفرق جداً
-3. 🚶 قوم امشي 5 دقائق حتى لو جوه البيت
-
-**للشغل والمهام:**
-- ماتحاولش تخلص كل حاجة وأنت تعبان
-- حدد مهمة واحدة بس اللازم تتعمل النهارده
-- الباقي ممكن يأجل من غير ذنب
-
-إنت مش محتاج تكون بطل كل يوم. استمع لجسمك 🙏`;
+    return `${name}، عادي تتعب — ده مش ضعف. اشرب مية، خد 5 دقايق راحة، وبعدين نشوف مهمة واحدة بس خفيفة نبدأ بيها 💙`;
   }
 
   // Planning/organizing the day
@@ -421,48 +438,23 @@ function buildIntelligentFallback(userPrompt, opts = {}) {
     msg.includes('خطة') || msg.includes('جدول') ||
     msg.includes('plan') || msg.includes('schedule')
   ) {
-    return `${greeting}هنظم يومك بكل سرور 📅✨
-
-**نموذج يوم ناجح:**
-- 🌅 **الصبح (6-9):** المهام الصعبة والمهمة — دماغك في أفضل حالاته
-- 💼 **النهار (9-12):** الاجتماعات والتواصل
-- 🍽️ **بعد الأكل (12-2):** راحة قصيرة أو مهام خفيفة
-- 🎯 **العصر (2-5):** العمل التركيزي الثاني
-- 🌙 **المساء:** مراجعة اليوم والتخطيط للغد
-
-**لو عندك مهام معينة، قولي:**
-- إيه المهام اللازم تتخلص منها؟
-- فين وقتك الحر؟
-
-وهعمل لك جدول شخصي دقيق مبني على طاقتك 🎯`;
+    if (hasTasks) {
+      return `${name}، يلا ننظم يومك — عندك ${tasks.length} مهمة. الأهم: "${tasks[0].title}". ابدأ بيها الصبح وطاقتك عالية.`;
+    }
+    return `${name}، يلا ننظم يومك. قولّي إيه المهام اللي عندك وهرتبهملك حسب الأولوية.`;
   }
 
   // Questions about mood/feelings/status
   if (
     msg.includes('حالي') || msg.includes('مزاج') ||
     msg.includes('شعور') || msg.includes('احساس') ||
-    msg.includes('وضعي') || msg.includes('إزيك')
+    msg.includes('وضعي') || msg.includes('إزيك') || msg.includes('ازيك')
   ) {
-    return `${greeting}سؤال مهم — إزيك فعلاً؟ 🤔
-
-عشان أفهم وضعك أكتر، قولي:
-- **طاقتك دلوقتي من 1-10:** كام؟
-- **مزاجك:** كويس، عادي، أو مش كويس؟
-- **إيه أكتر حاجة على دماغك دلوقتي؟**
-
-بناءً على كده هقدر أعطيك تحليل وتوصيات دقيقة لوضعك 💙`;
+    return `${name}، إزيك فعلاً؟ قولّي طاقتك كام من 10 ومزاجك عامل إزاي، وهقدر أساعدك أحسن.`;
   }
 
-  // Generic helpful response for anything else
-  return `${greeting}أنا هنا ومستمع ليك 👋
-
-عشان أساعدك أحسن، قولي أكثر عن اللي محتاجه:
-- مهام ومسؤوليات؟
-- تخطيط وجدول اليوم؟
-- نصيحة أو دعم نفسي؟
-- أو أي حاجة تانية؟
-
-أنا مساعدك الشخصي وعندي وصول لكل بياناتك — مهامك، عاداتك، طاقتك. قولي إيه اللي تحتاجه وهبدأ فوراً 🚀`;
+  // Generic
+  return `${name}، قولّي إيه اللي محتاجه — مهام، تنظيم، نصيحة، أو حتى مجرد كلام. أنا معاك 👋`;
 }
 
 // ─── Unified Send with Provider Retry: Gemini → Groq → Intelligent Fallback ──

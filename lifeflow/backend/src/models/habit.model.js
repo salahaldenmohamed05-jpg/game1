@@ -64,6 +64,46 @@ const Habit = sequelize.define('Habit', {
   reminder_before: { type: DataTypes.INTEGER, defaultValue: 15, comment: 'minutes before preferred_time to notify' },
   ai_best_time: { type: DataTypes.STRING(8), allowNull: true, comment: 'AI-suggested optimal time HH:mm' },
   ai_best_time_reason: { type: DataTypes.TEXT, allowNull: true, comment: 'reason for AI time suggestion' },
+
+  // ── Behavior Engine Extension ────────────────────────────────────────
+  // behavior_spec: full behavior model for adaptive execution
+  behavior_spec: {
+    type: DataTypes.TEXT, defaultValue: '{}',
+    get() {
+      try { return JSON.parse(this.getDataValue('behavior_spec') || '{}'); } catch { return {}; }
+    },
+    set(val) { this.setDataValue('behavior_spec', JSON.stringify(val || {})); },
+    comment: `JSON: {
+      cue: { type, trigger_time, trigger_event, trigger_location, trigger_after },
+      difficulty: { current: 'micro'|'standard'|'stretch', micro: {...}, standard: {...}, stretch: {...} },
+      reward: { type, message_ar, xp_bonus },
+      resistance_profile: { common_skip_type, avg_skip_rate, best_adherence_time, worst_time },
+      adaptation_rules: { reduce_after_skips, increase_after_streak, cooldown_days },
+      chain: { after_habit_id, before_habit_id },
+      is_breaking_habit: false,
+      replacement_for: null
+    }`,
+  },
+  // Goal linkage
+  goal_id: {
+    type: DataTypes.STRING(36), allowNull: true,
+    comment: 'Linked goal ID',
+  },
+  // Current difficulty level for adaptive behavior
+  current_difficulty: {
+    type: DataTypes.STRING(20), defaultValue: 'standard',
+    comment: 'micro | standard | stretch — adapted by behavior engine',
+  },
+  // Behavior type classification
+  behavior_type: {
+    type: DataTypes.STRING(20), defaultValue: 'build',
+    comment: 'build | break | maintain',
+  },
+  // Breaking habit: what negative behavior this replaces
+  replaces_behavior: {
+    type: DataTypes.TEXT, allowNull: true,
+    comment: 'Description of negative behavior this habit replaces',
+  },
 }, {
   tableName: 'habits',
   underscored: false,

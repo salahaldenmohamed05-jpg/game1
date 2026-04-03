@@ -1,13 +1,11 @@
 /**
  * Main Dashboard Component — Phase G: Unified Layout
  * =====================================================
- * UX DECISIONS:
+ * FIXES:
  * 1. Dashboard-first: DashboardHome is the DEFAULT landing page
- * 2. SIDEBAR REMOVED — replaced by unified BottomNav (mobile) + TopNav (desktop)
- * 3. Mobile: bottom nav (5 core) + "More" bottom sheet
- * 4. Desktop: horizontal top bar (same items) + "More" dropdown
- * 5. Persistent QuickCommandInput on every screen (except assistant)
- * 6. Analytics replaces separate Insights + Performance pages
+ * 2. Active view persisted in localStorage — reload preserves current page
+ * 3. "نفّذ" (Execute) moved to "More" menu, nav starts with "الرئيسية"
+ * 4. Modals use pb-safe to avoid being cut off by bottom nav
  *
  * PHASE G: Reliability improvements:
  * - Each section wrapped in ErrorBoundary (compact mode)
@@ -15,7 +13,7 @@
  * - Loading/error states for dashboard query
  */
 
-import { useState, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { dashboardAPI } from '../../utils/api';
 import Header from '../layout/Header';
@@ -34,13 +32,21 @@ import LogsView from '../logs/LogsView';
 import AnalyticsView from '../analytics/AnalyticsView';
 import ProfileView from '../profile/ProfileView';
 import SettingsView from '../settings/SettingsView';
+import FocusTimerView from '../focus/FocusTimerView';
+import ExecutionScreen from '../execution/ExecutionScreen';
+import DailyExecutionFlow from '../execution/DailyExecutionFlow';
+import ExportView from '../export/ExportView';
 import useAuthStore from '../../store/authStore';
 import ErrorBoundary from '../common/ErrorBoundary';
-import MobileBottomNav from '../layout/MobileBottomNav';
+import MobileBottomNav, { getPersistedView } from '../layout/MobileBottomNav';
 import QuickCommandInput from '../flow/QuickCommandInput';
+import GlobalSearch from '../search/GlobalSearch';
+import QuickWidget from '../widget/QuickWidget';
 
 const VIEWS = {
   dashboard:     DashboardHome,
+  daily_flow:    DailyExecutionFlow,
+  execution:     ExecutionScreen,
   tasks:         TasksView,
   habits:        HabitsView,
   mood:          MoodView,
@@ -60,14 +66,33 @@ const VIEWS = {
   logs:          LogsView,
   profile:       ProfileView,
   settings:      SettingsView,
+  focus:         FocusTimerView,
+  export:        ExportView,
 };
 
 // Views that need fullHeight mode (own scroll management)
 const FULL_HEIGHT_VIEWS = new Set(['assistant', 'ai_chat', 'copilot', 'adaptive', 'optimizer']);
 
 export default function Dashboard() {
-  const [activeView, setActiveView] = useState('dashboard');
+  // Restore persisted view on mount (survives page reload)
+  const [activeView, setActiveView] = useState(() => {
+    const saved = getPersistedView();
+    return VIEWS[saved] ? saved : 'dashboard';
+  });
+  const [searchOpen, setSearchOpen] = useState(false);
   const { user } = useAuthStore();
+
+  // Keyboard shortcut Cmd+K / Ctrl+K for global search
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        setSearchOpen(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
   const userPlan = user?.subscription_plan || 'free';
 
   const { data: dashboardData, isLoading, isError, refetch } = useQuery({
@@ -125,6 +150,18 @@ export default function Dashboard() {
             </ErrorBoundary>
           </MobileLayout>
         </div>
+
+        {/* Quick Widget — daily summary */}
+        <ErrorBoundary compact>
+          <QuickWidget />
+        </ErrorBoundary>
+
+        {/* Global Search Modal */}
+        <GlobalSearch
+          isOpen={searchOpen}
+          onClose={() => setSearchOpen(false)}
+          onNavigate={setActiveView}
+        />
 
         {/* Persistent floating assistant trigger */}
         <ErrorBoundary compact>

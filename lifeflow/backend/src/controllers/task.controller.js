@@ -17,6 +17,17 @@ const { getNow, toUTC, todayString } = require('../utils/time.util');
 function getBehaviorService() {
   try { return require('../services/behavior.model.service'); } catch (_) { return null; }
 }
+// Step 2: Wire UserModel events into task lifecycle (Phase P)
+function getUserModelService() {
+  try { return require('../services/user.model.service'); } catch (_) { return null; }
+}
+// Step 3: Wire goal engine for auto-linking and progress
+function getGoalEngine() {
+  try { return require('../services/goal.engine.service'); } catch (_) { return null; }
+}
+function getGoalModel() {
+  try { return require('../models/goal.model'); } catch (_) { return null; }
+}
 
 /* ─── Smart Notification Helper ────────────────────────────────── */
 async function createTaskReminder(task, user) {
@@ -245,20 +256,39 @@ exports.getSmartView = async (req, res) => {
       return (PRIORITY_MAP[a.priority] || 3) - (PRIORITY_MAP[b.priority] || 3);
     });
 
-    // Find recommended task (highest AI score among overdue + today)
+    // Find recommended task — Phase K: use UnifiedDecisionService if available
     let bestScore = -1;
     let recommendedTaskId = null;
-    [...overdue, ...today].forEach(t => {
-      const s = scores[t.id] || 0;
-      if (s > bestScore) {
-        bestScore = s;
-        recommendedTaskId = t.id;
+    let recommendedSource = 'legacy_score';
+
+    // Try unified decision engine first
+    try {
+      const unifiedSvc = require('../services/unified.decision.service');
+      if (unifiedSvc?.getUnifiedDecision) {
+        const decision = await unifiedSvc.getUnifiedDecision(req.user.id, { timezone });
+        if (decision?.currentFocus?.id && decision.currentFocus.type === 'task') {
+          recommendedTaskId = decision.currentFocus.id;
+          bestScore = decision.currentFocus.score || decision.confidence || 80;
+          recommendedSource = 'unified_decision_engine';
+        }
       }
-    });
+    } catch (_e) { /* fall through to legacy */ }
+
+    // Fallback: legacy scoring
+    if (!recommendedTaskId) {
+      [...overdue, ...today].forEach(t => {
+        const s = scores[t.id] || 0;
+        if (s > bestScore) {
+          bestScore = s;
+          recommendedTaskId = t.id;
+        }
+      });
+      recommendedSource = 'legacy_score';
+    }
 
     // Log recommendation for analytics
     if (recommendedTaskId) {
-      logger.info(`[SMART-VIEW] User ${req.user.id} — recommended task: ${recommendedTaskId} (score: ${bestScore})`);
+      logger.info(`[SMART-VIEW] User ${req.user.id} — recommended task: ${recommendedTaskId} (score: ${bestScore}, source: ${recommendedSource})`);
     }
 
     res.json({
@@ -269,6 +299,7 @@ exports.getSmartView = async (req, res) => {
         upcoming,
         completed: completed.slice(0, 20), // Limit completed to recent 20
         recommendedTaskId,
+        recommendedSource,
         scores,
         stats: {
           total: tasks.length,
@@ -386,6 +417,38 @@ exports.createTask = async (req, res) => {
       taskData.end_time = utc && typeof utc.toISOString === 'function' ? utc.toISOString() : String(utc || taskData.end_time);
     }
 
+    // Auto-link to goal: if goal_id not explicitly provided, infer from category
+    if (!taskData.goal_id) {
+      try {
+        const Goal = getGoalModel();
+        if (Goal) {
+          // First try matching by category
+          const categoryGoal = taskData.category
+            ? await Goal.findOne({
+                where: { user_id: req.user.id, status: 'active', category: taskData.category },
+                attributes: ['id'],
+                order: [['priority_score', 'DESC']],
+                raw: true,
+              })
+            : null;
+          if (categoryGoal) {
+            taskData.goal_id = categoryGoal.id;
+          } else {
+            // Fallback: link to the highest-priority active goal
+            const topGoal = await Goal.findOne({
+              where: { user_id: req.user.id, status: 'active' },
+              attributes: ['id'],
+              order: [['priority_score', 'DESC']],
+              raw: true,
+            });
+            if (topGoal) taskData.goal_id = topGoal.id;
+          }
+        }
+      } catch (e) {
+        logger.debug('[TASK] Goal auto-link failed:', e.message);
+      }
+    }
+
     // AI auto-prioritize
     try {
       const aiPriority = await aiService.prioritizeTask(taskData, req.user);
@@ -435,6 +498,15 @@ exports.updateTask = async (req, res) => {
       if (behaviorSvc) {
         behaviorSvc.onTaskEvent(req.user.id, 'task_completed', { taskId: task.id }, req.user?.timezone).catch(() => {});
       }
+      // Step 2: Update persistent UserModel (Phase P)
+      const userModelSvc = getUserModelService();
+      if (userModelSvc) {
+        userModelSvc.onTaskCompleted(req.user.id, {
+          id: task.id, priority: task.priority, due_date: task.due_date,
+          completed_at: req.body.completed_at, estimated_duration: task.estimated_duration,
+          energy_required: task.energy_required, category: task.category,
+        }).catch(e => logger.debug('[TASK] UserModel update failed:', e.message));
+      }
     }
 
     // Normalize times to UTC strings
@@ -448,6 +520,16 @@ exports.updateTask = async (req, res) => {
     }
 
     await task.update(req.body);
+
+    // Update linked goal progress on completion
+    if (req.body.status === 'completed' && task.goal_id) {
+      const goalEngine = getGoalEngine();
+      if (goalEngine) {
+        goalEngine.autoUpdateProgress(task.goal_id, req.user.id).catch(e =>
+          logger.debug('[TASK] Goal progress update failed:', e.message)
+        );
+      }
+    }
 
     const io = req.app.get('io');
     io?.to(`user_${req.user.id}`).emit('task_updated', task);
@@ -481,6 +563,31 @@ exports.completeTask = async (req, res) => {
     const behaviorSvc = getBehaviorService();
     if (behaviorSvc) {
       behaviorSvc.onTaskEvent(req.user.id, 'task_completed', { taskId: task.id, priority: task.priority }, req.user.timezone).catch(() => {});
+    }
+
+    // Step 2: Update persistent UserModel (Phase P)
+    const userModelSvc = getUserModelService();
+    if (userModelSvc) {
+      userModelSvc.onTaskCompleted(req.user.id, {
+        id: task.id,
+        priority: task.priority,
+        due_date: task.due_date,
+        completed_at: task.completed_at,
+        estimated_duration: task.estimated_duration,
+        actual_duration: task.actual_duration,
+        energy_required: task.energy_required,
+        category: task.category,
+      }).catch(e => logger.debug('[TASK] UserModel update failed:', e.message));
+    }
+
+    // Step 3: Update linked goal progress
+    if (task.goal_id) {
+      const goalEngine = getGoalEngine();
+      if (goalEngine) {
+        goalEngine.autoUpdateProgress(task.goal_id, req.user.id).catch(e =>
+          logger.debug('[TASK] Goal progress update failed:', e.message)
+        );
+      }
     }
 
     if (task.is_recurring && task.recurrence_pattern) {

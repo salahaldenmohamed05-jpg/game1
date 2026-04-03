@@ -16,7 +16,7 @@
  *   - Performance data mapping fixed (API returns data correctly)
  */
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -31,7 +31,7 @@ import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis,
   Tooltip, CartesianGrid, RadialBarChart, RadialBar,
 } from 'recharts';
-import api from '../../utils/api';
+import api, { analyticsAPI } from '../../utils/api';
 import UpgradeModal from '../subscription/UpgradeModal';
 import toast from 'react-hot-toast';
 
@@ -75,29 +75,35 @@ export default function AnalyticsView({ userPlan, onViewChange }) {
     retry: 1, staleTime: 5 * 60 * 1000,
   });
 
-  const dailySummaryQuery = useQuery({
-    queryKey: ['insights-daily'],
-    queryFn: () => api.get('/insights/daily'),
-    retry: 1, staleTime: 10 * 60 * 1000,
+  // Phase O: Use real analytics API instead of generic insights
+  const analyticsSummaryQuery = useQuery({
+    queryKey: ['analytics-summary'],
+    queryFn: analyticsAPI.getSummary,
+    retry: 1, staleTime: 5 * 60 * 1000,
+  });
+
+  const analyticsOverviewQuery = useQuery({
+    queryKey: ['analytics-overview'],
+    queryFn: analyticsAPI.getOverview,
+    retry: 1, staleTime: 5 * 60 * 1000,
   });
 
   const perfDashQuery = useQuery({
     queryKey: ['performance-dashboard'],
     queryFn: () => api.get('/performance/dashboard'),
-    enabled: isPremium,
     refetchInterval: 5 * 60 * 1000, retry: 1,
   });
 
   const perfHistoryQuery = useQuery({
     queryKey: ['performance-history'],
     queryFn: () => api.get('/performance/history?days=30'),
-    enabled: isPremium, retry: 1,
+    retry: 1,
   });
 
   const auditQuery = useQuery({
     queryKey: ['audit-history'],
     queryFn: () => api.get('/performance/weekly-audit/history'),
-    enabled: isPremium, retry: 1,
+    retry: 1,
   });
 
   const generateTipsMutation = useMutation({
@@ -127,7 +133,10 @@ export default function AnalyticsView({ userPlan, onViewChange }) {
   const history30   = Array.isArray(rawHistory30) ? rawHistory30 : [];
   const rawAudits   = auditQuery.data?.data?.data?.audits || auditQuery.data?.data?.data || [];
   const audits      = Array.isArray(rawAudits) ? rawAudits : [];
-  const dailySum    = dailySummaryQuery.data?.data?.data;
+
+  // Phase O: Real analytics data from analytics.service.js
+  const analyticsSummary  = analyticsSummaryQuery.data?.data?.data || null;
+  const analyticsOverview = analyticsOverviewQuery.data?.data?.data || null;
 
   const rawHistory7    = perfDash?.history_7d || [];
   const history7       = Array.isArray(rawHistory7) ? rawHistory7 : [];
@@ -153,6 +162,8 @@ export default function AnalyticsView({ userPlan, onViewChange }) {
 
   const handleRefresh = () => {
     insightsQuery.refetch();
+    analyticsSummaryQuery.refetch();
+    analyticsOverviewQuery.refetch();
     if (isPremium) {
       perfDashQuery.refetch();
       perfHistoryQuery.refetch();
@@ -205,7 +216,8 @@ export default function AnalyticsView({ userPlan, onViewChange }) {
           initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.15 }}>
           {activeTab === 'overview' && (
-            <OverviewTab todayScore={todayScore} coaching={coaching} dailySummary={dailySum}
+            <OverviewTab todayScore={todayScore} coaching={coaching}
+              analyticsSummary={analyticsSummary} analyticsOverview={analyticsOverview}
               insights={insights} history7={history7} isPremium={isPremium}
               onUpgrade={() => setShowUpgrade(true)} onViewChange={onViewChange} />
           )}
@@ -243,29 +255,72 @@ export default function AnalyticsView({ userPlan, onViewChange }) {
 // OVERVIEW TAB — metrics + charts (pure data, no AI interpretations here)
 // ═════════════════════════════════════════════════════════════════════════════
 
-function OverviewTab({ todayScore, coaching, dailySummary, insights, history7, isPremium, onUpgrade, onViewChange }) {
+function OverviewTab({ todayScore, coaching, analyticsSummary, analyticsOverview, insights, history7, isPremium, onUpgrade, onViewChange }) {
+  // Phase O: Compute real data-driven stats from analytics service
+  const taskData = analyticsSummary?.tasks || analyticsOverview?.task_completion || {};
+  const habitData = analyticsSummary?.habits || analyticsOverview?.habit_completion || {};
+  const moodData = analyticsSummary?.mood || analyticsOverview?.mood || {};
+  const productivityScore = analyticsSummary?.productivity_score || analyticsOverview?.productivity_score || 0;
+  const overdueData = analyticsOverview?.overdue || { count: 0, tasks: [] };
+  const onTimeData = analyticsOverview?.on_time || { rate: 0 };
+  const hasAnalytics = !!(analyticsSummary || analyticsOverview);
+
   return (
     <div className="space-y-5">
-      {dailySummary && (
+      {/* Phase O: Data-Driven Summary Card (replaces generic dailySummary) */}
+      {hasAnalytics && (
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
           className="rounded-2xl p-4 sm:p-5"
           style={{ background: 'linear-gradient(135deg, rgba(108,99,255,0.15), rgba(16,185,129,0.1))', border: '1px solid rgba(108,99,255,0.3)' }}>
           <div className="flex items-center gap-2 mb-3">
             <Sparkles size={16} className="text-primary-400" />
-            <h3 className="font-bold text-white text-sm">{dailySummary?.title || 'ملخص اليوم'}</h3>
+            <h3 className="font-bold text-white text-sm">ملخص اليوم — بيانات حقيقية</h3>
+            {productivityScore > 0 && (
+              <span className={`text-xs font-bold px-2 py-0.5 rounded-full ms-auto ${
+                productivityScore >= 80 ? 'bg-green-500/15 text-green-400' :
+                productivityScore >= 50 ? 'bg-blue-500/15 text-blue-400' :
+                'bg-yellow-500/15 text-yellow-400'
+              }`}>
+                {productivityScore} نقطة إنتاجية
+              </span>
+            )}
           </div>
-          {dailySummary?.data && (
-            <div className="grid grid-cols-3 gap-3">
-              {[
-                { label: 'المهام', value: `${dailySummary.data?.tasks?.completed || 0}/${dailySummary.data?.tasks?.total || 0}`, color: '#6C63FF' },
-                { label: 'العادات', value: `${dailySummary.data?.habits?.completed || 0}/${dailySummary.data?.habits?.total || 0}`, color: '#10B981' },
-                { label: 'المزاج', value: dailySummary.data?.mood ? `${dailySummary.data.mood}/10` : '-', color: '#F59E0B' },
-              ].map(m => (
-                <div key={m.label} className="text-center p-2 rounded-lg bg-white/5">
-                  <div className="font-bold text-sm" style={{ color: m.color }}>{m.value}</div>
-                  <div className="text-gray-500 text-xs">{m.label}</div>
-                </div>
-              ))}
+          <div className="grid grid-cols-4 gap-2">
+            {[
+              { label: 'المهام', value: `${taskData.completed || 0}/${taskData.total || 0}`, color: '#6C63FF',
+                sub: (taskData.overdue || overdueData.count) > 0 ? `${taskData.overdue || overdueData.count} متأخرة` : null,
+                subColor: '#EF4444' },
+              { label: 'العادات', value: `${habitData.completed || 0}/${habitData.total || 0}`, color: '#10B981',
+                sub: (habitData.percentage || habitData.rate) > 0 ? `${habitData.percentage || habitData.rate}%` : null,
+                subColor: '#10B981' },
+              { label: 'المزاج', value: moodData.has_checked_in ? `${moodData.score || moodData.average || '-'}/10` : '—',
+                color: '#F59E0B', sub: !moodData.has_checked_in ? 'لم تسجل' : null, subColor: '#9CA3AF' },
+              { label: 'في الوقت', value: `${onTimeData.rate || 0}%`, color: '#8B5CF6',
+                sub: onTimeData.total > 0 ? `${onTimeData.on_time}/${onTimeData.total}` : null, subColor: '#8B5CF6' },
+            ].map(m => (
+              <div key={m.label} className="text-center p-2 rounded-lg bg-white/5">
+                <div className="font-bold text-sm" style={{ color: m.color }}>{m.value}</div>
+                <div className="text-gray-500 text-[10px]">{m.label}</div>
+                {m.sub && <div className="text-[9px] mt-0.5" style={{ color: m.subColor }}>{m.sub}</div>}
+              </div>
+            ))}
+          </div>
+
+          {/* Overdue Tasks Preview */}
+          {overdueData.count > 0 && overdueData.tasks?.length > 0 && (
+            <div className="mt-3 pt-2 border-t border-white/5">
+              <p className="text-[10px] text-red-400 font-medium mb-1.5 flex items-center gap-1">
+                <AlertTriangle size={10} /> {overdueData.count} مهام متأخرة
+              </p>
+              <div className="space-y-1">
+                {overdueData.tasks.slice(0, 3).map(t => (
+                  <div key={t.id} className="flex items-center gap-2 text-[10px]">
+                    <span className="text-red-400/60">•</span>
+                    <span className="text-gray-400 truncate flex-1">{t.title}</span>
+                    <span className="text-red-400/60 flex-shrink-0">{t.days_overdue} يوم</span>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </motion.div>
@@ -385,9 +440,6 @@ function InsightsTab({ insights, radarData, history30, isPremium, onUpgrade, onG
 // ═════════════════════════════════════════════════════════════════════════════
 
 function PerformanceTab({ todayScore, history7, activeFlags, energyProfile, isPremium, onUpgrade, isLoading }) {
-  if (!isPremium) {
-    return <LockedSection onUpgrade={onUpgrade} title="محرك الأداء الذكي" desc="تحليل يومي وأسبوعي شامل لأدائك" />;
-  }
   if (isLoading) return <Skeleton count={3} />;
 
   const hasData = todayScore || history7.length > 0 || activeFlags.length > 0 || energyProfile?.has_data;
@@ -397,14 +449,20 @@ function PerformanceTab({ todayScore, history7, activeFlags, energyProfile, isPr
       {!hasData && (
         <div className="text-center py-12">
           <div className="text-4xl mb-3">📊</div>
-          <p className="text-gray-400 text-sm mb-2">لا توجد بيانات أداء بعد</p>
-          <p className="text-gray-500 text-xs">أكمل مهام وعادات لتوليد تحليل الأداء</p>
+          <p className="text-gray-400 text-sm mb-2">لا توجد بيانات أداء كافية بعد</p>
+          <p className="text-gray-500 text-xs mb-4">أكمل مهام وعادات وسجّل مزاجك لتوليد تحليل الأداء</p>
+          <div className="flex flex-wrap justify-center gap-2 text-xs">
+            <span className="px-3 py-1.5 rounded-lg bg-primary-500/10 text-primary-300">✅ أكمل 3 مهام</span>
+            <span className="px-3 py-1.5 rounded-lg bg-green-500/10 text-green-300">🎯 سجّل عادة واحدة</span>
+            <span className="px-3 py-1.5 rounded-lg bg-yellow-500/10 text-yellow-300">💙 سجّل مزاجك</span>
+          </div>
         </div>
       )}
       {todayScore && <TodayScoreCard score={todayScore} />}
       {history7.length > 0 && <TrendChart history={history7} />}
       {activeFlags.length > 0 && <BehavioralFlagsCard flags={activeFlags} />}
       {energyProfile?.has_data && <EnergyProfileCard energy={energyProfile} />}
+      {!isPremium && hasData && <PremiumBanner onUpgrade={onUpgrade} />}
     </div>
   );
 }
@@ -414,34 +472,49 @@ function PerformanceTab({ todayScore, history7, activeFlags, energyProfile, isPr
 // ═════════════════════════════════════════════════════════════════════════════
 
 function AuditTab({ audits, expandedAudit, setExpandedAudit, isPremium, onUpgrade, isLoading, onGenerateAudit, isGeneratingAudit, onViewChange }) {
-  if (!isPremium) {
-    return <LockedSection onUpgrade={onUpgrade} title="التدقيقات الأسبوعية" desc="تقارير أسبوعية مفصلة مع استراتيجيات تحسين" />;
-  }
+  const [reportType, setReportType] = useState('weekly');
   if (isLoading) return <Skeleton count={2} />;
 
   return (
     <div className="space-y-4">
-      {/* On-demand generation button */}
+      {/* Report type selector */}
+      <div className="flex gap-2 p-1 bg-white/5 rounded-xl border border-white/5">
+        {[
+          { key: 'weekly', label: 'تقرير أسبوعي', icon: '📅' },
+          { key: 'monthly', label: 'تقرير شهري', icon: '🗓️' },
+        ].map(tab => (
+          <button key={tab.key} onClick={() => setReportType(tab.key)}
+            className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-xs font-bold transition-all active:scale-95 ${
+              reportType === tab.key
+                ? 'bg-primary-500/20 text-primary-400 shadow-sm'
+                : 'text-gray-400 hover:text-white'
+            }`}>
+            {tab.icon} {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Header + generation button */}
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold text-white flex items-center gap-2">
           <Calendar size={14} className="text-blue-400" />
-          التدقيقات الأسبوعية ({audits.length})
+          {reportType === 'weekly' ? 'التدقيقات الأسبوعية' : 'التدقيقات الشهرية'} ({audits.length})
         </h2>
         <button onClick={onGenerateAudit} disabled={isGeneratingAudit}
           className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-primary-500/20 text-primary-300 hover:bg-primary-500/30 transition-colors text-xs disabled:opacity-50">
           {isGeneratingAudit ? <RefreshCw size={12} className="animate-spin" /> : <Play size={12} />}
-          {isGeneratingAudit ? 'جارٍ الإنشاء...' : 'إنشاء تدقيق جديد'}
+          {isGeneratingAudit ? 'جارٍ الإنشاء...' : `إنشاء تقرير ${reportType === 'weekly' ? 'أسبوعي' : 'شهري'}`}
         </button>
       </div>
 
       {audits.length === 0 ? (
         <div className="text-center py-12">
           <div className="text-4xl mb-3">📋</div>
-          <p className="text-gray-400 text-sm mb-2">لا توجد تدقيقات أسبوعية بعد</p>
-          <p className="text-gray-500 text-xs mb-4">اضغط "إنشاء تدقيق جديد" لتوليد أول تقرير</p>
+          <p className="text-gray-400 text-sm mb-2">لا توجد تقارير بعد</p>
+          <p className="text-gray-500 text-xs mb-4">أنشئ أول تقرير لمتابعة تقدمك</p>
           <button onClick={onGenerateAudit} disabled={isGeneratingAudit}
-            className="px-4 py-2 rounded-xl bg-primary-500/20 text-primary-300 hover:bg-primary-500/30 text-xs inline-flex items-center gap-1.5">
-            <Play size={12} /> إنشاء تدقيق
+            className="px-4 py-2.5 rounded-xl bg-primary-500 text-white hover:bg-primary-600 text-xs inline-flex items-center gap-1.5 shadow-lg shadow-primary-500/20">
+            <Play size={12} /> إنشاء تقرير {reportType === 'weekly' ? 'أسبوعي' : 'شهري'}
           </button>
         </div>
       ) : (

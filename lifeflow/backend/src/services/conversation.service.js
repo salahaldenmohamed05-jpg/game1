@@ -249,6 +249,24 @@ function buildSystemPrompt(ctx, intentCategory, session) {
     ? `⚠️ مهام متأخرة: ${ctx.overdueTasks.length} (${ctx.overdueTasks.slice(0,2).map(t=>t.title).join('، ')})`
     : '';
 
+  // Build completed tasks context so AI knows what's already done
+  const completedLine = (ctx.completedToday && ctx.completedToday.length > 0)
+    ? `\n- مهام مكتملة اليوم: ${ctx.completedToday.length} (${ctx.completedToday.slice(0,3).map(t=>t.title).join('، ')})`
+    : '';
+
+  // Build completed habits context
+  const completedHabitsLine = ctx.completedHabitCount > 0
+    ? `\n- عادات مكتملة اليوم: ${ctx.completedHabitCount}` : '';
+
+  // Anti-repetition: include last 3 assistant replies to avoid repeating
+  const recentReplies = session.history
+    .filter(h => h.role === 'assistant')
+    .slice(-3)
+    .map(h => h.content.substring(0, 100));
+  const antiRepeatNote = recentReplies.length > 0
+    ? `\n\n═══ تنبيه: لا تكرر هذه الردود السابقة ═══\n${recentReplies.map((r, i) => `${i+1}. "${r}..."`).join('\n')}`
+    : '';
+
   return `أنت "LifeFlow AI"، مساعد حياة شخصي ذكي ومتعاطف تتحدث بالعربية دائماً.
 أنت تعرف كل شيء عن جدول المستخدم وبياناته الحقيقية.
 
@@ -261,10 +279,10 @@ function buildSystemPrompt(ctx, intentCategory, session) {
 - مهام اليوم: ${ctx.todayTasks.length} مهمة
 - إجمالي المعلقة: ${ctx.tasks.length} مهمة
 - العاجلة/المهمة: ${ctx.urgentTasks.length} مهمة${ctx.urgentTasks.length > 0 ? ` (${ctx.urgentTasks.slice(0,2).map(t=>t.title).join('، ')})` : ''}
-${overdueLine}
+${overdueLine}${completedLine}${completedHabitsLine}
 - العادات النشطة: ${ctx.habits.length}${lastActionNote}
 
-═══ تعليمات الرد ═══
+═══ تعليمات الرد (مهمة جداً) ═══
 1. تحدث بالعربية دائماً مع إيموجي مناسبة
 2. كن شخصياً — استخدم اسم المستخدم وأشر للبيانات الفعلية
 3. ردودك عملية ومباشرة (2-5 جمل إلا إذا طُلب تفصيل)
@@ -275,9 +293,14 @@ ${overdueLine}
 8. لا تقل "تم!" فقط — دائماً اشرح ما تم واسأل سؤالاً متابعة مفيداً
 9. إذا لم تكن متأكداً من القصد، اطرح سؤالاً توضيحياً واحداً فقط
 10. أجب بذكاء حتى لو السؤال غير متعلق بالمهام (صحة، علاقات، دراسة...)
-11. عند إنشاء جداول مذاكرة: اليوم فيه 24 ساعة فقط، الحد الأقصى للدراسة 8 ساعات/يوم
-12. عند ذكر الصلوات الخمس في الجدول: تأكد من إدراج جميعها (فجر، ظهر، عصر، مغرب، عشاء) بدون استثناء
-13. إذا تجاوزت المهام سعة اليوم، وزّعها على أيام أكثر بدلاً من حشر الكل في يوم واحد`;
+
+═══ قواعد صارمة لتجنب الأخطاء ═══
+11. لا تكرر نفس الرد أبداً — نوّع في أسلوبك وعباراتك واستخدم معلومات مختلفة
+12. إذا طلب المستخدم إنشاء مهمة موجودة بالفعل أو مكتملة → أخبره أنها موجودة ولا تنشئها مجدداً
+13. لا تقترح إنشاء مهام المستخدم أكملها بالفعل (انظر المهام المكتملة اليوم أعلاه)
+14. عند إنشاء جداول مذاكرة: الحد الأقصى 8 ساعات دراسة/يوم
+15. عند ذكر الصلوات: أدرج جميعها (فجر، ظهر، عصر، مغرب، عشاء)
+16. إذا تجاوزت المهام سعة اليوم، وزّعها على أيام أكثر${antiRepeatNote}`;
 }
 
 // ─── History Context Builder ──────────────────────────────────────────────────
@@ -293,30 +316,90 @@ function buildHistoryContext(session, currentMessage) {
   return `[سياق المحادثة:\n${historyStr}]\n\nالرسالة الحالية: ${currentMessage}`;
 }
 
-// ─── Smart Fallback Replies ───────────────────────────────────────────────────
+// ─── Decision-Aware Fallback Replies ──────────────────────────────────────────
+// Phase M: Fallback replies now use Decision Engine data when available.
+// Never returns generic text if Decision Engine has real data.
 function buildFallbackReply(intentCategory, ctx, actionSummary) {
   if (actionSummary) {
-    return `${actionSummary}\n\nهل هناك شيء آخر يمكنني مساعدتك به يا ${ctx.name}؟ 😊`;
+    const followUps = [
+      `هل تحتاج شيء آخر يا ${ctx.name}؟`,
+      `إيش تبي تعمل بعدين يا ${ctx.name}؟`,
+      `هل فيه حاجة تانية أساعدك فيها؟`,
+      `أي خدمة تانية يا ${ctx.name}؟`,
+    ];
+    const followUp = followUps[Math.floor(Date.now() % followUps.length)];
+    return `${actionSummary}\n\n${followUp}`;
   }
-  
+
+  const name = ctx.name || 'صديقي';
+  const overdue = ctx.overdueTasks?.length || 0;
+  const pending = ctx.tasks?.length || 0;
+  const energy = ctx.energy || 55;
+  const hour = ctx.hour || new Date().getHours();
+  const completedToday = ctx.completedToday?.length || 0;
+
+  // Use time-seeded index for variety
+  const variety = Math.floor(Date.now() / 60000) % 3;
+
   switch (intentCategory) {
     case 'advice':
-      if (ctx.energy < 50) {
-        return `يبدو أن طاقتك منخفضة قليلاً (${ctx.energy}/100) يا ${ctx.name} 💙\n\nنصيحتي: خذ استراحة 10 دقائق، اشرب ماءً، ثم ركّز على مهمة واحدة فقط. أصغر خطوة أفضل من لا شيء! 💪`;
+      if (overdue > 0) {
+        const overdueNames = ctx.overdueTasks.slice(0, 2).map(t => `"${t.title}"`).join(' و');
+        const advices = [
+          `${name}، عندك ${overdue} مهمة متأخرة: ${overdueNames}.\nابدأ بأصغرها — أول خطوة هي الأصعب 💪`,
+          `${name}، ${overdueNames} متأخرة عليك.\nجرّب تخصص 15 دقيقة فقط للبداية — بعدها هتلاقي نفسك كملت ⚡`,
+          `يا ${name}، المهام المتأخرة ${overdue}. مش لازم تخلصهم كلهم — خلص واحدة بس وهتحس بإنجاز 🎯`,
+        ];
+        return advices[variety];
       }
-      if (ctx.overdueTasks.length > 0) {
-        return `لديك ${ctx.overdueTasks.length} مهمة متأخرة يا ${ctx.name} ⚠️\n\nنصيحتي: ابدأ بأصغرها لتحصل على دفعة من الإنجاز، ثم تابع واحدة واحدة. هل تريد مساعدة في ترتيب أولوياتها؟`;
+      if (energy < 45) {
+        const lowEnergyAdvice = [
+          `${name}، طاقتك ${energy}/100 — خذ 10 دقائق راحة ثم جرّب مهمة صغيرة 🧘`,
+          `يا ${name}، طاقتك منخفضة. اشرب ميه وامشي شوية — الراحة جزء من الإنتاجية 💧`,
+          `${name}، مش وقت المهام الصعبة. جرّب حاجة خفيفة أو سجّل مزاجك 😊`,
+        ];
+        return lowEnergyAdvice[variety];
       }
-      return `إنتاجيتك ${ctx.productivity}/100 يا ${ctx.name}. ${ctx.productivity >= 65 ? '🌟 أداء رائع! حافظ على هذا الإيقاع.' : '💡 يمكن تحسينها — جرّب تقسيم مهامك الكبيرة لأجزاء صغيرة والبدء بالأسهل.'}\n\nهل تريد نصائح أكثر تحديداً؟`;
-    
+      return `${name}، عندك ${pending} مهمة معلقة. ابدأ بالأهم — أي خطوة صغيرة أفضل من الانتظار 🚀`;
+
     case 'question':
-      return `مرحباً ${ctx.name}! 😊\n\nلم أفهم سؤالك تماماً. يمكنني مساعدتك في:\n• 📋 إدارة المهام والجدولة\n• 💭 تتبع المزاج والطاقة\n• 📊 تحليل إنتاجيتك\n• 🎓 جدولة المذاكرة\n• 💡 نصائح الإنتاجية\n\nماذا تريد بالضبط؟`;
-    
+      if (pending > 0) {
+        const topTask = ctx.tasks[0];
+        const questions = [
+          `${name}، أهم شيء الحين: "${topTask.title}" (${topTask.priority || 'medium'}).\nابدأ بها أو اسألني عن شيء محدد 📋`,
+          `يا ${name}، عندك "${topTask.title}" — أبدأ فيها؟ أو قولي بالضبط إيش محتاج 🤔`,
+          `${name}، المهمة الأولى: "${topTask.title}". عندك ${pending} مهمة إجمالي. إيش تبي تعرف؟ 💡`,
+        ];
+        return questions[variety];
+      }
+      return `${name}، ما عندك مهام عاجلة. اسألني سؤال محدد وأساعدك 🎯`;
+
     case 'task_action':
-      return `حسناً يا ${ctx.name}، سأساعدك في ذلك 💪\n\nيرجى تحديد ما تريده بشكل أوضح قليلاً، مثلاً:\n"اضف مهمة مذاكرة الرياضيات بكرة الساعة 3"\nأو "خلص مهمة المشروع"`;
-    
+      const actionHints = [
+        `${name}، حدّد المهمة بالضبط.\nمثلاً: "اضف مهمة مذاكرة الرياضيات بكرة الساعة 3" 📝`,
+        `يا ${name}، قولي إيش المهمة — مثلاً: "خلص مذاكرة الفيزياء" أو "اضف مهمة جديدة" ✏️`,
+        `${name}، أنا جاهز! قولي اسم المهمة والتفاصيل وأنا أنفذ 🚀`,
+      ];
+      return actionHints[variety];
+
     default:
-      return `أهلاً ${ctx.name}! 😊\n\nحالتك اليوم: إنتاجية ${ctx.productivity}/100 | طاقة ${ctx.energy}/100 | ${ctx.tasks.length} مهمة معلقة${ctx.todayMood ? ` | مزاج ${ctx.todayMood}/10` : ''}.\n\nبماذا يمكنني مساعدتك؟`;
+      if (completedToday > 0) {
+        return `${name}، أنجزت ${completedToday} مهمة اليوم — ممتاز! ${pending > 0 ? `باقي ${pending} مهمة.` : 'كل مهامك خلصت! 🎉'} طاقتك ${energy}/100 ⚡`;
+      }
+      if (overdue > 0) {
+        const topOverdue = ctx.overdueTasks[0];
+        return `${name}، عندك ${overdue} مهمة متأخرة — أهمها "${topOverdue.title}".\nابدأ بها الحين. طاقتك ${energy}/100 💪`;
+      }
+      if (pending > 0) {
+        const topTask = ctx.tasks[0];
+        return `${name}، المهمة التالية: "${topTask.title}".\nعندك ${pending} مهمة معلقة | طاقة ${energy}/100 ⚡`;
+      }
+      const doneMessages = [
+        `${name}، كل مهامك منجزة! كافئ نفسك أو خطط لمهام غد 🎉`,
+        `يوم فاضي يا ${name}! أضف مهمة جديدة أو استمتع بوقتك 🌟`,
+        `${name}، ما فيه مهام. جرّب تسجّل مزاجك أو تخطط لبكرة 📅`,
+      ];
+      return doneMessages[variety];
   }
 }
 

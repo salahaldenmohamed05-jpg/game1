@@ -2,6 +2,10 @@
  * Auth Store - Zustand
  * =====================
  * إدارة حالة المصادقة والمستخدم
+ *
+ * HYDRATION FIX: Uses onRehydrateStorage + _hasHydrated flag
+ * so index.js knows exactly when persist has finished restoring
+ * from localStorage — eliminates the 50ms race condition.
  */
 
 import { create } from 'zustand';
@@ -132,8 +136,38 @@ const useAuthStore = create(
         token: state.token,
         isAuthenticated: state.isAuthenticated,
       }),
+      onRehydrateStorage: () => {
+        return () => {
+          // Called when Zustand persist finishes restoring from localStorage
+          useAuthStore.setState({ _hasHydrated: true });
+        };
+      },
     }
   )
 );
+
+// ── Hydration helpers (no re-render subscription needed) ────────────────────
+/**
+ * Returns a promise that resolves once the auth store has rehydrated.
+ * Safe to call multiple times — resolves immediately if already hydrated.
+ * Includes a 2-second safety-net timeout to prevent infinite waiting.
+ */
+useAuthStore.waitForHydration = () =>
+  new Promise((resolve) => {
+    if (useAuthStore.getState()._hasHydrated) return resolve();
+
+    const safety = setTimeout(() => {
+      unsub();
+      resolve(); // proceed even if hydration signal never fired
+    }, 2000);
+
+    const unsub = useAuthStore.subscribe((state) => {
+      if (state._hasHydrated) {
+        clearTimeout(safety);
+        unsub();
+        resolve();
+      }
+    });
+  });
 
 export default useAuthStore;

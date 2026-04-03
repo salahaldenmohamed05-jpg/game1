@@ -200,7 +200,7 @@ export default function LogsView() {
               )}
               <div className="mt-4 p-3 bg-blue-500/10 border border-blue-500/20 rounded-xl" dir="rtl">
                 <p className="text-xs text-blue-300">
-                  💡 في حالة وجود أخطاء، انتقل إلى تبويب "أخطاء العميل" لمشاهدة تفاصيلها. يتم تسجيل كل خطأ تلقائياً عند حدوثه.
+                  💡 في حالة وجود أخطاء، انتقل إلى تبويب &ldquo;أخطاء العميل&rdquo; لمشاهدة تفاصيلها. يتم تسجيل كل خطأ تلقائياً عند حدوثه.
                 </p>
               </div>
             </div>

@@ -9,7 +9,7 @@ import { adaptiveAPI } from '../../utils/api';
 
 export default function CopilotView() {
   const [messages, setMessages] = useState([
-    { role: 'assistant', text: 'مرحباً! أنا مساعدك الذكي للحياة 🤖\nكيف يمكنني مساعدتك اليوم؟', ts: Date.now() }
+    { role: 'assistant', text: 'أهلاً! 👋 قولّي إيه اللي محتاجه — مهام، نصيحة، أو مجرد كلام.', ts: Date.now() }
   ]);
   const [input, setInput] = useState('');
   const [activeTab, setActiveTab] = useState('chat');
@@ -124,7 +124,7 @@ export default function CopilotView() {
               </button>
             </div>
             <div className="flex flex-wrap gap-2">
-              {['ما مستوى طاقتي؟', 'كيف إنتاجيتي؟', 'هل أنا محترق؟', 'أعطني خطة اليوم'].map(q => (
+              {['طاقتي عاملة إزاي؟', 'إنتاجيتي كام؟', 'أبدأ بإيه؟', 'خطة يومي'].map(q => (
                 <button key={q} onClick={() => { setInput(q); setTimeout(sendMessage, 0); }}
                   className="text-xs px-3 py-1.5 bg-surface-700 text-gray-300 rounded-full hover:bg-surface-600 transition-colors">
                   {q}

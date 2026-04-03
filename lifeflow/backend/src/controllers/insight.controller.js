@@ -30,7 +30,13 @@ exports.getDailySummary = async (req, res) => {
     });
 
     if (!insight) {
-      // Gather today's data
+      // Gather today's data — Phase O: use analytics.service.js for accurate counts
+      let analyticsData = null;
+      try {
+        const analytics = require('../services/analytics.service');
+        analyticsData = await analytics.getDailyInsightData(req.user.id, timezone);
+      } catch (_e) { /* fallback below */ }
+
       const [tasks, habitLogs, moodEntry] = await Promise.all([
         Task.findAll({ where: { user_id: req.user.id,
           due_date: { [Op.between]: [`${today}T00:00:00`, `${today}T23:59:59`] },
@@ -42,12 +48,18 @@ exports.getDailySummary = async (req, res) => {
       const completedTasks = tasks.filter(t => t.status === 'completed').length;
       const completedHabits = habitLogs.filter(l => l.completed).length;
 
+      // Use analytics data if available (accurate), else fallback
+      const insightTasks = analyticsData?.tasks ?? { total: tasks.length, completed: completedTasks };
+      const insightHabits = analyticsData?.habits ?? { total: habitLogs.length, completed: completedHabits };
+      const insightMood = analyticsData?.mood ?? (moodEntry?.mood_score || null);
+      const insightScore = analyticsData?.productivity_score ?? calculateProductivityScore(tasks, habitLogs, moodEntry);
+
       // Generate AI summary
       const aiSummary = await aiService.generateDailySummary({
         user: req.user,
         date: today,
-        tasks: { total: tasks.length, completed: completedTasks, pending: tasks.length - completedTasks },
-        habits: { total: habitLogs.length, completed: completedHabits },
+        tasks: insightTasks,
+        habits: insightHabits,
         mood: moodEntry,
       });
 
@@ -57,10 +69,10 @@ exports.getDailySummary = async (req, res) => {
         title: `ملخص يوم ${moment(today).format('dddd، D MMMM YYYY')}`,
         content: aiSummary.summary,
         data: {
-          tasks: { total: tasks.length, completed: completedTasks },
-          habits: { total: habitLogs.length, completed: completedHabits },
-          mood: moodEntry?.mood_score || null,
-          productivity_score: calculateProductivityScore(tasks, habitLogs, moodEntry),
+          tasks: insightTasks,
+          habits: insightHabits,
+          mood: insightMood,
+          productivity_score: insightScore,
         },
         recommendations: aiSummary.recommendations,
         period_start: today,

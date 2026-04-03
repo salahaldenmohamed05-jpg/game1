@@ -65,7 +65,13 @@ exports.getDashboard = async (req, res) => {
       }),
     ]);
 
-    // Calculate summary stats
+    // Calculate summary stats — Phase O: use analytics.service.js for accurate data
+    let analyticsSummary = null;
+    try {
+      const analytics = require('../services/analytics.service');
+      analyticsSummary = await analytics.getAnalyticsSummary(req.user.id, timezone);
+    } catch (_e) { /* fallback below */ }
+
     const habitLogMap = {};
     habitLogs.forEach(l => { habitLogMap[l.habit_id] = l; });
 
@@ -89,8 +95,8 @@ exports.getDashboard = async (req, res) => {
       return dueMoment.isBefore(nowInTz);
     }).length;
 
-    // Productivity score
-    const productivityScore = calculateScore(todayTasks, habitLogs, todayMood);
+    // Productivity score — use analytics service if available
+    const productivityScore = analyticsSummary?.productivity_score ?? calculateScore(todayTasks, habitLogs, todayMood);
 
     // Greeting based on time
     const greeting = getGreeting(now.hour(), req.user.name);
@@ -120,7 +126,13 @@ exports.getDashboard = async (req, res) => {
           formatted: now.locale('ar').format('D MMMM YYYY'),
           time: now.format('HH:mm'),
         },
-        summary: {
+        summary: analyticsSummary ? {
+          productivity_score: analyticsSummary.productivity_score,
+          tasks: analyticsSummary.tasks,
+          habits: analyticsSummary.habits,
+          mood: analyticsSummary.mood,
+          unread_notifications: unreadNotifications,
+        } : {
           productivity_score: productivityScore,
           tasks: {
             total: todayTasks.length,
@@ -156,8 +168,12 @@ exports.getDashboard = async (req, res) => {
           log: habitLogMap[h.id] || null,
         })),
         recent_insights: recentInsights,
-        active_goals: activeGoals,
-        week_progress: {
+        active_goals: activeGoals.map(g => ({
+          ...(g.toJSON ? g.toJSON() : g),
+          linkedTasks: todayTasks.filter(t => t.goal_id === g.id).length,
+          completedTasks: todayTasks.filter(t => t.goal_id === g.id && t.status === 'completed').length,
+        })),
+        week_progress: analyticsSummary?.week_progress ?? {
           total: weekTasks.length,
           completed: weekTasks.filter(t => t.status === 'completed').length,
         },

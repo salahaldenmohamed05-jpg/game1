@@ -273,21 +273,47 @@ router.post('/chat', writeLimiter, validateMessage, async (req, res) => {
         snapshot    : result.snapshot    || null,
         prediction  : result.prediction  || null,
         pipeline_ms : result.pipeline_ms || null,
+        // Phase M: Decision Engine data
+        decisionData: result.decisionData || null,
       },
     });
   } catch (e) {
     logger.error('[ASSISTANT] chat error:', e.message);
-    // Never crash — return fallback
+    // Phase M: Never crash — try Decision Engine fallback before generic reply
+    let emergencyReply = DEFAULT_FALLBACK;
+    let emergencyDecision = null;
+    try {
+      const unifiedSvc = require('../services/unified.decision.service');
+      if (unifiedSvc?.getUnifiedDecision) {
+        const decision = await unifiedSvc.getUnifiedDecision(req.user.id, {
+          timezone: req.user.timezone || 'Africa/Cairo',
+        });
+        if (decision?.currentFocus) {
+          const focus = decision.currentFocus;
+          const why = (decision.why || []).slice(0, 2).join(' | ');
+          const step = focus.next_steps?.[0] || '';
+          emergencyReply = `📌 **${focus.title}**\n${why}\n${step ? `👉 ${step}` : ''}`;
+          emergencyDecision = {
+            currentFocus: decision.currentFocus,
+            why: decision.why,
+            signalsUsed: decision.signalsUsed,
+            behaviorState: decision.behaviorState,
+          };
+        }
+      }
+    } catch (_de) { /* truly last resort */ }
+
     res.json({
       success: true,
       data: {
-        reply       : DEFAULT_FALLBACK,
+        reply       : emergencyReply,
         mode        : 'hybrid',
         actions     : [],
-        suggestions : ['أعد المحاولة', 'كيف طاقتي؟', 'وضعي اليوم'],
-        is_fallback : true,
-        confidence  : 0,
+        suggestions : ['أعد المحاولة', 'ابدأ يومي', 'سجّل مزاجي'],
+        is_fallback : emergencyReply === DEFAULT_FALLBACK,
+        confidence  : emergencyReply === DEFAULT_FALLBACK ? 0 : 60,
         explanation : [],
+        decisionData: emergencyDecision,
       },
     });
   }
@@ -318,6 +344,7 @@ router.post('/', writeLimiter, validateMessage, async (req, res) => {
         confidence  : result.confidence  || 70,
         explanation : result.explanation || [],
         planningTip : result.planningTip || null,
+        decisionData: result.decisionData || null,
       },
     });
   } catch (e) {
@@ -328,7 +355,7 @@ router.post('/', writeLimiter, validateMessage, async (req, res) => {
         reply       : DEFAULT_FALLBACK,
         mode        : 'hybrid',
         actions     : [],
-        suggestions : ['أعد المحاولة', 'كيف طاقتي؟'],
+        suggestions : ['أعد المحاولة', 'ابدأ يومي'],
         is_fallback : true,
         confidence  : 0,
         explanation : [],
@@ -360,6 +387,25 @@ router.get('/context', async (req, res) => {
       return d === ctx.today;
     });
 
+    // Enrich with goal context (Phase G: assistant context enrichment)
+    let goalContext = null;
+    try {
+      const goalEngine = require('../services/goal.engine.service');
+      if (goalEngine?.getGoalSummaryForAI) {
+        goalContext = await goalEngine.getGoalSummaryForAI(req.user.id, tz);
+      } else if (goalEngine?.getGoalContext) {
+        const gCtx = await goalEngine.getGoalContext(req.user.id, tz);
+        goalContext = { summary: gCtx.summary, topGoals: (gCtx.activeGoals || []).slice(0, 3).map(g => g.title) };
+      }
+    } catch (_e) { /* goal engine optional */ }
+
+    // Enrich with analytics snapshot
+    let analyticsSnapshot = null;
+    try {
+      const analytics = require('../services/analytics.service');
+      analyticsSnapshot = await analytics.getAnalyticsSnapshot(req.user.id, tz);
+    } catch (_e) { /* analytics optional */ }
+
     res.json({
       success: true,
       data: {
@@ -375,6 +421,9 @@ router.get('/context', async (req, res) => {
         // Profile & Settings data for frontend personalization
         user_profile  : ctx.profile || null,
         user_settings : ctx.settings || null,
+        // Phase G: Goal & Analytics enrichment
+        goal_context  : goalContext,
+        analytics     : analyticsSnapshot,
       }
     });
   } catch (e) {
@@ -1218,8 +1267,8 @@ router.get('/ml-predictions', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Phase 16: GET /assistant/next-action
-// Returns the single best action the user should take RIGHT NOW
+// Phase L: GET /assistant/next-action
+// Behavior-aware, proactive. Returns actionable focus with next_steps.
 // Query params: ?energy=0-100&mood=1-10
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/next-action', async (req, res) => {
@@ -1229,6 +1278,72 @@ router.get('/next-action', async (req, res) => {
     const currentEnergy = req.query.energy ? parseInt(req.query.energy) : undefined;
     const currentMood   = req.query.mood   ? parseFloat(req.query.mood) : undefined;
 
+    // Phase L: UnifiedDecisionService v2 (behavior-aware)
+    let unifiedDecision = null;
+    try {
+      const unifiedSvc = require('../services/unified.decision.service');
+      if (unifiedSvc?.getUnifiedDecision) {
+        unifiedDecision = await unifiedSvc.getUnifiedDecision(userId, {
+          timezone,
+          energy: currentEnergy,
+          mood: currentMood,
+        });
+      }
+    } catch (_e) { logger.debug('[ASSISTANT] Unified decision service not available:', String(_e.message).slice(0, 150)); }
+
+    if (unifiedDecision?.currentFocus) {
+      const focus = unifiedDecision.currentFocus;
+
+      // Enrich with real task data if action references a task
+      let taskData = null;
+      if (focus.id && focus.type === 'task') {
+        try {
+          const Task = require('../models/task.model');
+          const t = await Task.findOne({ where: { id: focus.id, user_id: userId } });
+          if (t) {
+            taskData = {
+              id:              t.id,
+              title:           t.title,
+              priority:        t.priority,
+              due_date:        t.due_date,
+              start_time:      t.start_time,
+              energy_required: t.energy_required,
+            };
+          }
+        } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${String(_e.message).slice(0, 100)}`); }
+      }
+
+      logger.info(`[ASSISTANT] next-action v2: user=${userId}, action=${focus.action}, behavior=${unifiedDecision.behaviorState?.state}, confidence=${unifiedDecision.confidence}%`);
+
+      return res.json({
+        success: true,
+        data: {
+          action:      focus.action || 'review_plan',
+          task_id:     focus.id || null,
+          habit_id:    focus.type === 'habit' ? focus.id : null,
+          title:       focus.title,
+          task_title:  taskData?.title || focus.title || null,
+          message:     focus.message || unifiedDecision.why?.join(' — ') || '',
+          reason:      unifiedDecision.why || [],
+          explanation: unifiedDecision.why || [],
+          confidence:  unifiedDecision.confidence || 70,
+          urgency:     focus.priority === 'urgent' ? 'critical' : focus.priority === 'high' ? 'high' : 'medium',
+          energy_match: true,
+          ml_driven:   true,
+          task_data:   taskData,
+          suggestions: unifiedDecision.alternatives?.slice(0, 3).map(a => a.title) || [],
+          // v2: proactive + behavioral
+          next_steps:    focus.next_steps || [],
+          signalsUsed:   unifiedDecision.signalsUsed,
+          alternatives:  unifiedDecision.alternatives,
+          behaviorState: unifiedDecision.behaviorState,
+          source:        'unified_decision_engine',
+          generated_at:  unifiedDecision.generated_at || new Date().toISOString(),
+        },
+      });
+    }
+
+    // Fallback: Use legacy next.action.service
     const nextActionSvc = getNextAction();
     if (!nextActionSvc) {
       return res.status(503).json({ success: false, message: 'Next-action service not available' });
@@ -1240,7 +1355,6 @@ router.get('/next-action', async (req, res) => {
       currentMood,
     });
 
-    // Enrich with real task data if action references a task
     let taskData = null;
     if (action.task_id) {
       try {
@@ -1248,69 +1362,43 @@ router.get('/next-action', async (req, res) => {
         const t = await Task.findOne({ where: { id: action.task_id, user_id: userId } });
         if (t) {
           taskData = {
-            id:          t.id,
-            title:       t.title,
-            priority:    t.priority,
-            due_date:    t.due_date,
-            start_time:  t.start_time,
+            id:              t.id,
+            title:           t.title,
+            priority:        t.priority,
+            due_date:        t.due_date,
+            start_time:      t.start_time,
             energy_required: t.energy_required,
           };
         }
-      } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${_e.message}`); }
+      } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${String(_e.message).slice(0, 100)}`); }
     }
 
-    logger.info(`[ASSISTANT] next-action: user=${userId}, action=${action.action}, urgency=${action.urgency}`);
+    logger.info(`[ASSISTANT] next-action (legacy): user=${userId}, action=${action.action}, urgency=${action.urgency}`);
 
     res.json({
       success: true,
-      data   : {
+      data: {
         ...action,
-        task_title  : taskData?.title || action.title || null,
-        task_data   : taskData,
+        task_title:   taskData?.title || action.title || null,
+        task_data:    taskData,
+        source:       'legacy_next_action',
         generated_at: new Date().toISOString(),
       },
     });
   } catch (e) {
-    logger.error('[ASSISTANT] /next-action error:', e.message);
-    // Try to return a real task from DB as fallback
-    try {
-      const Task = require('../models/task.model');
-      const { Op } = require('sequelize');
-      const moment = require('moment-timezone');
-      const tz = req.user.timezone || 'Africa/Cairo';
-      const today = moment().tz(tz).format('YYYY-MM-DD');
-      const tasks = await Task.findAll({
-        where: {
-          user_id: req.user.id,
-          status: { [Op.in]: ['pending','in_progress'] },
-          due_date: { [Op.lte]: `${today}T23:59:59` },
-        },
-        order: [['ai_priority_score','DESC'],['due_date','ASC']],
-        limit: 1,
-      });
-      if (tasks.length > 0) {
-        const t = tasks[0];
-        return res.json({ success: true, data: {
-          action: 'start_task', task_id: t.id,
-          title: t.title, task_title: t.title,
-          message: `ابدأ الآن: ${t.title}`,
-          reasons: [`أولوية ${t.priority}`, 'مستحقة اليوم'],
-          confidence: 70, urgency: 'high', energy_match: true,
-          generated_at: new Date().toISOString(),
-        }});
-      }
-    } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${_e.message}`); }
+    logger.error('[ASSISTANT] /next-action error:', String(e.message).slice(0, 200));
     res.json({
       success: true,
-      data   : {
-        action    : 'review_plan',
-        title     : '📋 راجع خطتك',
-        task_title: '📋 راجع خطتك',
-        message   : 'تحقق من مهامك وابدأ بالأهم.',
-        reasons   : ['راجع مهام اليوم'],
-        confidence: 50,
-        urgency   : 'medium',
+      data: {
+        action:      'review_plan',
+        title:       '📋 راجع خطتك',
+        task_title:  '📋 راجع خطتك',
+        message:     'تحقق من مهامك وابدأ بالأهم.',
+        reasons:     ['راجع مهام اليوم'],
+        confidence:  50,
+        urgency:     'medium',
         energy_match: true,
+        next_steps:  ['افتح قائمة المهام', 'اختر أول مهمة وابدأ'],
         generated_at: new Date().toISOString(),
       },
     });

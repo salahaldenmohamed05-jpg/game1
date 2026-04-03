@@ -106,9 +106,11 @@ async function loadFromDB(userId) {
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const MAX_RECORDS_PER_USER  = 500;   // ring-buffer limit
-const LEARNING_TTL_MS       = 24 * 60 * 60 * 1000;   // 24 hours
-const MIN_SAMPLES_FOR_STATS = 3;     // minimum records before computing stats
+const MAX_RECORDS_PER_USER  = 1000;  // ring-buffer limit (increased for richer learning)
+const LEARNING_TTL_MS       = 30 * 24 * 60 * 60 * 1000;  // 30 days (increased from 24h)
+const MIN_SAMPLES_FOR_STATS = 2;     // minimum records before computing stats (lowered for faster learning)
+const RECENCY_WEIGHT_HOURS  = 24;    // records within last 24h get 3× weight
+const RECENCY_MULTIPLIER    = 3.0;   // weight multiplier for recent records
 
 // ─── Storage ──────────────────────────────────────────────────────────────────
 // LearningStats: userId → { records[], lastUpdated, stats(lazy) }
@@ -497,7 +499,8 @@ function getOptimalHour(userId) {
 /**
  * calculateSuccessRate(logs, filterFn)
  * Pure function: given an array of outcome logs and an optional filter,
- * return 0-1 success rate.
+ * return 0-1 success rate. Now uses RECENCY WEIGHTING: records from the
+ * last 24 hours get 3× weight for faster behavioral adaptation.
  *
  * @param {Array}    logs      - array of outcome records
  * @param {Function} [filterFn] - optional predicate to filter logs first
@@ -506,8 +509,21 @@ function getOptimalHour(userId) {
 function calculateSuccessRate(logs, filterFn) {
   const filtered = filterFn ? logs.filter(filterFn) : logs;
   if (filtered.length === 0) return -1;
-  const successes = filtered.filter(r => r.success === true).length;
-  return parseFloat((successes / filtered.length).toFixed(3));
+
+  const now = Date.now();
+  const recentCutoff = now - (RECENCY_WEIGHT_HOURS * 60 * 60 * 1000);
+
+  let weightedSuccess = 0;
+  let weightedTotal = 0;
+
+  for (const r of filtered) {
+    const weight = (r.ts && r.ts > recentCutoff) ? RECENCY_MULTIPLIER : 1.0;
+    weightedTotal += weight;
+    if (r.success === true) weightedSuccess += weight;
+  }
+
+  if (weightedTotal === 0) return -1;
+  return parseFloat((weightedSuccess / weightedTotal).toFixed(3));
 }
 
 /**
@@ -733,6 +749,199 @@ function _seedTestData(userId) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Part C — Rapid Adaptation Layer (Pre-Launch Enhancement)
+// ─────────────────────────────────────────────────────────────────────────────
+// Gives 3× weight to the last 24h of interactions for faster behavioral adaptation.
+// Detects user "personality fingerprint" from just 5-10 interactions.
+
+/**
+ * getUserBehaviorFingerprint(userId)
+ * Rapid personality detection from minimal data.
+ * Returns traits after just 5 interactions.
+ */
+function getUserBehaviorFingerprint(userId) {
+  const store = getStore(userId);
+  const records = store.records;
+  const outcomes = records.filter(r => r.type === 'outcome');
+
+  if (outcomes.length < 3) {
+    return { detected: false, traits: [], confidence: 'none', adaptations: [] };
+  }
+
+  const traits = [];
+  const adaptations = [];
+
+  // 1. Morning person vs Night owl
+  const morningOutcomes = outcomes.filter(r => r.hour >= 5 && r.hour <= 11);
+  const eveningOutcomes = outcomes.filter(r => r.hour >= 18 && r.hour <= 23);
+  const morningRate = calculateSuccessRate(morningOutcomes);
+  const eveningRate = calculateSuccessRate(eveningOutcomes);
+
+  if (morningRate > eveningRate + 0.15 && morningOutcomes.length >= 2) {
+    traits.push('morning_person');
+    adaptations.push({ key: 'schedule_heavy_morning', msg: 'المهام المهمة صباحاً — أداؤك أفضل قبل الظهر' });
+  } else if (eveningRate > morningRate + 0.15 && eveningOutcomes.length >= 2) {
+    traits.push('night_owl');
+    adaptations.push({ key: 'schedule_heavy_evening', msg: 'أداؤك أفضل مساءً — المهام الثقيلة بعد الـ 6' });
+  }
+
+  // 2. Procrastinator detection
+  const recentOutcomes = outcomes.filter(r => r.ts > Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const skipRate = recentOutcomes.filter(r => r.userResponse === 'rejected' || r.userResponse === 'ignored').length;
+  if (recentOutcomes.length >= 3 && skipRate / recentOutcomes.length > 0.5) {
+    traits.push('procrastination_tendency');
+    adaptations.push({ key: 'smaller_tasks', msg: 'قسّم المهام لأجزاء أصغر — هتخلصها أسرع' });
+  }
+
+  // 3. Momentum-driven (does better after completing something)
+  const consecutiveSuccess = [];
+  let streak = 0;
+  for (const r of outcomes) {
+    if (r.success) { streak++; } else { if (streak >= 2) consecutiveSuccess.push(streak); streak = 0; }
+  }
+  if (streak >= 2) consecutiveSuccess.push(streak);
+  if (consecutiveSuccess.length >= 2 && consecutiveSuccess.some(s => s >= 3)) {
+    traits.push('momentum_driven');
+    adaptations.push({ key: 'start_easy', msg: 'ابدأ بمهمة سهلة لبناء الزخم — بعدها هتحس بالإنجاز' });
+  }
+
+  // 4. Energy-sensitive
+  const highEnergySuccess = outcomes.filter(r => r.energy >= 65 && r.success).length;
+  const lowEnergySuccess = outcomes.filter(r => r.energy < 40 && r.success).length;
+  const highEnergyTotal = outcomes.filter(r => r.energy >= 65).length;
+  const lowEnergyTotal = outcomes.filter(r => r.energy < 40).length;
+  if (highEnergyTotal >= 2 && lowEnergyTotal >= 2) {
+    const highRate = highEnergySuccess / highEnergyTotal;
+    const lowRate = lowEnergySuccess / lowEnergyTotal;
+    if (highRate - lowRate > 0.3) {
+      traits.push('energy_sensitive');
+      adaptations.push({ key: 'energy_aware_scheduling', msg: 'أداؤك مرتبط بالطاقة — هنختار المهام حسب مستوى طاقتك' });
+    }
+  }
+
+  // 5. Quick completer vs Slow-steady
+  const avgResponseTime = outcomes.length >= 3 ?
+    outcomes.slice(-5).reduce((sum, r, i, arr) => i > 0 ? sum + (r.ts - arr[i-1].ts) : 0, 0) / Math.max(1, outcomes.slice(-5).length - 1)
+    : null;
+  if (avgResponseTime && avgResponseTime < 30 * 60 * 1000) { // < 30 min between actions
+    traits.push('quick_executor');
+    adaptations.push({ key: 'batch_tasks', msg: 'أنت سريع في الإنجاز — هنجمعلك مهام متتالية' });
+  }
+
+  // 6. Mood-pattern detection: does user perform better on high-mood days?
+  const moodOutcomes = outcomes.filter(r => r.mood != null);
+  if (moodOutcomes.length >= 3) {
+    const highMoodSuccess = moodOutcomes.filter(r => r.mood >= 7 && r.success).length;
+    const highMoodTotal = moodOutcomes.filter(r => r.mood >= 7).length;
+    const lowMoodSuccess = moodOutcomes.filter(r => r.mood <= 4 && r.success).length;
+    const lowMoodTotal = moodOutcomes.filter(r => r.mood <= 4).length;
+    if (highMoodTotal >= 2 && lowMoodTotal >= 2) {
+      const highMoodRate = highMoodSuccess / highMoodTotal;
+      const lowMoodRate = lowMoodSuccess / lowMoodTotal;
+      if (highMoodRate - lowMoodRate > 0.25) {
+        traits.push('mood_dependent');
+        adaptations.push({ key: 'mood_aware', msg: 'مزاجك بيأثر على أدائك — هنراعي ده في اختيار المهام' });
+      }
+    }
+  }
+
+  // 7. Weekend vs weekday pattern
+  const weekdayOutcomes = outcomes.filter(r => r.day >= 1 && r.day <= 5);
+  const weekendOutcomes = outcomes.filter(r => r.day === 0 || r.day === 6);
+  if (weekdayOutcomes.length >= 3 && weekendOutcomes.length >= 2) {
+    const weekdayRate = calculateSuccessRate(weekdayOutcomes);
+    const weekendRate = calculateSuccessRate(weekendOutcomes);
+    if (weekdayRate > weekendRate + 0.2) {
+      traits.push('weekday_focused');
+      adaptations.push({ key: 'weekday_heavy', msg: 'أداؤك أعلى أيام الأسبوع — المهام الكبيرة من الأحد للخميس' });
+    } else if (weekendRate > weekdayRate + 0.2) {
+      traits.push('weekend_warrior');
+      adaptations.push({ key: 'weekend_heavy', msg: 'بتشتغل أحسن في الويكند — خلي المهام الكبيرة للجمعة والسبت' });
+    }
+  }
+
+  return {
+    detected: traits.length > 0,
+    traits,
+    adaptations,
+    confidence: outcomes.length >= 15 ? 'high' : outcomes.length >= 7 ? 'medium' : 'emerging',
+    data_points: outcomes.length,
+  };
+}
+
+/**
+ * getAdaptiveRecommendation(userId, context)
+ * Uses behavior fingerprint + recent patterns to give real-time recommendations.
+ * This is the "brain" that adapts quickly to user behavior.
+ */
+function getAdaptiveRecommendation(userId, context = {}) {
+  const fingerprint = getUserBehaviorFingerprint(userId);
+  const stats = getLearningStats(userId);
+  const hour = context.hour ?? new Date().getHours();
+  const energy = context.energy ?? 55;
+  const mood = context.mood ?? 5;
+
+  const recommendations = [];
+
+  // Time-of-day adaptation
+  if (fingerprint.traits.includes('morning_person') && hour >= 14) {
+    recommendations.push({ type: 'timing', msg: 'وقت الذروة فات — خد مهمة خفيفة', priority: 'low' });
+  }
+  if (fingerprint.traits.includes('night_owl') && hour >= 19 && hour <= 22) {
+    recommendations.push({ type: 'timing', msg: 'ده وقتك المفضل — يلا على المهام المهمة', priority: 'high' });
+  }
+
+  // Energy adaptation
+  if (fingerprint.traits.includes('energy_sensitive') && energy < 40) {
+    recommendations.push({ type: 'energy', msg: 'طاقتك واطية — مهمة خفيفة أو استراحة', priority: 'rest' });
+  }
+
+  // Momentum adaptation
+  if (fingerprint.traits.includes('momentum_driven')) {
+    recommendations.push({ type: 'strategy', msg: 'ابدأ بحاجة صغيرة تخلصها في 5 دقايق', priority: 'medium' });
+  }
+
+  // Burnout prevention
+  const burnout = detectBurnoutRisk(userId, context);
+  if (burnout > 0.7) {
+    recommendations.push({ type: 'wellbeing', msg: 'مستوى الإرهاق عالي — خد راحة 15 دقيقة', priority: 'critical' });
+  }
+
+  // Mood-dependent adaptation
+  if (fingerprint.traits.includes('mood_dependent') && mood <= 4) {
+    recommendations.push({ type: 'mood', msg: 'مزاجك منخفض — مهمة خفيفة أو عادة إيجابية', priority: 'rest' });
+  }
+
+  // Weekend/weekday adaptation
+  const dayOfWeek = new Date().getDay();
+  const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+  if (fingerprint.traits.includes('weekday_focused') && isWeekend) {
+    recommendations.push({ type: 'timing', msg: 'الويكند — ريّح نفسك وخلي المهام الكبيرة للأسبوع', priority: 'low' });
+  }
+  if (fingerprint.traits.includes('weekend_warrior') && isWeekend) {
+    recommendations.push({ type: 'timing', msg: 'ده وقتك — يلا على المهام المهمة!', priority: 'high' });
+  }
+
+  // Real-time learning: if last 3 tasks were completed, boost confidence
+  const store = getStore(userId);
+  const recent3 = store.records.filter(r => r.type === 'outcome').slice(-3);
+  const allRecent3Success = recent3.length === 3 && recent3.every(r => r.success);
+  if (allRecent3Success) {
+    recommendations.push({ type: 'momentum', msg: 'عندك زخم ممتاز! استمر — كمّل المهمة الجاية', priority: 'high' });
+  }
+
+  return {
+    fingerprint,
+    recommendations,
+    burnout_risk: burnout,
+    optimal_now: stats.optimalHours.includes(hour),
+    suggested_task_type: energy >= 60 ? 'heavy' : energy >= 40 ? 'normal' : 'light',
+    learning_speed: store.records.length >= 10 ? 'adapted' : store.records.length >= 5 ? 'learning' : 'cold_start',
+    adaptations_active: fingerprint.adaptations.length,
+  };
+}
+
 // ─── Exports ──────────────────────────────────────────────────────────────────
 module.exports = {
   // Core recording
@@ -751,6 +960,9 @@ module.exports = {
   predictTaskCompletion,
   detectBurnoutRisk,
   getMLPredictions,
+  // Part C — Rapid Adaptation
+  getUserBehaviorFingerprint,
+  getAdaptiveRecommendation,
   // Warmup — await DB load before predictions (Phase 16)
   warmup: (userId) => loadFromDB(userId),
   // Dev helpers

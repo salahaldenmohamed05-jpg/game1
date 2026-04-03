@@ -610,6 +610,61 @@ html.light .gradient-text {
   background-clip: text;
 }
 
+/* ========================
+   Light Mode — Assistant Chat Input Fix
+   High contrast, white background, visible border, clear focus
+   ======================== */
+html.light .chat-input-light,
+html.light [data-chat-input] input {
+  background: #ffffff !important;
+  color: #1E293B !important;
+  border: 1.5px solid rgba(108, 99, 255, 0.3) !important;
+}
+html.light .chat-input-light::placeholder,
+html.light [data-chat-input] input::placeholder {
+  color: #64748B !important;
+}
+html.light .chat-input-light:focus,
+html.light [data-chat-input] input:focus {
+  border-color: var(--primary) !important;
+  box-shadow: 0 0 0 3px rgba(108, 99, 255, 0.12) !important;
+}
+
+/* Global light-mode input fix for chat/assistant */
+html.light input[class*="bg-white"] {
+  background: #ffffff !important;
+  color: #1E293B !important;
+  border: 1.5px solid rgba(108, 99, 255, 0.25) !important;
+}
+html.light input[class*="bg-white"]::placeholder {
+  color: #64748B !important;
+}
+html.light input[class*="bg-white"]:focus {
+  border-color: var(--primary) !important;
+  box-shadow: 0 0 0 3px rgba(108, 99, 255, 0.12) !important;
+  background: #ffffff !important;
+}
+
+/* ========================
+   Modal Overflow Fix — max-height + internal scroll
+   ======================== */
+.modal-scroll-body {
+  max-height: calc(85vh - 80px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 768px) {
+  /* On mobile, modals should max at 90vh with internal scroll */
+  .fixed.inset-0 [class*="max-w-"] {
+    max-height: 90vh;
+  }
+  .fixed.inset-0 [class*="max-w-"] > div:first-child {
+    max-height: calc(90vh - 60px);
+    overflow-y: auto;
+  }
+}
+
 /* Theme transition */
 * { transition: background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease; }
 /* Exclude elements where transition causes issues */

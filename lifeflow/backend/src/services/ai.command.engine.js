@@ -131,8 +131,23 @@ async function executeAction(intent, entities, userId, timezone = 'Africa/Cairo'
         : [{ title: entities.task_title, priority: entities.priority, due_date: entities.due_date, category: entities.category }];
 
       const created = [];
+      const skipped = [];
       for (const item of items) {
         if (!item.title) continue;
+        // Prevent recreating tasks that already exist (pending, completed, or in_progress)
+        const existing = await Task.findOne({
+          where: {
+            user_id: userId,
+            title: item.title,
+          },
+          order: [['createdAt', 'DESC']],
+        });
+        if (existing) {
+          const statusLabel = existing.status === 'completed' ? 'مكتملة بالفعل' : 'موجودة بالفعل';
+          skipped.push({ title: item.title, status: statusLabel, existingId: existing.id });
+          logger.info(`[CMD-ENGINE] Skipped duplicate task: "${item.title}" (${existing.status}) for user ${userId}`);
+          continue;
+        }
         const task = await Task.create({
           user_id : userId,
           title   : item.title,
@@ -145,7 +160,13 @@ async function executeAction(intent, entities, userId, timezone = 'Africa/Cairo'
         created.push(task);
         logger.info(`[CMD-ENGINE] Created task: "${task.title}" for user ${userId}`);
       }
-      return { success: true, action: 'create_task', data: created, count: created.length };
+      if (created.length === 0 && skipped.length > 0) {
+        const skipMsg = skipped.map(s => `"${s.title}" (${s.status})`).join('، ');
+        return { success: true, action: 'create_task_skipped', data: skipped, count: 0,
+          message: `هذه المهام ${skipMsg} — لم يتم إنشاء مهام مكررة` };
+      }
+      return { success: true, action: 'create_task', data: created, count: created.length,
+        skipped: skipped.length > 0 ? skipped : undefined };
     }
 
     case 'complete_task': {

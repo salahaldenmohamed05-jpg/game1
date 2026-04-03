@@ -26,19 +26,32 @@ import {
   RefreshCw, X, User as UserIcon,
   ChevronDown, MoreHorizontal,
   AlertTriangle,
+  Mic, MicOff, Volume2, VolumeX, Globe,
 } from 'lucide-react';
 import { assistantAPI, chatAPI } from '../../utils/api';
 import { QUICK_PROMPTS, WELCOME_MSG } from '../../constants/smartActions';
 import toast from 'react-hot-toast';
 import ErrorBoundary from '../common/ErrorBoundary';
+import useVoiceChat from '../../hooks/useVoiceChat';
 
 // Safe fallback for WELCOME_MSG in case import fails
 const SAFE_WELCOME = WELCOME_MSG && typeof WELCOME_MSG === 'object'
   ? WELCOME_MSG
-  : { id: 'welcome', role: 'assistant', content: 'مرحباً! كيف يمكنني مساعدتك اليوم؟' };
+  : { id: 'welcome', role: 'assistant', content: 'أهلاً! قولّي عايز تعمل إيه 👋' };
+
+const SAFE_WELCOME_EN = { id: 'welcome-en', role: 'assistant', content: "Hey! I'm your LifeFlow assistant 👋 What would you like to do?" };
 
 // Safe QUICK_PROMPTS fallback
 const SAFE_PROMPTS = Array.isArray(QUICK_PROMPTS) ? QUICK_PROMPTS : [];
+
+const SAFE_PROMPTS_EN = [
+  { icon: '🚀', text: 'Start my day' },
+  { icon: '🎯', text: "What's most important now?" },
+  { icon: '➕', text: 'Add a task' },
+  { icon: '😊', text: 'Log my mood' },
+  { icon: '⚡', text: "How's my energy?" },
+  { icon: '📊', text: 'Daily review' },
+];
 
 // ─── Typing indicator ─────────────────────────────────────────────────────
 function TypingDots() {
@@ -441,11 +454,27 @@ export default function AssistantView({ onViewChange }) {
   const [isSending, setIsSending] = useState(false);
   const [showSessions, setShowSessions] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const [language, setLanguage] = useState('ar'); // 'ar' or 'en'
   const messagesEndRef = useRef(null);
   const messagesContainerRef = useRef(null);
   const inputRef = useRef(null);
   const sendLockRef = useRef(false); // Prevent double-send race condition
+  const handleSendRef = useRef(null); // Ref for voice callback
   const queryClient = useQueryClient();
+
+  // ── Voice Chat Integration ─────────────────────────────────────────────
+  const handleVoiceTranscript = useCallback((text, isFinal) => {
+    if (isFinal && text.trim() && handleSendRef.current) {
+      // Auto-send voice message
+      handleSendRef.current(text.trim());
+    }
+  }, []);
+
+  const voice = useVoiceChat({
+    language,
+    onTranscript: handleVoiceTranscript,
+    autoSend: true,
+  });
 
   // Wait for client-side mount to avoid hydration issues
   useEffect(() => { setMounted(true); }, []);
@@ -490,8 +519,8 @@ export default function AssistantView({ onViewChange }) {
     if (sessionMsgs?.data?.data) {
       const msgs = sessionMsgs.data.data.messages || sessionMsgs.data.data || [];
       if (Array.isArray(msgs) && msgs.length > 0) {
-        setMessages([SAFE_WELCOME, ...msgs.map(m => ({
-          id: m?.id || `msg-${idx}-${m?.createdAt || idx}`,
+        setMessages([SAFE_WELCOME, ...msgs.map((m, i) => ({
+          id: m?.id || `msg-${i}-${m?.createdAt || i}`,
           role: m?.role || 'assistant',
           content: m?.content || '',
           confidence: m?.confidence,
@@ -571,6 +600,8 @@ export default function AssistantView({ onViewChange }) {
 
     sendLockRef.current = true;
     setInput('');
+    // Stop listening if still active
+    if (voice.isListening) voice.stopListening();
 
     // Ensure we have a session
     let sid = activeSessionId;
@@ -620,6 +651,10 @@ export default function AssistantView({ onViewChange }) {
         const safe = Array.isArray(prev) ? prev : [SAFE_WELCOME];
         return [...safe, aiMsg];
       });
+      // Auto-speak AI response if voice mode is on
+      if (voice.voiceEnabled && aiMsg.content) {
+        voice.autoSpeak(aiMsg.content);
+      }
       refetchSessions();
       queryClient.invalidateQueries({ queryKey: ['chat-messages', sid] });
     } catch (err) {
@@ -648,6 +683,19 @@ export default function AssistantView({ onViewChange }) {
     }
   };
 
+  // Keep handleSendRef in sync for voice callback
+  handleSendRef.current = handleSend;
+
+  // Update welcome message when language changes
+  useEffect(() => {
+    const welcome = language === 'en' ? SAFE_WELCOME_EN : SAFE_WELCOME;
+    setMessages(prev => {
+      if (prev.length <= 1) return [welcome];
+      // Replace only the welcome message, keep conversation
+      return [welcome, ...prev.slice(1)];
+    });
+  }, [language]);
+
   // Error state
   if (viewError) {
     return <ViewErrorFallback error={viewError} onRetry={() => setViewError(null)} />;
@@ -657,7 +705,7 @@ export default function AssistantView({ onViewChange }) {
   const safeMessages = Array.isArray(messages) ? messages : [SAFE_WELCOME];
 
   return (
-    <div className="flex flex-col h-full min-h-0" dir="rtl">
+    <div className="flex flex-col h-full min-h-0" dir={language === 'en' ? 'ltr' : 'rtl'}>
       <div className="flex flex-1 min-h-0 gap-0 md:gap-4">
 
         {/* Desktop Sidebar (md+) wrapped in ErrorBoundary */}
@@ -684,9 +732,33 @@ export default function AssistantView({ onViewChange }) {
             <div className="flex items-center justify-between">
               <h2 className="text-base sm:text-lg font-black text-white flex items-center gap-2">
                 <Sparkles size={16} className="text-primary-400" />
-                المساعد الذكي
+                {language === 'en' ? 'Smart Assistant' : 'المساعد الذكي'}
               </h2>
               <div className="flex items-center gap-1.5">
+                {/* Language Toggle */}
+                <button
+                  onClick={() => setLanguage(prev => prev === 'ar' ? 'en' : 'ar')}
+                  className="p-2 rounded-xl hover:bg-white/5 active:scale-90 text-gray-400 transition-all flex items-center gap-1"
+                  title={language === 'ar' ? 'Switch to English' : 'التحويل للعربي'}
+                >
+                  <Globe size={14} />
+                  <span className="text-[10px] font-bold">{language === 'ar' ? 'EN' : 'ع'}</span>
+                </button>
+                {/* Voice Mode Toggle (TTS) */}
+                <button
+                  onClick={voice.toggleVoiceMode}
+                  className={`p-2 rounded-xl active:scale-90 transition-all ${
+                    voice.voiceEnabled
+                      ? 'bg-primary-500/20 text-primary-400'
+                      : 'hover:bg-white/5 text-gray-400'
+                  }`}
+                  title={voice.voiceEnabled
+                    ? (language === 'en' ? 'Disable voice replies' : 'إيقاف الردود الصوتية')
+                    : (language === 'en' ? 'Enable voice replies' : 'تشغيل الردود الصوتية')
+                  }
+                >
+                  {voice.voiceEnabled ? <Volume2 size={16} /> : <VolumeX size={16} />}
+                </button>
                 <button
                   onClick={() => setShowSessions(!showSessions)}
                   className="md:hidden p-2 rounded-xl hover:bg-white/5 active:scale-90 text-gray-400 transition-all"
@@ -754,9 +826,11 @@ export default function AssistantView({ onViewChange }) {
           >
 
             {/* Quick Prompts */}
-            {SAFE_PROMPTS.length > 0 && (
+            {(() => {
+              const prompts = language === 'en' ? SAFE_PROMPTS_EN : SAFE_PROMPTS;
+              return prompts.length > 0 && (
               <div className="flex gap-1.5 mb-2 overflow-x-auto scrollbar-hide pb-0.5">
-                {SAFE_PROMPTS.map((p, i) => (
+                {prompts.map((p, i) => (
                   <button key={i} onClick={() => handleSend(p?.text || '')}
                     disabled={isSending}
                     className="flex-shrink-0 flex items-center gap-1 text-xs bg-white/5 hover:bg-white/10
@@ -767,31 +841,72 @@ export default function AssistantView({ onViewChange }) {
                   </button>
                 ))}
               </div>
-            )}
+            );
+            })()}
 
             {/* Input Row */}
             <div className="flex gap-2 max-w-3xl mx-auto items-end">
+              {/* Mic Button — Voice Input */}
+              {voice.hasSTT && (
+                <button
+                  onClick={voice.toggleListening}
+                  disabled={isSending}
+                  className={`px-3 py-2.5 rounded-xl transition-all flex-shrink-0 ${
+                    voice.isListening
+                      ? 'bg-red-500 text-white animate-pulse shadow-lg shadow-red-500/30'
+                      : 'bg-white/5 border border-white/10 text-gray-400 hover:text-primary-400 hover:border-primary-500/50'
+                  }`}
+                  title={voice.isListening
+                    ? (language === 'en' ? 'Stop recording' : 'إيقاف التسجيل')
+                    : (language === 'en' ? 'Speak' : 'تحدث')
+                  }
+                >
+                  {voice.isListening ? <MicOff size={16} /> : <Mic size={16} />}
+                </button>
+              )}
               <input
                 ref={inputRef}
-                value={input}
+                value={voice.isListening ? voice.transcript : input}
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="اكتب رسالتك..."
-                className="flex-1 min-w-0 bg-white/5 border border-white/10 rounded-xl px-4 py-2.5
+                placeholder={voice.isListening
+                  ? (language === 'en' ? 'Listening...' : 'جاري الاستماع...')
+                  : (language === 'en' ? 'Type your message...' : 'اكتب رسالتك...')}
+                className={`flex-1 min-w-0 bg-white/5 border rounded-xl px-4 py-2.5
                   text-white placeholder-gray-500 focus:outline-none focus:border-primary-500/50
-                  text-sm transition-colors"
-                disabled={isSending}
+                  text-sm transition-colors ${
+                    voice.isListening ? 'border-red-500/50 bg-red-500/5' : 'border-white/10'
+                  }`}
+                disabled={isSending || voice.isListening}
                 autoComplete="off"
+                dir={language === 'en' ? 'ltr' : 'rtl'}
               />
               <button
                 onClick={() => handleSend()}
-                disabled={isSending || !input.trim()}
+                disabled={isSending || !input.trim() || voice.isListening}
                 className="px-3.5 py-2.5 bg-primary-500 hover:bg-primary-600 text-white rounded-xl
                   transition-all disabled:opacity-40 active:scale-90 flex-shrink-0"
               >
                 <Send size={16} />
               </button>
             </div>
+
+            {/* Voice status indicator */}
+            {voice.isListening && (
+              <div className="flex items-center justify-center gap-2 mt-2 text-red-400 text-xs animate-pulse">
+                <div className="w-2 h-2 bg-red-500 rounded-full animate-ping" />
+                {language === 'en' ? 'Listening... speak now' : 'جاري الاستماع... اتكلم دلوقتي'}
+              </div>
+            )}
+            {voice.isSpeaking && (
+              <div className="flex items-center justify-center gap-2 mt-2 text-primary-400 text-xs">
+                <Volume2 size={12} className="animate-pulse" />
+                {language === 'en' ? 'Speaking...' : 'جاري الرد صوتياً...'}
+                <button onClick={voice.stopSpeaking} className="text-gray-500 hover:text-red-400 transition-colors">
+                  <X size={12} />
+                </button>
+              </div>
+            )}
 
           </div>
 

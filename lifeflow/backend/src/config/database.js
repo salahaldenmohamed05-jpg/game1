@@ -8,6 +8,7 @@
 const { Sequelize } = require('sequelize');
 const path   = require('path');
 const logger = require('../utils/logger');
+const { createIndexes } = require('./indexes');
 
 let sequelize;
 
@@ -67,9 +68,13 @@ function registerModels() {
   // Phase 16 — chat memory
   require('../models/chat_session.model');
   require('../models/chat_message.model');
+  // Phase P — persistent evolving user model
+  require('../models/user_model.model');
   // Profile & Settings system
   require('../models/user_profile.model');
   require('../models/user_settings.model');
+  // Execution Engine — persistent session tracking
+  require('../models/execution_session.model');
 }
 
 async function connectDB() {
@@ -122,6 +127,8 @@ async function connectDB() {
       // Users: add Phase 16 AI mode + reminder preferences
       await addColumnIfMissing('users', 'ai_mode',             'VARCHAR(20) DEFAULT "suggestive"');
       await addColumnIfMissing('users', 'default_reminder_before', 'INTEGER DEFAULT 30');
+      await addColumnIfMissing('users', 'push_subscription',  'TEXT');
+      await addColumnIfMissing('users', 'fcm_token',          'TEXT');
 
       // Chat sessions: add pin + auto_title support
       await addColumnIfMissing('chat_sessions', 'is_pinned',   'TINYINT(1) DEFAULT 0');
@@ -133,10 +140,54 @@ async function connectDB() {
       await addColumnIfMissing('mood_entries', 'stress_level',  'INTEGER');
       await addColumnIfMissing('mood_entries', 'focus_level',   'INTEGER');
 
+      // Phase P — UserModel: migrate from old schema to new
+      await addColumnIfMissing('user_models', 'feedback_stats',    'TEXT DEFAULT "{}"');
+      await addColumnIfMissing('user_models', 'data_points',       'INTEGER DEFAULT 0');
+      await addColumnIfMissing('user_models', 'confidence',        'VARCHAR(20) DEFAULT "cold_start"');
+      await addColumnIfMissing('user_models', 'last_computed_at',  'DATETIME');
+
+      // Behavior Engine: extend goals table
+      await addColumnIfMissing('goals', 'goal_type',           'VARCHAR(30) DEFAULT "outcome"');
+      await addColumnIfMissing('goals', 'time_horizon',        'VARCHAR(20) DEFAULT "monthly"');
+      await addColumnIfMissing('goals', 'success_metric',      'TEXT DEFAULT "{}"');
+      await addColumnIfMissing('goals', 'linked_behaviors',    'TEXT DEFAULT "[]"');
+      await addColumnIfMissing('goals', 'source',              'VARCHAR(30) DEFAULT "user_created"');
+      await addColumnIfMissing('goals', 'auto_progress',       'TINYINT(1) DEFAULT 1');
+      await addColumnIfMissing('goals', 'priority_score',      'REAL DEFAULT 50');
+      await addColumnIfMissing('goals', 'smart_criteria',      'TEXT DEFAULT "{}"');
+      await addColumnIfMissing('goals', 'eisenhower_quadrant', 'VARCHAR(20) DEFAULT "important"');
+
+      // Behavior Engine: extend habits table
+      await addColumnIfMissing('habits', 'behavior_spec',      'TEXT DEFAULT "{}"');
+      await addColumnIfMissing('habits', 'goal_id',            'VARCHAR(36)');
+      await addColumnIfMissing('habits', 'current_difficulty',  'VARCHAR(20) DEFAULT "standard"');
+      await addColumnIfMissing('habits', 'behavior_type',       'VARCHAR(20) DEFAULT "build"');
+      await addColumnIfMissing('habits', 'replaces_behavior',   'TEXT');
+      // Migrate data from old columns if they exist
+      try {
+        const [cols] = await sequelize.query('PRAGMA table_info(user_models)');
+        const hasOldFeedback = cols.find(c => c.name === 'feedback_loop');
+        const hasOldEvents = cols.find(c => c.name === 'total_events');
+        if (hasOldFeedback) {
+          await sequelize.query('UPDATE user_models SET feedback_stats = feedback_loop WHERE feedback_stats = "{}" AND feedback_loop IS NOT NULL AND feedback_loop != "{}"');
+        }
+        if (hasOldEvents) {
+          await sequelize.query('UPDATE user_models SET data_points = total_events WHERE data_points = 0 AND total_events > 0');
+        }
+      } catch (_e) { /* ignore migration errors */ }
+
     } else {
       await sequelize.sync({ alter: true });
       logger.info('📊 Database tables synchronized');
     }
+
+    // Create performance indexes
+    try {
+      await createIndexes(sequelize);
+    } catch (e) {
+      logger.warn('⚠️ Index creation warning:', e.message);
+    }
+
     return sequelize;
   } catch (error) {
     logger.error('❌ Database connection failed:', error.message);

@@ -10,7 +10,7 @@
 
 import { useState, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Sparkles, Send, X, RefreshCw, Check } from 'lucide-react';
+import { Sparkles, Send, RefreshCw, Check, X } from 'lucide-react';
 import { assistantAPI } from '../../utils/api';
 import { QUICK_HINTS } from '../../constants/smartActions';
 import toast from 'react-hot-toast';
@@ -25,11 +25,9 @@ export default function QuickCommandInput({ onViewChange, activeView }) {
   const [aiResponse, setAiResponse] = useState(null);
   const inputRef = useRef(null);
 
-  // Safe hint index — computed once per mount, no Math.random() in useState
-  const hintIdx = useMemo(
-    () => (QUICK_HINTS.length > 0 ? Math.floor(Math.random() * QUICK_HINTS.length) : 0),
-    [] // eslint-disable-line react-hooks/exhaustive-deps
-  );
+  // Safe hint index — computed once per mount
+  const hintIdxRef = useRef(QUICK_HINTS.length > 0 ? Math.floor(Date.now() % QUICK_HINTS.length) : 0);
+  const hintIdx = hintIdxRef.current;
 
   const handleOpen = () => {
     setExpanded(true);
@@ -79,30 +77,34 @@ export default function QuickCommandInput({ onViewChange, activeView }) {
   };
 
   // Early return AFTER all hooks have been called
+  const hidden = false; // assistant button is always visible (no dismiss)
   if (HIDDEN_VIEWS.includes(activeView)) {
     return null;
   }
 
   return (
     <>
-      {/* Floating Assistant Trigger Button — Phase H: positioned above bottom nav */}
+      {/* Floating Assistant Trigger Button — positioned above bottom nav, NO X button */}
       <AnimatePresence>
-        {!expanded && (
-          <motion.button
+        {!expanded && !hidden && (
+          <motion.div
             initial={{ scale: 0, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             exit={{ scale: 0, opacity: 0 }}
-            whileTap={{ scale: 0.9 }}
-            onClick={handleOpen}
-            className="fixed start-4 z-50 
-              w-12 h-12 rounded-full bg-gradient-to-br from-primary-500 to-purple-600
-              shadow-lg shadow-primary-500/30 flex items-center justify-center
-              hover:shadow-primary-500/50 transition-shadow"
+            className="fixed start-4 z-50"
             style={{ bottom: 'max(96px, calc(80px + env(safe-area-inset-bottom, 0px) + 16px))' }}
-            aria-label="open assistant"
           >
-            <Sparkles size={20} className="text-white" />
-          </motion.button>
+            <motion.button
+              whileTap={{ scale: 0.9 }}
+              onClick={handleOpen}
+              className="w-12 h-12 rounded-full bg-gradient-to-br from-primary-500 to-purple-600
+                shadow-lg shadow-primary-500/30 flex items-center justify-center
+                hover:shadow-primary-500/50 transition-shadow"
+              aria-label="open assistant"
+            >
+              <Sparkles size={20} className="text-white" />
+            </motion.button>
+          </motion.div>
         )}
       </AnimatePresence>
 
