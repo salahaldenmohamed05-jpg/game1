@@ -36,8 +36,8 @@ export function persistView(view) {
 // ─── Primary nav items (always visible) ───────────────────────────
 const NAV_ITEMS = [
   { id: 'dashboard', icon: Home,        label: 'الرئيسية' },
-  { id: 'daily_flow', icon: Rocket,     label: 'يومك' },
   { id: 'tasks',     icon: CheckSquare, label: 'المهام',   badge: 'tasks' },
+  { id: 'habits',    icon: Target,      label: 'العادات' },
   { id: 'assistant', icon: Sparkles,    label: 'المساعد' },
   { id: '__more__',  icon: MoreHorizontal, label: 'المزيد' },
 ];
@@ -47,7 +47,8 @@ const MORE_SECTIONS = [
   {
     title: 'الأدوات',
     items: [
-      { id: 'execution',     icon: Rocket,    label: 'نفّذ الآن',       desc: 'وضع التنفيذ المركز' },
+      { id: 'daily_flow',    icon: Rocket,    label: 'خطة يومك',        desc: 'ابدأ وأدر يومك بالكامل' },
+      { id: 'execution',     icon: Target,    label: 'نفّذ الآن',       desc: 'وضع التنفيذ المركز' },
       { id: 'focus',         icon: Timer,     label: 'وقت التركيز',    desc: 'بومودورو تايمر' },
       { id: 'calendar',      icon: Calendar,  label: 'التقويم',         desc: 'الأحداث والمواعيد' },
       { id: 'mood',          icon: Heart,     label: 'المزاج',          desc: 'تتبع المزاج اليومي' },
