@@ -123,6 +123,43 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Phase 15: Trigger Engine — intervention feedback from frontend
+  socket.on('intervention:dismiss', (data) => {
+    const { userId, interventionId } = data || {};
+    if (!userId) return;
+    try {
+      const triggerEngine = require('./services/triggerEngine');
+      triggerEngine.recordInterventionDismissal(userId, interventionId);
+      triggerEngine.recordActivity(userId, 'intervention_dismissed');
+      logger.debug(`[TriggerEngine][Socket] Intervention dismissed by user ${userId}: ${interventionId}`);
+    } catch (err) {
+      logger.warn(`[TriggerEngine][Socket] dismiss error: ${err.message}`);
+    }
+  });
+
+  socket.on('intervention:engage', (data) => {
+    const { userId, interventionId } = data || {};
+    if (!userId) return;
+    try {
+      const triggerEngine = require('./services/triggerEngine');
+      triggerEngine.recordInterventionEngagement(userId, interventionId);
+      triggerEngine.recordActivity(userId, 'intervention_engaged');
+      logger.debug(`[TriggerEngine][Socket] Intervention engaged by user ${userId}: ${interventionId}`);
+    } catch (err) {
+      logger.warn(`[TriggerEngine][Socket] engage error: ${err.message}`);
+    }
+  });
+
+  // Phase 15: User activity report (keeps trigger engine aware of user presence)
+  socket.on('user:activity', (data) => {
+    const { userId, type } = data || {};
+    if (!userId) return;
+    try {
+      const triggerEngine = require('./services/triggerEngine');
+      triggerEngine.recordActivity(userId, type || 'ui_interaction');
+    } catch {}
+  });
+
   socket.on('disconnect', () => {
     logger.info(`🔌 Client disconnected: ${socket.id}`);
   });
@@ -295,6 +332,15 @@ async function startServer() {
       logger.info('✅ Brain service initialized');
     } catch (brainErr) {
       logger.warn('⚠️  Brain service not available:', brainErr.message);
+    }
+
+    // Phase 15: Initialize Trigger Engine (Proactive Intervention System)
+    try {
+      const triggerEngine = require('./services/triggerEngine');
+      triggerEngine.init(io);
+      logger.info('✅ Trigger Engine initialized');
+    } catch (triggerErr) {
+      logger.warn('⚠️  Trigger Engine not available:', triggerErr.message);
     }
 
     // Start HTTP server with EADDRINUSE protection

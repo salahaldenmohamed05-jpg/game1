@@ -1,7 +1,14 @@
 /**
- * Brain Store v7.0 — Phase 12.9: Truth Alignment + Trust Enforcement
+ * Brain Store v8.0 — Phase 15: Proactive Interventions + Truth Alignment
  * =====================================================================
  * Zustand store that holds the unified brain state from the backend.
+ *
+ * Phase 15 — PROACTIVE INTERVENTIONS:
+ *   1. interventions[]: array of active intervention banners
+ *   2. addIntervention(): push a new intervention (from socket)
+ *   3. dismissIntervention(): remove by ID + notify backend
+ *   4. Auto-expiry: expired interventions are cleaned on access
+ *   5. Max 3 visible interventions at a time
  *
  * Phase 12.9 — TRUTH ALIGNMENT:
  *   1. LIFECYCLE TRACING: every state transition is logged with timestamp
@@ -28,6 +35,8 @@ let _socket = null;
 let _activityInterval = null;
 let _failsafeTimer = null;
 let _initRequestId = 0; // monotonic counter to detect stale responses
+let _interventionCleanupTimer = null; // Phase 15: auto-expire interventions
+const MAX_VISIBLE_INTERVENTIONS = 3;
 
 function ts() {
   return new Date().toISOString().slice(11, 23);
@@ -105,6 +114,9 @@ export const useBrainStore = create((set, get) => ({
   lastFetchedAt: null,
   _loadStartedAt: null,
   _requestId: 0,
+
+  // ─── Phase 15: Interventions ────────────────────────────────────────────
+  interventions: [], // Array of active intervention objects
 
   // ─── Actions ────────────────────────────────────────────────────────────
 
@@ -302,6 +314,19 @@ export const useBrainStore = create((set, get) => ({
         }
       });
 
+      // Phase 15: Listen for proactive interventions from Trigger Engine
+      _socket.on('brain:intervention', (data) => {
+        try {
+          const tag2 = `[BrainStore][${ts()}]`;
+          if (data?.intervention) {
+            console.log(`${tag2} Socket brain:intervention received: ${data.intervention.type}/${data.intervention.trigger}`);
+            get().addIntervention(data.intervention);
+          }
+        } catch (e) {
+          console.warn(`[BrainStore] Socket brain:intervention handler error: ${e?.message}`);
+        }
+      });
+
       _socket.on('disconnect', (reason) => {
         console.log(`${tag} Socket disconnected: ${reason}`);
         set({ isConnected: false });
@@ -467,6 +492,120 @@ export const useBrainStore = create((set, get) => ({
     } catch {
       // non-critical
     }
+    // Phase 15: Also report to trigger engine via socket
+    if (_socket?.connected) {
+      try {
+        const authStore = require('./authStore').default;
+        const userId = authStore?.getState?.()?.user?.id;
+        if (userId) {
+          _socket.emit('user:activity', { userId, type: 'ui_interaction' });
+        }
+      } catch {}
+    }
+  },
+
+  // ─── Phase 15: Intervention Actions ─────────────────────────────────────
+
+  /**
+   * Add a new intervention (called by socket listener).
+   * Respects MAX_VISIBLE_INTERVENTIONS and auto-cleans expired ones.
+   */
+  addIntervention: (intervention) => {
+    if (!intervention?.id) return;
+    const tag = `[BrainStore][${ts()}]`;
+    console.log(`${tag} addIntervention: ${intervention.type}/${intervention.trigger} — "${intervention.message}"`);
+
+    set((state) => {
+      // Clean expired interventions
+      const now = new Date().toISOString();
+      let active = state.interventions.filter(i => i.expiresAt > now);
+
+      // Don't add duplicates (same trigger within short window)
+      const isDuplicate = active.some(i => 
+        i.trigger === intervention.trigger && i.taskId === intervention.taskId
+      );
+      if (isDuplicate) {
+        console.log(`${tag} addIntervention: duplicate ${intervention.trigger}, ignoring`);
+        return {};
+      }
+
+      // Add new intervention
+      active.push(intervention);
+
+      // Keep only the most recent MAX_VISIBLE_INTERVENTIONS
+      if (active.length > MAX_VISIBLE_INTERVENTIONS) {
+        active = active.slice(-MAX_VISIBLE_INTERVENTIONS);
+      }
+
+      return { interventions: active };
+    });
+
+    // Schedule auto-cleanup when this intervention expires
+    const expiresIn = new Date(intervention.expiresAt).getTime() - Date.now();
+    if (expiresIn > 0) {
+      setTimeout(() => {
+        get().cleanExpiredInterventions();
+      }, expiresIn + 500);
+    }
+  },
+
+  /**
+   * Dismiss an intervention by ID.
+   * Notifies backend via socket for predictive learning.
+   */
+  dismissIntervention: (interventionId) => {
+    const tag = `[BrainStore][${ts()}]`;
+    console.log(`${tag} dismissIntervention: ${interventionId}`);
+
+    set((state) => ({
+      interventions: state.interventions.filter(i => i.id !== interventionId),
+    }));
+
+    // Notify backend
+    if (_socket?.connected) {
+      try {
+        const authStore = require('./authStore').default;
+        const userId = authStore?.getState?.()?.user?.id;
+        if (userId) {
+          _socket.emit('intervention:dismiss', { userId, interventionId });
+        }
+      } catch {}
+    }
+  },
+
+  /**
+   * Engage with an intervention (user clicked/acted on it).
+   * Notifies backend for predictive learning.
+   */
+  engageIntervention: (interventionId) => {
+    const tag = `[BrainStore][${ts()}]`;
+    console.log(`${tag} engageIntervention: ${interventionId}`);
+
+    // Remove it from the list (user engaged, so no need to keep showing)
+    set((state) => ({
+      interventions: state.interventions.filter(i => i.id !== interventionId),
+    }));
+
+    // Notify backend
+    if (_socket?.connected) {
+      try {
+        const authStore = require('./authStore').default;
+        const userId = authStore?.getState?.()?.user?.id;
+        if (userId) {
+          _socket.emit('intervention:engage', { userId, interventionId });
+        }
+      } catch {}
+    }
+  },
+
+  /**
+   * Clean expired interventions.
+   */
+  cleanExpiredInterventions: () => {
+    const now = new Date().toISOString();
+    set((state) => ({
+      interventions: state.interventions.filter(i => i.expiresAt > now),
+    }));
   },
 }));
 

@@ -42,6 +42,7 @@ import ErrorBoundary from '../common/ErrorBoundary';
 import MobileBottomNav, { getPersistedView } from '../layout/MobileBottomNav';
 import QuickCommandInput from '../flow/QuickCommandInput';
 import GlobalSearch from '../search/GlobalSearch';
+import InterventionBanner from '../common/InterventionBanner';
 // QuickWidget REMOVED — Phase 10: floating button completely eliminated per user request
 
 // Merged: "execution" and "daily_flow" point to the SAME DailyExecutionFlow
@@ -188,6 +189,9 @@ export default function Dashboard() {
             </ErrorBoundary>
           </MobileLayout>
         </div>
+
+        {/* Phase 15: Proactive Intervention Banners — non-intrusive overlay */}
+        <InterventionBanner />
 
         {/* QuickWidget REMOVED — Phase 10: floating ⚡ button completely eliminated */}
 
