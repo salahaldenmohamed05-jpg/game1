@@ -11,9 +11,23 @@ const { aiService } = require('../ai/ai.service');
 const logger = require('../utils/logger');
 const moment = require('moment-timezone');
 
+// ── Input sanitization ─────────────────────────────────────────────────────
+function sanitizeText(str) {
+  if (typeof str !== 'string') return str;
+  return str
+    .replace(/<[^>]*>/g, '')           // Strip HTML tags
+    .replace(/[<>"'`;]/g, '')          // Remove dangerous chars
+    .trim()
+    .slice(0, 500);
+}
+
 // Step 1: Wire behavior events into habit lifecycle
 function getBehaviorService() {
   try { return require('../services/behavior.model.service'); } catch (_) { return null; }
+}
+// Phase 12: EventBus for brain recomputation
+function getEventBus() {
+  try { return require('../core/eventBus'); } catch (_) { return null; }
 }
 // Step 2: Wire UserModel events into habit lifecycle (Phase P)
 function getUserModelService() {
@@ -202,6 +216,11 @@ exports.createHabit = async (req, res) => {
       goal_id: goal_id || null,
     };
 
+    // HARDENED: Sanitize text inputs
+    if (habitData.name) habitData.name = sanitizeText(habitData.name);
+    if (habitData.name_ar) habitData.name_ar = sanitizeText(habitData.name_ar);
+    if (habitData.description) habitData.description = sanitizeText(habitData.description).slice(0, 2000);
+
     // Deduplication: check if habit with same name already exists for this user
     const existingHabit = await Habit.findOne({
       where: { user_id: req.user.id, name: habitData.name },
@@ -343,7 +362,20 @@ exports.checkIn = async (req, res) => {
       });
     }
 
-    // Boolean habit
+    // Boolean habit — HARDENED: Idempotent check-in
+    const existingBoolLog = await HabitLog.findOne({
+      where: { habit_id: habit.id, log_date: today, completed: true },
+    });
+
+    if (existingBoolLog) {
+      // Already completed today — idempotent response, no streak change
+      return res.json({
+        success: true,
+        message: `✅ ${habit.name_ar || habit.name} — تم إكماله مسبقاً اليوم`,
+        data: { log: existingBoolLog, habit, already_completed: true },
+      });
+    }
+
     const [log, created] = await HabitLog.findOrCreate({
       where: { habit_id: habit.id, log_date: today },
       defaults: {
@@ -377,9 +409,9 @@ exports.checkIn = async (req, res) => {
       behaviorSvc.onHabitEvent(req.user.id, 'habit_completed', { habitId: habit.id }, req.user.timezone).catch(() => {});
     }
 
-    // Step 2: Update persistent UserModel (Phase P)
+    // Step 2: Update persistent UserModel (Phase P) — HARDENED: safe method check
     const userModelSvc = getUserModelService();
-    if (userModelSvc) {
+    if (userModelSvc?.onHabitCompleted) {
       userModelSvc.onHabitCompleted(req.user.id, {
         id: habit.id,
         name: habit.name,
@@ -387,6 +419,10 @@ exports.checkIn = async (req, res) => {
         category: habit.category,
       }).catch(e => logger.debug('[HABIT] UserModel update failed:', e.message));
     }
+
+    // Phase 12: Emit HABIT_COMPLETED to EventBus → triggers brain.recompute
+    const eb = getEventBus();
+    if (eb) eb.emit(eb.EVENT_TYPES.HABIT_COMPLETED, { userId: req.user.id, habitId: habit.id, habitName: habit.name, streak: habit.current_streak });
 
     res.json({
       success: true,
@@ -725,22 +761,35 @@ exports.getTodaySummary = async (req, res) => {
 // Helper functions
 // =============================================
 
+/**
+ * HARDENED: updateHabitStreak — Idempotent streak update
+ * Only increments if not already updated today (checks last_completed date)
+ */
 async function updateHabitStreak(habit) {
   try {
     const timezone = 'Africa/Cairo';
+    const today = moment().tz(timezone).format('YYYY-MM-DD');
     const yesterday = moment().tz(timezone).subtract(1, 'day').format('YYYY-MM-DD');
+
+    // GUARD: If already updated today, skip (idempotent)
+    const lastCompleted = habit.last_completed ? String(habit.last_completed).split('T')[0] : null;
+    if (lastCompleted === today) {
+      return; // Already counted today
+    }
 
     const yesterdayLog = await HabitLog.findOne({
       where: { habit_id: habit.id, log_date: yesterday, completed: true },
     });
 
-    const newStreak = yesterdayLog ? habit.current_streak + 1 : 1;
-    const longestStreak = Math.max(newStreak, habit.longest_streak);
+    const newStreak = yesterdayLog ? (habit.current_streak || 0) + 1 : 1;
+    const longestStreak = Math.max(newStreak, habit.longest_streak || 0);
 
     await habit.update({
       current_streak: newStreak,
       longest_streak: longestStreak,
-      total_completions: habit.total_completions + 1,
+      best_streak: Math.max(newStreak, habit.best_streak || 0),
+      total_completions: (habit.total_completions || 0) + 1,
+      last_completed: today,
     });
   } catch (err) {
     logger.error('Update streak error:', err);

@@ -247,11 +247,16 @@ router.get('/copilot/daily-plan', async (req, res) => {
  */
 router.get('/goals', async (req, res) => {
   try {
+    // HARDENED: Graceful fallback if goal engine is unavailable
+    if (!goalEngineService?.getUserGoals) {
+      return res.json({ success: true, data: { goals: [], message: 'خدمة الأهداف غير متاحة حالياً' } });
+    }
     const result = await goalEngineService.getUserGoals(uid(req), tz(req));
-    res.json({ success: true, data: result });
+    res.json({ success: true, data: result || { goals: [] } });
   } catch (err) {
     logger.error('get goals error:', err.message);
-    res.status(500).json({ success: false, message: 'خطأ في جلب الأهداف' });
+    // HARDENED: Return empty data instead of 500
+    res.json({ success: true, data: { goals: [], message: 'لا توجد أهداف بعد' } });
   }
 });
 

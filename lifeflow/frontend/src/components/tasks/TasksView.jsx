@@ -1,11 +1,21 @@
 /**
- * TasksView — Mobile-First Task Manager (Backend Smart View)
- * =============================================================
- * - Uses GET /tasks/smart-view for grouping + AI scoring + recommendation
- * - No frontend computeAIScore — all intelligence is on the backend
- * - Logs recommendation display, clicks, and completions
- * - Mobile-optimized: 44px tap targets, solid modals, sticky CTA, RTL
- * - Proper bottom padding for nav overlap prevention
+ * TasksView v5 — Todo List + Samsung Reminder Hybrid (Phase 9.0)
+ * ================================================================
+ * RESTRUCTURED into 3 clear sections:
+ *   1. OVERDUE (red banner) — tasks past their due date/time
+ *   2. PENDING TODAY (white) — today's active tasks
+ *   3. COMPLETED TODAY (green) — with timestamps "اكتمل الساعة 14:32"
+ *
+ * KEY GUARANTEES:
+ * - Completed tasks NEVER disappear — persisted in localStorage as backup
+ * - Timestamp format: "اكتمل الساعة HH:MM" (24h Cairo timezone)
+ * - Real progress % = completed / total (overdue + pending + completed)
+ * - Circular progress ring (Samsung style) with instant updates
+ * - Quick-add bar with keyboard-safe layout
+ * - Smart split, edit, delete actions
+ * - Category filter chips
+ * - "All Tasks" view with upcoming + full completed history
+ * - Mobile-first, RTL, 44px touch targets
  */
 
 import { useState, useMemo, useCallback, memo, useEffect } from 'react';
@@ -14,11 +24,33 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Plus, CheckCircle, Clock, Trash2, X, ChevronDown,
   AlertCircle, Calendar, Check, Sun, List, Filter,
-  Sparkles, Zap, ArrowRight, Edit3, Star, RefreshCw
+  Sparkles, Zap, ArrowRight, Edit3, Star, RefreshCw,
+  Scissors, TrendingUp, Bell, CircleDot
 } from 'lucide-react';
 import { taskAPI } from '../../utils/api';
 import useSyncStore from '../../store/syncStore';
 import toast from 'react-hot-toast';
+
+// ─── Completed Tasks Persistence (localStorage backup) ──────────────────────
+const COMPLETED_STORAGE_KEY = 'lifeflow_completed_tasks_today';
+
+function persistCompletedTasks(tasks) {
+  try {
+    const todayKey = getTodayCairo();
+    const data = { date: todayKey, tasks: tasks.map(t => ({ id: t.id, title: t.title, completed_at: t.completed_at || t.completedAt, category: t.category, priority: t.priority })) };
+    localStorage.setItem(COMPLETED_STORAGE_KEY, JSON.stringify(data));
+  } catch {}
+}
+
+function getPersistedCompletedTasks() {
+  try {
+    const raw = localStorage.getItem(COMPLETED_STORAGE_KEY);
+    if (!raw) return [];
+    const data = JSON.parse(raw);
+    if (data.date !== getTodayCairo()) return [];
+    return data.tasks || [];
+  } catch { return []; }
+}
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -72,7 +104,6 @@ function getTodayCairo() {
 function getTaskTime(task) {
   if (task.start_time) return toCairoTime(task.start_time);
   if (task.due_time) {
-    // due_time may be "HH:mm" or "HH:mm:ss" — normalize to HH:mm
     const m = String(task.due_time).match(/^(\d{1,2}:\d{2})/);
     return m ? m[1] : null;
   }
@@ -84,10 +115,6 @@ function getTaskEndTime(task) {
   return null;
 }
 
-/**
- * Convert an HH:mm string to total minutes for numeric sorting.
- * Returns Infinity for null/invalid so missing times sort last.
- */
 function timeToMinutes(timeStr) {
   if (!timeStr) return Infinity;
   const m = String(timeStr).match(/^(\d{1,2}):(\d{2})/);
@@ -95,153 +122,222 @@ function timeToMinutes(timeStr) {
   return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
 }
 
-/**
- * Compute a numeric sort key for a task's display time.
- * Uses start_time (ISO → Cairo HH:mm) or due_time (plain HH:mm).
- * Tasks without any time get Infinity (sort last).
- */
-function taskTimeSortKey(task) {
-  const display = getTaskTime(task);
-  return timeToMinutes(display);
-}
-
 const PRIORITY_ORDER = { urgent: 0, high: 1, medium: 2, low: 3 };
 
-/**
- * Sort tasks by: time (numeric minutes) → priority → createdAt.
- * Tasks with no time are placed after tasks that have a time.
- */
 function sortTasksByTime(tasks) {
   return [...tasks].sort((a, b) => {
-    // 1. Time ascending (missing time → Infinity → last)
-    const ta = taskTimeSortKey(a);
-    const tb = taskTimeSortKey(b);
+    const ta = timeToMinutes(getTaskTime(a));
+    const tb = timeToMinutes(getTaskTime(b));
     if (ta !== tb) return ta - tb;
-    // 2. Priority ascending (urgent=0 first)
     const pa = PRIORITY_ORDER[a.priority] ?? 3;
     const pb = PRIORITY_ORDER[b.priority] ?? 3;
     if (pa !== pb) return pa - pb;
-    // 3. createdAt ascending (oldest first)
     return new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime();
   });
 }
 
-// ─── Task Item (Memoized) ──────────────────────────────────────────────────
+// ─── Circular Progress Ring (Samsung Reminder Style) ────────────────────────
 
-const TaskItem = memo(function TaskItem({ task, onComplete, onDelete, onEdit, isRecommended, onRecommendClick }) {
+function CircularProgress({ completed, total, overdue }) {
+  const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+  const radius = 40;
+  const circumference = 2 * Math.PI * radius;
+  const strokeDashoffset = circumference - (pct / 100) * circumference;
+  const color = pct >= 80 ? '#22C55E' : pct >= 50 ? '#6C63FF' : pct >= 20 ? '#EAB308' : '#6B7280';
+  const remaining = total - completed;
+
+  return (
+    <div className="bg-white/5 border border-white/5 rounded-2xl p-4 flex items-center gap-4">
+      {/* SVG Ring */}
+      <div className="relative w-24 h-24 flex-shrink-0">
+        <svg className="w-24 h-24 -rotate-90" viewBox="0 0 100 100">
+          <circle cx="50" cy="50" r={radius} fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="8" />
+          <motion.circle
+            cx="50" cy="50" r={radius} fill="none" stroke={color} strokeWidth="8"
+            strokeLinecap="round" strokeDasharray={circumference}
+            initial={{ strokeDashoffset: circumference }}
+            animate={{ strokeDashoffset }}
+            transition={{ duration: 1, ease: 'easeOut' }}
+          />
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <span className="text-2xl font-black text-white">{pct}%</span>
+        </div>
+      </div>
+      {/* Stats */}
+      <div className="flex-1 min-w-0">
+        <p className="text-base font-bold text-white mb-1">تقدم اليوم</p>
+        <p className="text-lg font-black" style={{ color }}>
+          {completed} / {total}
+        </p>
+        <p className="text-xs text-gray-500 mt-0.5">
+          {remaining > 0 ? `${remaining} متبقية` : 'تم إنجاز الكل! 🎉'}
+        </p>
+        {overdue > 0 && (
+          <p className="text-xs text-red-400 font-bold mt-0.5">
+            ⚠️ {overdue} متأخرة
+          </p>
+        )}
+        {/* Mini progress bar */}
+        <div className="h-1.5 bg-white/5 rounded-full overflow-hidden mt-2">
+          <motion.div
+            initial={{ width: 0 }}
+            animate={{ width: `${pct}%` }}
+            transition={{ duration: 0.8, ease: 'easeOut' }}
+            className="h-full rounded-full"
+            style={{ backgroundColor: color }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Task Card (Samsung Reminder + Todo hybrid) ─────────────────────────────
+
+const TaskCard = memo(function TaskCard({ task, onComplete, onDelete, onEdit, onSplit, isRecommended, showTimestamp }) {
   const time = getTaskTime(task);
   const endTime = getTaskEndTime(task);
   const pri = PRIORITIES[task.priority] || PRIORITIES.medium;
   const cat = CATEGORIES[task.category] || CATEGORIES.other;
   const isDone = task.status === 'completed';
   const isOverdue = task._overdue;
-
-  const handleRecommendedClick = () => {
-    if (isRecommended && onRecommendClick) onRecommendClick(task.id);
-  };
+  
+  // Format completion timestamp as "اكتمل الساعة HH:MM"
+  const completedAt = useMemo(() => {
+    if (!isDone) return null;
+    const raw = task.completed_at || task.completedAt;
+    if (!raw) return null;
+    const t = toCairoTime(raw);
+    return t ? `اكتمل الساعة ${t}` : null;
+  }, [isDone, task.completed_at, task.completedAt]);
+  
+  const hasReminder = task.reminder_before && task.reminder_before > 0;
 
   return (
     <motion.div
       layout
-      initial={{ opacity: 0, y: 6 }}
+      initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, x: -40, height: 0, marginBottom: 0 }}
-      transition={{ duration: 0.2 }}
-      onClick={handleRecommendedClick}
+      exit={{ opacity: 0, x: -60, height: 0, marginBottom: 0, overflow: 'hidden' }}
+      transition={{ duration: 0.25 }}
       className={[
-        'flex items-start gap-3 p-3.5 sm:p-4 rounded-2xl transition-all relative',
+        'rounded-2xl transition-all relative overflow-hidden',
         isDone
-          ? 'opacity-40 bg-white/3'
+          ? 'bg-green-500/5 border border-green-500/10'
           : isOverdue
           ? 'bg-red-500/8 border border-red-500/20'
           : isRecommended
           ? 'bg-gradient-to-br from-primary-500/8 to-purple-500/5 border border-primary-500/20'
-          : 'bg-white/5 hover:bg-white/8 border border-white/5',
+          : 'bg-white/[0.04] hover:bg-white/[0.07] border border-white/[0.06]',
       ].join(' ')}
     >
-      {/* AI Recommended Badge */}
-      {isRecommended && !isDone && (
-        <div className="absolute top-2 left-2 sm:top-3 sm:left-3 flex items-center gap-1 bg-primary-500/20 text-primary-400 text-[10px] font-bold px-2 py-0.5 rounded-full">
-          <Sparkles size={9} /> موصى به
-        </div>
-      )}
+      {/* Priority left stripe */}
+      <div className="absolute top-0 right-0 w-1 h-full rounded-r-full" style={{ backgroundColor: pri.dot, opacity: isDone ? 0.3 : 0.8 }} />
 
-      {/* Checkbox — 44px touch target */}
-      <button
-        onClick={() => !isDone && onComplete(task.id)}
-        disabled={isDone}
-        className={[
-          'flex-shrink-0 w-11 h-11 rounded-full border-2 flex items-center justify-center transition-all active:scale-90',
-          isDone
-            ? 'bg-green-500 border-green-500'
-            : 'border-gray-600 hover:border-primary-400 hover:bg-primary-500/10',
-        ].join(' ')}
-        aria-label={isDone ? 'مكتملة' : 'إكمال المهمة'}
-      >
-        {isDone && <Check size={16} className="text-white" strokeWidth={3} />}
-      </button>
-
-      {/* Content */}
-      <div className="flex-1 min-w-0">
-        <p className={`text-sm font-semibold leading-snug ${isDone ? 'line-through text-gray-600' : 'text-white'}`}>
-          {task.title}
-        </p>
-
-        {/* Meta row */}
-        <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-          {/* Time badge */}
-          {time && (
-            <span className="flex items-center gap-1 text-xs font-bold text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-lg">
-              <Clock size={10} />
-              {time}
-              {endTime && <span className="text-blue-300"> — {endTime}</span>}
-            </span>
-          )}
-
-          {/* Priority */}
-          <span className={`text-xs px-1.5 py-0.5 rounded-md ${pri.bg} ${pri.color} font-medium`}>
-            {pri.label}
-          </span>
-
-          {/* Category */}
-          <span className="text-xs text-gray-500">{cat.emoji}</span>
-
-          {/* Overdue badge */}
-          {isOverdue && !isDone && (
-            <span className="flex items-center gap-0.5 text-xs text-red-400 font-bold">
-              <AlertCircle size={10} />
-              متأخرة
-            </span>
-          )}
-
-          {/* Due date */}
-          {task.due_date && (
-            <span className="text-xs text-gray-500 flex items-center gap-1">
-              <Calendar size={9} />
-              {toCairoDate(task.due_date)}
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Quick Actions — 44px touch target */}
-      <div className="flex flex-col gap-1 flex-shrink-0">
-        {!isDone && (
-          <button
-            onClick={(e) => { e.stopPropagation(); onEdit?.(task); }}
-            className="w-11 h-11 rounded-xl text-gray-600 hover:text-primary-400 hover:bg-primary-500/10 transition-all flex items-center justify-center active:scale-90"
-            aria-label="تعديل المهمة"
-          >
-            <Edit3 size={15} />
-          </button>
-        )}
+      <div className="flex items-start gap-3 p-3.5 sm:p-4 pr-5">
+        {/* Checkbox */}
         <button
-          onClick={() => onDelete(task.id)}
-          className="w-11 h-11 rounded-xl text-gray-600 hover:text-red-400 hover:bg-red-500/10 transition-all flex items-center justify-center active:scale-90"
-          aria-label="حذف المهمة"
+          onClick={() => !isDone && onComplete(task.id)}
+          disabled={isDone}
+          className={[
+            'flex-shrink-0 w-10 h-10 rounded-full border-2 flex items-center justify-center transition-all active:scale-90 mt-0.5',
+            isDone
+              ? 'bg-green-500 border-green-500'
+              : isOverdue
+              ? 'border-red-400 hover:bg-red-500/10'
+              : 'border-gray-600 hover:border-primary-400 hover:bg-primary-500/10',
+          ].join(' ')}
+          aria-label={isDone ? 'مكتملة' : 'إكمال المهمة'}
         >
-          <Trash2 size={15} />
+          {isDone && <Check size={15} className="text-white" strokeWidth={3} />}
         </button>
+
+        {/* Content */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-start justify-between gap-2">
+            <p className={`text-sm font-semibold leading-snug ${isDone ? 'line-through text-gray-500' : 'text-white'}`}>
+              {task.title}
+            </p>
+            {/* AI badge */}
+            {isRecommended && !isDone && (
+              <span className="flex items-center gap-0.5 bg-primary-500/20 text-primary-400 text-[9px] font-bold px-1.5 py-0.5 rounded-full flex-shrink-0">
+                <Sparkles size={8} /> ذكي
+              </span>
+            )}
+          </div>
+
+          {/* Time + meta row */}
+          <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+            {/* Time block (Samsung style) */}
+            {time && (
+              <span className={`flex items-center gap-1 text-xs font-bold px-2 py-1 rounded-lg ${
+                isDone ? 'text-gray-500 bg-white/5' : 'text-blue-400 bg-blue-500/10'
+              }`}>
+                <Clock size={10} />
+                {time}
+                {endTime && <span className="opacity-70"> - {endTime}</span>}
+              </span>
+            )}
+
+            {/* Priority chip */}
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-bold ${isDone ? 'bg-white/5 text-gray-500' : `${pri.bg} ${pri.color}`}`}>
+              {pri.label}
+            </span>
+
+            {/* Category */}
+            <span className="text-xs text-gray-500">{cat.emoji} {cat.label}</span>
+
+            {/* Reminder indicator */}
+            {hasReminder && !isDone && (
+              <span className="flex items-center gap-0.5 text-[10px] text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded-md">
+                <Bell size={8} /> {task.reminder_before}د
+              </span>
+            )}
+
+            {/* Overdue */}
+            {isOverdue && !isDone && (
+              <span className="flex items-center gap-0.5 text-[10px] text-red-400 font-bold bg-red-500/10 px-1.5 py-0.5 rounded-md">
+                <AlertCircle size={9} /> متأخرة
+              </span>
+            )}
+
+            {/* Completion timestamp — KEY FIX: "اكتمل الساعة 14:32" */}
+            {isDone && showTimestamp && completedAt && (
+              <span className="flex items-center gap-1 text-[10px] text-green-400/80 bg-green-500/10 px-2 py-0.5 rounded-md">
+                <Check size={8} /> {completedAt}
+              </span>
+            )}
+
+            {/* Due date */}
+            {task.due_date && !isDone && !time && (
+              <span className="text-[10px] text-gray-500 flex items-center gap-0.5">
+                <Calendar size={8} /> {toCairoDate(task.due_date)}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Actions */}
+        <div className="flex gap-0.5 flex-shrink-0">
+          {!isDone && onSplit && (
+            <button onClick={(e) => { e.stopPropagation(); onSplit(task); }}
+              className="w-9 h-9 rounded-lg text-gray-600 hover:text-purple-400 hover:bg-purple-500/10 transition-all flex items-center justify-center active:scale-90"
+              title="تقسيم ذكي">
+              <Scissors size={14} />
+            </button>
+          )}
+          {!isDone && (
+            <button onClick={(e) => { e.stopPropagation(); onEdit?.(task); }}
+              className="w-9 h-9 rounded-lg text-gray-600 hover:text-primary-400 hover:bg-primary-500/10 transition-all flex items-center justify-center active:scale-90">
+              <Edit3 size={14} />
+            </button>
+          )}
+          <button onClick={() => onDelete(task.id)}
+            className="w-9 h-9 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-500/10 transition-all flex items-center justify-center active:scale-90">
+            <Trash2 size={14} />
+          </button>
+        </div>
       </div>
     </motion.div>
   );
@@ -249,239 +345,123 @@ const TaskItem = memo(function TaskItem({ task, onComplete, onDelete, onEdit, is
 
 // ─── Section Header ─────────────────────────────────────────────────────────
 
-const SectionHeader = memo(function SectionHeader({ icon, label, count, color = 'text-gray-400', collapsed, onToggle }) {
+const SectionHeader = memo(function SectionHeader({ icon, label, count, color = 'text-gray-400', collapsed, onToggle, badge }) {
   return (
-    <button
-      onClick={onToggle}
-      className="flex items-center gap-2 py-2.5 px-1 w-full text-right"
-    >
-      <span className={`text-lg ${color}`}>{icon}</span>
+    <button onClick={onToggle} className="flex items-center gap-2 py-2 px-1 w-full text-right group">
+      <span className={`text-base ${color}`}>{icon}</span>
       <span className={`text-sm font-bold ${color}`}>{label}</span>
-      <span className="text-xs bg-white/5 px-2 py-0.5 rounded-full text-gray-500">{count}</span>
-      {onToggle && (
-        <ChevronDown size={14} className={`text-gray-500 mr-auto transition-transform ${collapsed ? '' : 'rotate-180'}`} />
+      <span className="text-[10px] bg-white/5 px-2 py-0.5 rounded-full text-gray-500 font-bold">{count}</span>
+      {badge && (
+        <span className={`text-[9px] px-1.5 py-0.5 rounded-md font-bold ${badge.color}`}>{badge.text}</span>
       )}
+      <ChevronDown size={13} className={`text-gray-500 mr-auto transition-transform duration-200 ${collapsed ? '' : 'rotate-180'}`} />
     </button>
   );
 });
 
-// ─── Add Task Modal (Bottom Sheet — Phase H: solid bg, high contrast, validation) ──
+// ─── Quick Add Bar (Samsung style inline add) — keyboard-safe ───────────────
 
-function AddTaskModal({ isOpen, onClose, onSubmit, isPending }) {
-  const [form, setForm] = useState({
-    title: '', category: 'personal', priority: 'medium',
-    due_date: getTodayCairo(), due_time: '', start_time: '', end_time: '', reminder_before: 15,
-  });
-  const [errors, setErrors] = useState({});
-  const [success, setSuccess] = useState(false);
-
-  const validate = () => {
-    const errs = {};
-    if (!form.title.trim()) errs.title = 'أدخل عنوان المهمة';
-    if (form.title.trim().length > 0 && form.title.trim().length < 2) errs.title = 'العنوان قصير جداً';
-    if (form.start_time && form.end_time && form.start_time >= form.end_time) errs.end_time = 'وقت النهاية يجب أن يكون بعد البداية';
-    setErrors(errs);
-    return Object.keys(errs).length === 0;
-  };
+function QuickAddBar({ onAdd, isPending }) {
+  const [title, setTitle] = useState('');
 
   const handleSubmit = () => {
-    if (!validate()) return;
-
-    const data = {
-      title: form.title.trim(),
-      category: form.category,
-      priority: form.priority,
-      reminder_before: form.reminder_before,
-    };
-
-    if (form.start_time) {
-      const date = form.due_date || getTodayCairo();
-      data.start_time = `${date}T${form.start_time}:00`;
-      data.due_date = date;
-      data.due_time = form.due_time || form.start_time;
-      if (form.end_time) data.end_time = `${date}T${form.end_time}:00`;
-    } else if (form.due_date) {
-      data.due_date = form.due_date;
-      if (form.due_time) data.due_time = form.due_time;
-    }
-
-    onSubmit(data);
-    setSuccess(true);
-    setTimeout(() => {
-      setSuccess(false);
-      setForm({
-        title: '', category: 'personal', priority: 'medium',
-        due_date: getTodayCairo(), due_time: '', start_time: '', end_time: '', reminder_before: 15,
-      });
-      setErrors({});
-    }, 300);
+    if (!title.trim()) return;
+    onAdd({ title: title.trim(), category: 'personal', priority: 'medium', due_date: getTodayCairo() });
+    setTitle('');
   };
 
-  const handleClose = () => {
-    setErrors({});
-    setSuccess(false);
+  return (
+    <div className="flex items-center gap-2 bg-white/[0.04] border border-white/[0.06] rounded-2xl px-3 py-2 keyboard-safe-input">
+      <Plus size={18} className="text-primary-400 flex-shrink-0" />
+      <input
+        value={title}
+        onChange={e => setTitle(e.target.value)}
+        onKeyDown={e => e.key === 'Enter' && handleSubmit()}
+        placeholder="أضف مهمة سريعة..."
+        className="flex-1 bg-transparent text-sm text-white placeholder-gray-500 outline-none min-h-[36px]"
+        dir="rtl"
+      />
+      {title.trim() && (
+        <motion.button
+          initial={{ scale: 0 }}
+          animate={{ scale: 1 }}
+          onClick={handleSubmit}
+          disabled={isPending}
+          className="w-9 h-9 rounded-xl bg-primary-500 text-white flex items-center justify-center active:scale-90 flex-shrink-0"
+        >
+          {isPending ? <RefreshCw size={14} className="animate-spin" /> : <ArrowRight size={14} className="rotate-180" />}
+        </motion.button>
+      )}
+    </div>
+  );
+}
+
+// ─── Smart Task Split Modal ─────────────────────────────────────────────────
+
+function SmartSplitModal({ isOpen, onClose, task, onSplit }) {
+  const [subtasks, setSubtasks] = useState(['', '', '']);
+
+  useEffect(() => {
+    if (isOpen && task) {
+      setSubtasks([
+        `تحضير وتجهيز: ${task.title}`,
+        `تنفيذ: ${task.title}`,
+        `مراجعة وإنهاء: ${task.title}`,
+      ]);
+    }
+  }, [isOpen, task]);
+
+  const handleSubmit = () => {
+    const valid = subtasks.filter(s => s.trim());
+    if (valid.length < 2) { toast.error('أضف على الأقل مهمتين فرعيتين'); return; }
+    onSplit(task, valid);
     onClose();
   };
 
-  if (!isOpen) return null;
+  if (!isOpen || !task) return null;
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center" onClick={handleClose}>
-      {/* Backdrop — solid dark overlay */}
+    <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center" onClick={onClose}>
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-black/80" />
       <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        className="absolute inset-0 bg-black/80"
-      />
-      {/* Modal — SOLID opaque bg, no backdrop-filter, high contrast text */}
-      <motion.div
-        initial={{ opacity: 0, y: 100 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, y: 100 }}
+        initial={{ opacity: 0, y: 100 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 100 }}
         transition={{ type: 'spring', damping: 25, stiffness: 300 }}
         onClick={e => e.stopPropagation()}
-        className="relative w-full sm:max-w-lg modal-solid rounded-t-3xl sm:rounded-2xl shadow-2xl border border-white/10 max-h-[85vh] sm:max-h-[90vh] overflow-hidden z-10 mb-[76px] sm:mb-0"
-        dir="rtl"
+        className="relative w-full sm:max-w-lg modal-solid rounded-t-3xl sm:rounded-2xl shadow-2xl border border-white/10 max-h-[85vh] overflow-hidden z-10 mb-[76px] sm:mb-0" dir="rtl"
       >
-        {/* Drag handle (mobile) */}
-        <div className="flex justify-center pt-3 pb-1 sm:hidden">
-          <div className="w-10 h-1 rounded-full bg-white/20" />
-        </div>
-
-        {/* Scrollable form content — leave room for sticky CTA */}
+        <div className="flex justify-center pt-3 pb-1 sm:hidden"><div className="w-10 h-1 rounded-full bg-white/20" /></div>
         <div className="p-5 overflow-y-auto" style={{ maxHeight: 'calc(85vh - 88px)' }}>
-          <div className="flex items-center justify-between mb-5">
+          <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-black text-white flex items-center gap-2">
-              <Plus size={18} className="text-primary-400" />
-              مهمة جديدة
+              <Scissors size={18} className="text-primary-400" /> تقسيم ذكي
             </h3>
-            <button onClick={handleClose} className="p-2 rounded-xl hover:bg-white/10 text-gray-400 active:scale-90">
-              <X size={18} />
-            </button>
+            <button onClick={onClose} className="p-2 rounded-xl hover:bg-white/10 text-gray-400"><X size={18} /></button>
           </div>
-
-          <div className="space-y-4">
-            {/* Title — with validation error */}
-            <div>
-              <input
-                value={form.title}
-                onChange={e => { setForm({ ...form, title: e.target.value }); if (errors.title) setErrors(prev => ({ ...prev, title: undefined })); }}
-                placeholder="عنوان المهمة..."
-                className={`w-full rounded-xl px-4 py-3.5 text-base focus:outline-none transition-all ${
-                  errors.title ? 'border-red-500 ring-2 ring-red-500/20' : ''
-                }`}
-                autoFocus
-                maxLength={200}
-              />
-              {errors.title && (
-                <p className="text-xs text-red-400 mt-1 flex items-center gap-1">
-                  <AlertCircle size={11} /> {errors.title}
-                </p>
-              )}
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs text-gray-400 mb-1.5 block font-medium">📅 التاريخ</label>
-                <input type="date" value={form.due_date}
-                  onChange={e => setForm({ ...form, due_date: e.target.value })}
-                  className="w-full rounded-xl px-4 py-3 focus:outline-none" />
-              </div>
-              <div>
-                <label className="text-xs text-gray-400 mb-1.5 block font-medium">⏰ الموعد النهائي</label>
-                <input type="time" value={form.due_time}
-                  onChange={e => setForm({ ...form, due_time: e.target.value })}
-                  className="w-full rounded-xl px-4 py-3 focus:outline-none"
-                  placeholder="اختياري" />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs text-gray-400 mb-1.5 block font-medium">🕐 وقت البداية</label>
-                <input type="time" value={form.start_time}
-                  onChange={e => setForm({ ...form, start_time: e.target.value })}
-                  className="w-full rounded-xl px-4 py-3 focus:outline-none" />
-              </div>
-              <div>
-                <label className="text-xs text-gray-400 mb-1.5 block font-medium">🏁 وقت النهاية</label>
-                <input type="time" value={form.end_time}
-                  onChange={e => { setForm({ ...form, end_time: e.target.value }); if (errors.end_time) setErrors(prev => ({ ...prev, end_time: undefined })); }}
-                  className={`w-full rounded-xl px-4 py-3 focus:outline-none ${errors.end_time ? 'border-red-500 ring-2 ring-red-500/20' : ''}`} />
-                {errors.end_time && (
-                  <p className="text-xs text-red-400 mt-1 flex items-center gap-1">
-                    <AlertCircle size={11} /> {errors.end_time}
-                  </p>
+          <div className="bg-white/5 rounded-xl p-3 mb-4 border border-white/5">
+            <p className="text-xs text-gray-500 mb-1">المهمة الأصلية:</p>
+            <p className="text-sm font-bold text-white">{task.title}</p>
+          </div>
+          <p className="text-xs text-gray-400 mb-3">قسّم المهمة لخطوات أصغر وأوضح:</p>
+          <div className="space-y-2">
+            {subtasks.map((st, idx) => (
+              <div key={idx} className="flex items-center gap-2">
+                <span className="text-xs text-gray-500 w-6 text-center font-bold">{idx + 1}</span>
+                <input value={st} onChange={e => setSubtasks(prev => prev.map((s, i) => i === idx ? e.target.value : s))}
+                  placeholder={`خطوة ${idx + 1}...`} className="flex-1 rounded-xl px-4 py-3 text-sm focus:outline-none" />
+                {subtasks.length > 2 && (
+                  <button onClick={() => setSubtasks(prev => prev.filter((_, i) => i !== idx))} className="p-2 text-gray-600 hover:text-red-400"><X size={14} /></button>
                 )}
               </div>
-            </div>
-
-            <div>
-              <label className="text-xs text-gray-400 mb-1.5 block font-medium">🔔 تذكير قبل</label>
-              <div className="flex gap-2">
-                {[5, 10, 15, 30, 60].map(min => (
-                  <button key={min} onClick={() => setForm({ ...form, reminder_before: min })}
-                    className={`flex-1 py-2.5 rounded-xl text-xs font-bold transition-all active:scale-95 min-h-[44px] ${
-                      form.reminder_before === min
-                        ? 'bg-primary-500/20 text-primary-400 border border-primary-500/30'
-                        : 'bg-white/5 text-gray-400 hover:text-white'
-                    }`}>
-                    {min >= 60 ? `${min/60} س` : `${min} د`}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <label className="text-xs text-gray-400 mb-1.5 block font-medium">⚡ الأولوية</label>
-              <div className="grid grid-cols-4 gap-2">
-                {Object.entries(PRIORITIES).map(([key, p]) => (
-                  <button key={key} onClick={() => setForm({ ...form, priority: key })}
-                    className={`py-2.5 rounded-xl text-xs font-bold transition-all active:scale-95 min-h-[44px] ${
-                      form.priority === key ? `${p.bg} ${p.color} border border-current/30` : 'bg-white/5 text-gray-400'
-                    }`}>
-                    {p.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <label className="text-xs text-gray-400 mb-1.5 block font-medium">📂 التصنيف</label>
-              <div className="grid grid-cols-3 gap-2">
-                {Object.entries(CATEGORIES).map(([key, c]) => (
-                  <button key={key} onClick={() => setForm({ ...form, category: key })}
-                    className={`py-2.5 rounded-xl text-xs transition-all active:scale-95 min-h-[44px] ${
-                      form.category === key ? 'bg-primary-500/20 text-primary-400 border border-primary-500/30' : 'bg-white/5 text-gray-400'
-                    }`}>
-                    {c.emoji} {c.label}
-                  </button>
-                ))}
-              </div>
-            </div>
+            ))}
           </div>
+          <button onClick={() => setSubtasks(prev => [...prev, ''])} className="mt-2 text-xs text-primary-400 flex items-center gap-1 hover:text-primary-300">
+            <Plus size={12} /> إضافة خطوة
+          </button>
         </div>
-
-        {/* Sticky CTA at bottom — solid bg to prevent blur-through */}
         <div className="sticky bottom-0 p-5 pt-3 border-t border-white/5" style={{ background: 'inherit' }}>
-          <button onClick={handleSubmit} disabled={isPending || !form.title.trim()}
-            className={`w-full py-4 font-bold rounded-xl transition-all text-base active:scale-[0.98] shadow-lg min-h-[48px] ${
-              success
-                ? 'bg-green-500 text-white shadow-green-500/20'
-                : 'bg-primary-500 hover:bg-primary-600 text-white shadow-primary-500/20 disabled:opacity-50'
-            }`}>
-            {isPending ? (
-              <span className="flex items-center justify-center gap-2">
-                <RefreshCw size={16} className="animate-spin" /> جاري الإنشاء...
-              </span>
-            ) : success ? (
-              <span className="flex items-center justify-center gap-2">
-                <Check size={16} /> تم الإنشاء!
-              </span>
-            ) : (
-              '✅ إضافة المهمة'
-            )}
+          <button onClick={handleSubmit}
+            className="w-full py-4 font-bold rounded-xl text-base active:scale-[0.98] shadow-lg min-h-[48px] bg-primary-500 hover:bg-primary-600 text-white shadow-primary-500/20">
+            <Scissors size={16} className="inline ml-2" /> قسّم المهمة
           </button>
         </div>
       </motion.div>
@@ -489,45 +469,26 @@ function AddTaskModal({ isOpen, onClose, onSubmit, isPending }) {
   );
 }
 
-// ─── Edit Task Modal ──────────────────────────────────────────────────────
+// ─── Add Task Modal ─────────────────────────────────────────────────────────
 
-function EditTaskModal({ isOpen, onClose, task, onSubmit, isPending }) {
+function AddTaskModal({ isOpen, onClose, onSubmit, isPending }) {
   const [form, setForm] = useState({
     title: '', category: 'personal', priority: 'medium',
-    due_date: '', due_time: '', start_time: '', end_time: '',
+    due_date: getTodayCairo(), due_time: '', start_time: '', end_time: '', reminder_before: 15,
   });
   const [errors, setErrors] = useState({});
 
-  useEffect(() => {
-    if (task && isOpen) {
-      setForm({
-        title: task.title || '',
-        category: task.category || 'personal',
-        priority: task.priority || 'medium',
-        due_date: task.due_date ? new Date(task.due_date).toLocaleDateString('en-CA', { timeZone: 'Africa/Cairo' }) : '',
-        due_time: task.due_time || '',
-        start_time: task.start_time ? toCairoTime(task.start_time) || '' : '',
-        end_time: task.end_time ? toCairoTime(task.end_time) || '' : '',
-      });
-      setErrors({});
-    }
-  }, [task, isOpen]);
-
   const validate = () => {
     const errs = {};
-    if (!form.title.trim()) errs.title = 'ادخل عنوان المهمة';
-    if (form.start_time && form.end_time && form.start_time >= form.end_time) errs.end_time = 'وقت النهاية يجب أن يكون بعد البداية';
+    if (!form.title.trim()) errs.title = 'أدخل عنوان المهمة';
+    if (form.start_time && form.end_time && form.start_time >= form.end_time) errs.end_time = 'وقت النهاية بعد البداية';
     setErrors(errs);
     return Object.keys(errs).length === 0;
   };
 
   const handleSubmit = () => {
     if (!validate()) return;
-    const data = {
-      title: form.title.trim(),
-      category: form.category,
-      priority: form.priority,
-    };
+    const data = { title: form.title.trim(), category: form.category, priority: form.priority, reminder_before: form.reminder_before };
     if (form.start_time) {
       const date = form.due_date || getTodayCairo();
       data.start_time = `${date}T${form.start_time}:00`;
@@ -538,6 +499,119 @@ function EditTaskModal({ isOpen, onClose, task, onSubmit, isPending }) {
       data.due_date = form.due_date;
       if (form.due_time) data.due_time = form.due_time;
     }
+    onSubmit(data);
+    setForm({ title: '', category: 'personal', priority: 'medium', due_date: getTodayCairo(), due_time: '', start_time: '', end_time: '', reminder_before: 15 });
+    setErrors({});
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center" onClick={() => { setErrors({}); onClose(); }}>
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-black/80" />
+      <motion.div
+        initial={{ opacity: 0, y: 100 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 100 }}
+        transition={{ type: 'spring', damping: 25, stiffness: 300 }}
+        onClick={e => e.stopPropagation()}
+        className="relative w-full sm:max-w-lg modal-solid rounded-t-3xl sm:rounded-2xl shadow-2xl border border-white/10 max-h-[85vh] sm:max-h-[90vh] overflow-hidden z-10 mb-[76px] sm:mb-0" dir="rtl"
+      >
+        <div className="flex justify-center pt-3 pb-1 sm:hidden"><div className="w-10 h-1 rounded-full bg-white/20" /></div>
+        <div className="p-5 overflow-y-auto" style={{ maxHeight: 'calc(85vh - 88px)' }}>
+          <div className="flex items-center justify-between mb-5">
+            <h3 className="text-lg font-black text-white flex items-center gap-2"><Plus size={18} className="text-primary-400" /> مهمة جديدة</h3>
+            <button onClick={() => { setErrors({}); onClose(); }} className="p-2 rounded-xl hover:bg-white/10 text-gray-400"><X size={18} /></button>
+          </div>
+          <div className="space-y-4">
+            <div>
+              <input value={form.title} onChange={e => { setForm({ ...form, title: e.target.value }); setErrors({}); }}
+                placeholder="عنوان المهمة..." className={`w-full rounded-xl px-4 py-3.5 text-base focus:outline-none ${errors.title ? 'border-red-500 ring-2 ring-red-500/20' : ''}`} autoFocus maxLength={200} />
+              {errors.title && <p className="text-xs text-red-400 mt-1"><AlertCircle size={11} className="inline" /> {errors.title}</p>}
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div><label className="text-xs text-gray-400 mb-1.5 block">التاريخ</label><input type="date" value={form.due_date} onChange={e => setForm({ ...form, due_date: e.target.value })} className="w-full rounded-xl px-4 py-3 focus:outline-none" /></div>
+              <div><label className="text-xs text-gray-400 mb-1.5 block">الموعد</label><input type="time" value={form.due_time} onChange={e => setForm({ ...form, due_time: e.target.value })} className="w-full rounded-xl px-4 py-3 focus:outline-none" /></div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div><label className="text-xs text-gray-400 mb-1.5 block">البداية</label><input type="time" value={form.start_time} onChange={e => setForm({ ...form, start_time: e.target.value })} className="w-full rounded-xl px-4 py-3 focus:outline-none" /></div>
+              <div><label className="text-xs text-gray-400 mb-1.5 block">النهاية</label>
+                <input type="time" value={form.end_time} onChange={e => { setForm({ ...form, end_time: e.target.value }); setErrors({}); }}
+                  className={`w-full rounded-xl px-4 py-3 focus:outline-none ${errors.end_time ? 'border-red-500 ring-2 ring-red-500/20' : ''}`} />
+              </div>
+            </div>
+            <div>
+              <label className="text-xs text-gray-400 mb-1.5 block">تذكير قبل</label>
+              <div className="flex gap-2">
+                {[5, 10, 15, 30, 60].map(min => (
+                  <button key={min} onClick={() => setForm({ ...form, reminder_before: min })}
+                    className={`flex-1 py-2.5 rounded-xl text-xs font-bold min-h-[44px] ${form.reminder_before === min ? 'bg-primary-500/20 text-primary-400 border border-primary-500/30' : 'bg-white/5 text-gray-400'}`}>
+                    {min >= 60 ? `${min/60} س` : `${min} د`}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="text-xs text-gray-400 mb-1.5 block">الأولوية</label>
+              <div className="grid grid-cols-4 gap-2">
+                {Object.entries(PRIORITIES).map(([key, p]) => (
+                  <button key={key} onClick={() => setForm({ ...form, priority: key })}
+                    className={`py-2.5 rounded-xl text-xs font-bold min-h-[44px] ${form.priority === key ? `${p.bg} ${p.color} border border-current/30` : 'bg-white/5 text-gray-400'}`}>
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="text-xs text-gray-400 mb-1.5 block">التصنيف</label>
+              <div className="grid grid-cols-3 gap-2">
+                {Object.entries(CATEGORIES).map(([key, c]) => (
+                  <button key={key} onClick={() => setForm({ ...form, category: key })}
+                    className={`py-2.5 rounded-xl text-xs min-h-[44px] ${form.category === key ? 'bg-primary-500/20 text-primary-400 border border-primary-500/30' : 'bg-white/5 text-gray-400'}`}>
+                    {c.emoji} {c.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="sticky bottom-0 p-5 pt-3 border-t border-white/5" style={{ background: 'inherit' }}>
+          <button onClick={handleSubmit} disabled={isPending || !form.title.trim()}
+            className="w-full py-4 font-bold rounded-xl text-base active:scale-[0.98] shadow-lg min-h-[48px] bg-primary-500 hover:bg-primary-600 text-white shadow-primary-500/20 disabled:opacity-50">
+            {isPending ? <span className="flex items-center justify-center gap-2"><RefreshCw size={16} className="animate-spin" /> جاري الإنشاء...</span> : 'إضافة المهمة'}
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
+// ─── Edit Task Modal ────────────────────────────────────────────────────────
+
+function EditTaskModal({ isOpen, onClose, task, onSubmit, isPending }) {
+  const [form, setForm] = useState({ title: '', category: 'personal', priority: 'medium', due_date: '', due_time: '', start_time: '', end_time: '' });
+  const [errors, setErrors] = useState({});
+
+  useEffect(() => {
+    if (task && isOpen) {
+      setForm({
+        title: task.title || '', category: task.category || 'personal', priority: task.priority || 'medium',
+        due_date: task.due_date ? new Date(task.due_date).toLocaleDateString('en-CA', { timeZone: 'Africa/Cairo' }) : '',
+        due_time: task.due_time || '', start_time: task.start_time ? toCairoTime(task.start_time) || '' : '', end_time: task.end_time ? toCairoTime(task.end_time) || '' : '',
+      });
+      setErrors({});
+    }
+  }, [task, isOpen]);
+
+  const handleSubmit = () => {
+    const errs = {};
+    if (!form.title.trim()) errs.title = 'ادخل عنوان المهمة';
+    setErrors(errs);
+    if (Object.keys(errs).length > 0) return;
+    const data = { title: form.title.trim(), category: form.category, priority: form.priority };
+    if (form.start_time) {
+      const date = form.due_date || getTodayCairo();
+      data.start_time = `${date}T${form.start_time}:00`; data.due_date = date;
+      if (form.end_time) data.end_time = `${date}T${form.end_time}:00`;
+    } else if (form.due_date) { data.due_date = form.due_date; if (form.due_time) data.due_time = form.due_time; }
     onSubmit(task.id, data);
   };
 
@@ -550,48 +624,41 @@ function EditTaskModal({ isOpen, onClose, task, onSubmit, isPending }) {
         initial={{ opacity: 0, y: 100 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 100 }}
         transition={{ type: 'spring', damping: 25, stiffness: 300 }}
         onClick={e => e.stopPropagation()}
-        className="relative w-full sm:max-w-lg modal-solid rounded-t-3xl sm:rounded-2xl shadow-2xl border border-white/10 max-h-[85vh] sm:max-h-[90vh] overflow-hidden z-10 mb-[76px] sm:mb-0" dir="rtl"
+        className="relative w-full sm:max-w-lg modal-solid rounded-t-3xl sm:rounded-2xl shadow-2xl border border-white/10 max-h-[85vh] overflow-hidden z-10 mb-[76px] sm:mb-0" dir="rtl"
       >
         <div className="flex justify-center pt-3 pb-1 sm:hidden"><div className="w-10 h-1 rounded-full bg-white/20" /></div>
-        <div className="p-5 overflow-y-auto" style={{ maxHeight: 'calc(90vh - 88px)' }}>
+        <div className="p-5 overflow-y-auto" style={{ maxHeight: 'calc(85vh - 88px)' }}>
           <div className="flex items-center justify-between mb-5">
             <h3 className="text-lg font-black text-white flex items-center gap-2"><Edit3 size={18} className="text-primary-400" /> تعديل المهمة</h3>
-            <button onClick={onClose} className="p-2 rounded-xl hover:bg-white/10 text-gray-400 active:scale-90"><X size={18} /></button>
+            <button onClick={onClose} className="p-2 rounded-xl hover:bg-white/10 text-gray-400"><X size={18} /></button>
           </div>
           <div className="space-y-4">
-            <div>
-              <input value={form.title} onChange={e => { setForm({ ...form, title: e.target.value }); if (errors.title) setErrors(prev => ({ ...prev, title: undefined })); }}
-                placeholder="عنوان المهمة..." className={`w-full rounded-xl px-4 py-3.5 text-base focus:outline-none transition-all ${errors.title ? 'border-red-500 ring-2 ring-red-500/20' : ''}`} autoFocus maxLength={200} />
-              {errors.title && <p className="text-xs text-red-400 mt-1 flex items-center gap-1"><AlertCircle size={11} /> {errors.title}</p>}
+            <input value={form.title} onChange={e => setForm({ ...form, title: e.target.value })}
+              placeholder="عنوان المهمة..." className={`w-full rounded-xl px-4 py-3.5 text-base focus:outline-none ${errors.title ? 'border-red-500 ring-2 ring-red-500/20' : ''}`} autoFocus />
+            <div className="grid grid-cols-2 gap-3">
+              <div><label className="text-xs text-gray-400 mb-1.5 block">التاريخ</label><input type="date" value={form.due_date} onChange={e => setForm({ ...form, due_date: e.target.value })} className="w-full rounded-xl px-4 py-3 focus:outline-none" /></div>
+              <div><label className="text-xs text-gray-400 mb-1.5 block">الموعد</label><input type="time" value={form.due_time} onChange={e => setForm({ ...form, due_time: e.target.value })} className="w-full rounded-xl px-4 py-3 focus:outline-none" /></div>
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <div><label className="text-xs text-gray-400 mb-1.5 block font-medium">📅 التاريخ</label><input type="date" value={form.due_date} onChange={e => setForm({ ...form, due_date: e.target.value })} className="w-full rounded-xl px-4 py-3 focus:outline-none" /></div>
-              <div><label className="text-xs text-gray-400 mb-1.5 block font-medium">⏰ الموعد</label><input type="time" value={form.due_time} onChange={e => setForm({ ...form, due_time: e.target.value })} className="w-full rounded-xl px-4 py-3 focus:outline-none" /></div>
+              <div><label className="text-xs text-gray-400 mb-1.5 block">البداية</label><input type="time" value={form.start_time} onChange={e => setForm({ ...form, start_time: e.target.value })} className="w-full rounded-xl px-4 py-3 focus:outline-none" /></div>
+              <div><label className="text-xs text-gray-400 mb-1.5 block">النهاية</label><input type="time" value={form.end_time} onChange={e => setForm({ ...form, end_time: e.target.value })} className="w-full rounded-xl px-4 py-3 focus:outline-none" /></div>
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div><label className="text-xs text-gray-400 mb-1.5 block font-medium">🕐 البداية</label><input type="time" value={form.start_time} onChange={e => setForm({ ...form, start_time: e.target.value })} className="w-full rounded-xl px-4 py-3 focus:outline-none" /></div>
-              <div><label className="text-xs text-gray-400 mb-1.5 block font-medium">🏁 النهاية</label>
-                <input type="time" value={form.end_time} onChange={e => { setForm({ ...form, end_time: e.target.value }); if (errors.end_time) setErrors(prev => ({ ...prev, end_time: undefined })); }}
-                  className={`w-full rounded-xl px-4 py-3 focus:outline-none ${errors.end_time ? 'border-red-500 ring-2 ring-red-500/20' : ''}`} />
-                {errors.end_time && <p className="text-xs text-red-400 mt-1 flex items-center gap-1"><AlertCircle size={11} /> {errors.end_time}</p>}
-              </div>
-            </div>
-            <div><label className="text-xs text-gray-400 mb-1.5 block font-medium">⚡ الأولوية</label>
+            <div><label className="text-xs text-gray-400 mb-1.5 block">الأولوية</label>
               <div className="grid grid-cols-4 gap-2">{Object.entries(PRIORITIES).map(([key, p]) => (
-                <button key={key} onClick={() => setForm({ ...form, priority: key })} className={`py-2.5 rounded-xl text-xs font-bold transition-all active:scale-95 min-h-[44px] ${form.priority === key ? `${p.bg} ${p.color} border border-current/30` : 'bg-white/5 text-gray-400'}`}>{p.label}</button>
+                <button key={key} onClick={() => setForm({ ...form, priority: key })} className={`py-2.5 rounded-xl text-xs font-bold min-h-[44px] ${form.priority === key ? `${p.bg} ${p.color}` : 'bg-white/5 text-gray-400'}`}>{p.label}</button>
               ))}</div>
             </div>
-            <div><label className="text-xs text-gray-400 mb-1.5 block font-medium">📂 التصنيف</label>
+            <div><label className="text-xs text-gray-400 mb-1.5 block">التصنيف</label>
               <div className="grid grid-cols-3 gap-2">{Object.entries(CATEGORIES).map(([key, c]) => (
-                <button key={key} onClick={() => setForm({ ...form, category: key })} className={`py-2.5 rounded-xl text-xs transition-all active:scale-95 min-h-[44px] ${form.category === key ? 'bg-primary-500/20 text-primary-400 border border-primary-500/30' : 'bg-white/5 text-gray-400'}`}>{c.emoji} {c.label}</button>
+                <button key={key} onClick={() => setForm({ ...form, category: key })} className={`py-2.5 rounded-xl text-xs min-h-[44px] ${form.category === key ? 'bg-primary-500/20 text-primary-400' : 'bg-white/5 text-gray-400'}`}>{c.emoji} {c.label}</button>
               ))}</div>
             </div>
           </div>
         </div>
         <div className="sticky bottom-0 p-5 pt-3 border-t border-white/5" style={{ background: 'inherit' }}>
           <button onClick={handleSubmit} disabled={isPending || !form.title.trim()}
-            className="w-full py-4 font-bold rounded-xl transition-all text-base active:scale-[0.98] shadow-lg min-h-[48px] bg-primary-500 hover:bg-primary-600 text-white shadow-primary-500/20 disabled:opacity-50">
-            {isPending ? <span className="flex items-center justify-center gap-2"><RefreshCw size={16} className="animate-spin" /> جاري الحفظ...</span> : '💾 حفظ التعديلات'}
+            className="w-full py-4 font-bold rounded-xl text-base active:scale-[0.98] shadow-lg min-h-[48px] bg-primary-500 hover:bg-primary-600 text-white shadow-primary-500/20 disabled:opacity-50">
+            {isPending ? <span className="flex items-center justify-center gap-2"><RefreshCw size={16} className="animate-spin" /> جاري الحفظ...</span> : 'حفظ التعديلات'}
           </button>
         </div>
       </motion.div>
@@ -599,17 +666,20 @@ function EditTaskModal({ isOpen, onClose, task, onSubmit, isPending }) {
   );
 }
 
-// ─── Main TasksView ─────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// MAIN TasksView v4
+// ═════════════════════════════════════════════════════════════════════════════
 
 export default function TasksView() {
   const [viewMode, setViewMode] = useState('today');
   const [showAdd, setShowAdd] = useState(false);
   const [editingTask, setEditingTask] = useState(null);
+  const [splittingTask, setSplittingTask] = useState(null);
   const [collapsedSections, setCollapsedSections] = useState({});
+  const [categoryFilter, setCategoryFilter] = useState(null);
   const queryClient = useQueryClient();
   const { invalidateAll, recordAction } = useSyncStore();
 
-  // Fetch from backend smart-view endpoint (all intelligence on backend)
   const { data, isLoading } = useQuery({
     queryKey: ['tasks-smart-view'],
     queryFn: () => taskAPI.getSmartView(),
@@ -617,192 +687,233 @@ export default function TasksView() {
     select: (res) => {
       const d = res?.data?.data || res?.data || {};
       return {
-        overdue: d.overdue || [],
-        today: d.today || [],
-        upcoming: d.upcoming || [],
-        completed: d.completed || [],
-        recommendedTaskId: d.recommendedTaskId || null,
-        scores: d.scores || {},
-        stats: d.stats || {},
+        overdue: d.overdue || [], today: d.today || [], upcoming: d.upcoming || [],
+        completed: d.completed || [], recommendedTaskId: d.recommendedTaskId || null,
+        scores: d.scores || {}, stats: d.stats || {},
       };
     },
   });
 
-  // Log recommendation display when data loads
-  useEffect(() => {
-    if (data?.recommendedTaskId) {
-      taskAPI.logSmartEvent('display', data.recommendedTaskId, data.scores?.[data.recommendedTaskId]).catch(() => {});
-    }
-  }, [data?.recommendedTaskId]);
-
   // Mutations
   const createMutation = useMutation({
     mutationFn: (d) => taskAPI.createTask(d),
-    onSuccess: () => {
-      invalidateAll();
-      recordAction('task_created');
-      toast.success('تم إنشاء المهمة ✅');
-      setShowAdd(false);
-    },
+    onSuccess: () => { invalidateAll(); recordAction('task_created'); toast.success('تم إنشاء المهمة'); setShowAdd(false); },
     onError: (e) => toast.error(e.message || 'فشل في الإنشاء'),
   });
 
   const completeMutation = useMutation({
-    mutationFn: (id) => {
-      // Log if completing recommended task
-      if (data?.recommendedTaskId === id) {
-        taskAPI.logSmartEvent('complete', id, data.scores?.[id]).catch(() => {});
-      }
-      return taskAPI.completeTask(id);
-    },
-    onSuccess: () => {
-      invalidateAll();
-      recordAction('task_completed');
-      toast.success('أحسنت! 🎉');
-    },
+    mutationFn: (id) => taskAPI.completeTask(id),
+    onSuccess: () => { invalidateAll(); recordAction('task_completed'); toast.success('أحسنت! 🎉'); },
     onError: () => toast.error('فشل في إتمام المهمة'),
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id) => taskAPI.deleteTask(id),
-    onSuccess: () => {
-      invalidateAll();
-      recordAction('task_deleted');
-      toast.success('تم حذف المهمة');
-    },
+    onSuccess: () => { invalidateAll(); recordAction('task_deleted'); toast.success('تم حذف المهمة'); },
   });
 
   const updateMutation = useMutation({
     mutationFn: ({ id, data }) => taskAPI.updateTask(id, data),
-    onSuccess: () => {
-      invalidateAll();
-      recordAction('task_updated');
-      toast.success('تم تعديل المهمة ✏️');
-      setEditingTask(null);
-    },
+    onSuccess: () => { invalidateAll(); recordAction('task_updated'); toast.success('تم تعديل المهمة'); setEditingTask(null); },
     onError: (e) => toast.error(e.message || 'فشل في التعديل'),
   });
 
   const handleComplete = useCallback((id) => completeMutation.mutate(id), [completeMutation]);
-  const handleDelete = useCallback((id) => deleteMutation.mutate(id), [deleteMutation]);
+  const handleDelete = useCallback((id) => { if (window.confirm('هل أنت متأكد من حذف هذه المهمة؟')) deleteMutation.mutate(id); }, [deleteMutation]);
   const handleEdit = useCallback((task) => setEditingTask(task), []);
   const handleUpdate = useCallback((id, data) => updateMutation.mutate({ id, data }), [updateMutation]);
 
-  // Log recommendation click
-  const handleRecommendClick = useCallback((id) => {
-    if (data?.recommendedTaskId === id) {
-      taskAPI.logSmartEvent('click', id, data.scores?.[id]).catch(() => {});
-    }
-  }, [data]);
+  // Smart task split
+  const handleSplitTask = useCallback(async (task, subtaskTitles) => {
+    try {
+      for (const title of subtaskTitles) {
+        await taskAPI.createTask({ title, category: task.category, priority: task.priority, due_date: task.due_date || getTodayCairo() });
+      }
+      await taskAPI.completeTask(task.id);
+      invalidateAll();
+      toast.success(`تم تقسيم المهمة إلى ${subtaskTitles.length} خطوات`);
+    } catch { toast.error('فشل في تقسيم المهمة'); }
+  }, [invalidateAll]);
 
-  const toggleSection = useCallback((key) => {
-    setCollapsedSections(prev => ({ ...prev, [key]: !prev[key] }));
-  }, []);
+  const toggleSection = useCallback((key) => setCollapsedSections(prev => ({ ...prev, [key]: !prev[key] })), []);
 
-  // Extract data from backend response and re-sort by time
+  // ══════════════════════════════════════════════════════════════════════════
+  // DATA PROCESSING — COMPLETED TASKS NEVER DISAPPEAR
+  // Backend puts completed tasks in `completed[]` array, NOT in `today[]`.
+  // We merge from BOTH arrays + localStorage backup to guarantee persistence.
+  // ══════════════════════════════════════════════════════════════════════════
   const overdueTasks = data?.overdue || [];
   const allTodayTasks = data?.today || [];
-  // Separate today's pending from today's completed
-  const todayPending = useMemo(() => sortTasksByTime(allTodayTasks.filter(t => t.status !== 'completed')), [allTodayTasks]);
-  const todayCompleted = useMemo(() => allTodayTasks.filter(t => t.status === 'completed'), [allTodayTasks]);
+  const completedArray = data?.completed || [];
+  const todayCairo = getTodayCairo();
+
+  // 1. Pending tasks from today
+  const todayPending = useMemo(() => {
+    let tasks = allTodayTasks.filter(t => t.status !== 'completed');
+    if (categoryFilter) tasks = tasks.filter(t => t.category === categoryFilter);
+    return sortTasksByTime(tasks);
+  }, [allTodayTasks, categoryFilter]);
+
+  // 2. Completed today: from today[] + completed[] + localStorage backup
+  //    GUARANTEE: completed tasks NEVER disappear
+  const todayCompleted = useMemo(() => {
+    const fromToday = allTodayTasks.filter(t => t.status === 'completed');
+    const fromCompletedArr = completedArray.filter(t => {
+      if (!t.completed_at) return false;
+      try {
+        const d = new Date(t.completed_at).toLocaleDateString('en-CA', { timeZone: 'Africa/Cairo' });
+        return d === todayCairo;
+      } catch { return false; }
+    });
+    // Also include persisted tasks from localStorage as backup
+    const persisted = getPersistedCompletedTasks();
+    
+    // Deduplicate by ID — merge all sources
+    const seen = new Set();
+    const merged = [];
+    const addTask = (t) => {
+      const id = String(t.id);
+      if (!seen.has(id)) { merged.push(t); seen.add(id); }
+    };
+    fromToday.forEach(addTask);
+    fromCompletedArr.forEach(addTask);
+    // Persisted tasks as fallback (only if not already present)
+    persisted.forEach(t => {
+      if (!seen.has(String(t.id))) {
+        merged.push({ ...t, status: 'completed' });
+        seen.add(String(t.id));
+      }
+    });
+    
+    // Sort by completion time (most recent first)
+    const sorted = merged.sort((a, b) => {
+      const ta = new Date(a.completed_at || a.completedAt || 0).getTime();
+      const tb = new Date(b.completed_at || b.completedAt || 0).getTime();
+      return tb - ta;
+    });
+    
+    // Persist to localStorage for backup
+    if (sorted.length > 0) persistCompletedTasks(sorted);
+    
+    return sorted;
+  }, [allTodayTasks, completedArray, todayCairo]);
+
   const upcomingTasks = data?.upcoming || [];
-  // "All completed" = backend completed minus today's completed (avoid duplicates)
   const allCompleted = useMemo(() => {
-    const todayCompletedIds = new Set(todayCompleted.map(t => t.id));
-    return (data?.completed || []).filter(t => !todayCompletedIds.has(t.id));
-  }, [data?.completed, todayCompleted]);
+    const todayIds = new Set(todayCompleted.map(t => t.id));
+    return completedArray.filter(t => !todayIds.has(t.id));
+  }, [completedArray, todayCompleted]);
+
   const recommendedId = data?.recommendedTaskId;
-  const stats = data?.stats || {};
-  // Fix completed count: only count actual completed tasks for today
   const actualCompletedToday = todayCompleted.length;
+  const totalTodayTasks = todayPending.length + todayCompleted.length;
+  const overdueWithFlag = useMemo(() => overdueTasks.map(t => ({ ...t, _overdue: true })), [overdueTasks]);
 
-  // Mark overdue tasks for display
-  const overdueWithFlag = useMemo(() =>
-    overdueTasks.map(t => ({ ...t, _overdue: true })),
-    [overdueTasks]
-  );
+  // Category counts for filter chips
+  const categoryCounts = useMemo(() => {
+    const counts = {};
+    allTodayTasks.filter(t => t.status !== 'completed').forEach(t => {
+      const cat = t.category || 'other';
+      counts[cat] = (counts[cat] || 0) + 1;
+    });
+    return counts;
+  }, [allTodayTasks]);
 
-  // Determine visible groups based on viewMode
-  const showUpcoming = viewMode === 'all';
-  const showAllCompleted = viewMode === 'all';
-
-  const isEmpty = overdueTasks.length === 0 && todayPending.length === 0 &&
-    (!showUpcoming || upcomingTasks.length === 0);
+  const hasCategories = Object.keys(categoryCounts).length > 1;
 
   return (
     <div className="w-full max-w-2xl mx-auto space-y-4" dir="rtl">
 
-      {/* Header */}
+      {/* ── Header ──────────────────────────────────────────────── */}
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="text-xl sm:text-2xl font-black text-white flex items-center gap-2">
-            📋 المهام
-          </h2>
+          <h2 className="text-xl sm:text-2xl font-black text-white">المهام</h2>
           <p className="text-xs text-gray-400 mt-0.5">
-            {todayPending.length} اليوم
+            {todayPending.length > 0 && <span>{todayPending.length} نشطة</span>}
+            {actualCompletedToday > 0 && <span className="text-green-400"> · {actualCompletedToday} مكتملة</span>}
             {overdueTasks.length > 0 && <span className="text-red-400 font-bold"> · {overdueTasks.length} متأخرة</span>}
-            {upcomingTasks.length > 0 && <span> · {upcomingTasks.length} قادمة</span>}
-            {' · '}{actualCompletedToday} مكتملة اليوم
           </p>
         </div>
         <button onClick={() => setShowAdd(true)}
-          className="flex items-center gap-1.5 px-4 py-2.5 bg-primary-500 hover:bg-primary-600 text-white font-bold rounded-xl transition-all text-sm active:scale-95 shadow-lg shadow-primary-500/20 flex-shrink-0 min-h-[44px]">
-          <Plus size={16} />
-          <span className="hidden sm:inline">مهمة جديدة</span>
-          <span className="sm:hidden">جديد</span>
+          className="flex items-center gap-1.5 px-4 py-2.5 bg-primary-500 hover:bg-primary-600 text-white font-bold rounded-xl text-sm active:scale-95 shadow-lg shadow-primary-500/20 flex-shrink-0 min-h-[44px]">
+          <Plus size={16} /> جديد
         </button>
       </div>
 
-      {/* Today / All Toggle */}
+      {/* ── Circular Progress (Samsung style) ───────────────────── */}
+      {(totalTodayTasks > 0 || overdueTasks.length > 0) && (
+        <CircularProgress 
+          completed={actualCompletedToday} 
+          total={totalTodayTasks + overdueTasks.length} 
+          overdue={overdueTasks.length}
+        />
+      )}
+
+      {/* ── Quick Add Bar ───────────────────────────────────────── */}
+      <QuickAddBar onAdd={d => createMutation.mutate(d)} isPending={createMutation.isPending} />
+
+      {/* ── View Toggle ─────────────────────────────────────────── */}
       <div className="flex gap-1.5 p-1 bg-white/5 rounded-xl border border-white/5">
         {[
           { key: 'today', icon: <Sun size={14} />, label: 'اليوم' },
           { key: 'all', icon: <List size={14} />, label: 'كل المهام' },
         ].map(tab => (
           <button key={tab.key} onClick={() => setViewMode(tab.key)}
-            className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-sm font-bold transition-all active:scale-95 min-h-[44px] ${
-              viewMode === tab.key
-                ? 'bg-primary-500/20 text-primary-400 shadow-sm'
-                : 'text-gray-400 hover:text-white'
+            className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-sm font-bold min-h-[44px] transition-all ${
+              viewMode === tab.key ? 'bg-primary-500/20 text-primary-400' : 'text-gray-400 hover:text-white'
             }`}>
             {tab.icon} {tab.label}
           </button>
         ))}
       </div>
 
-      {/* Loading */}
+      {/* ── Category Filter Chips ──────────────────────────────── */}
+      {hasCategories && viewMode === 'today' && (
+        <div className="flex gap-1.5 overflow-x-auto scrollbar-hide pb-0.5">
+          <button
+            onClick={() => setCategoryFilter(null)}
+            className={`flex-shrink-0 text-[11px] px-3 py-1.5 rounded-full font-medium transition-all ${
+              !categoryFilter ? 'bg-primary-500/20 text-primary-400 border border-primary-500/30' : 'bg-white/5 text-gray-400'
+            }`}
+          >
+            الكل
+          </button>
+          {Object.entries(categoryCounts).map(([cat, count]) => {
+            const c = CATEGORIES[cat] || CATEGORIES.other;
+            return (
+              <button key={cat}
+                onClick={() => setCategoryFilter(categoryFilter === cat ? null : cat)}
+                className={`flex-shrink-0 text-[11px] px-3 py-1.5 rounded-full font-medium transition-all whitespace-nowrap ${
+                  categoryFilter === cat ? 'bg-primary-500/20 text-primary-400 border border-primary-500/30' : 'bg-white/5 text-gray-400'
+                }`}
+              >
+                {c.emoji} {c.label} ({count})
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── Task Lists ──────────────────────────────────────────── */}
       {isLoading ? (
         <div className="space-y-3">
-          {[...Array(4)].map((_, i) => (
-            <div key={i} className="h-20 rounded-2xl bg-white/5 animate-pulse" />
-          ))}
+          {[...Array(4)].map((_, i) => <div key={i} className="h-20 rounded-2xl bg-white/5 animate-pulse" />)}
         </div>
       ) : (
-        <div className="space-y-4">
+        <div className="space-y-3">
 
-          {/* ═══ SECTION ORDER: Overdue → Today Pending → Completed Today → All Completed → Upcoming ═══ */}
-
-          {/* 1. Overdue section */}
+          {/* SECTION 1: Overdue Tasks (RED) */}
           {overdueWithFlag.length > 0 && (
             <div>
-              <SectionHeader
-                icon="⚠️"
-                label="متأخرة"
-                count={overdueWithFlag.length}
-                color="text-red-400"
-                collapsed={collapsedSections.overdue}
-                onToggle={() => toggleSection('overdue')}
-              />
+              <SectionHeader icon="⚠️" label="متأخرة" count={overdueWithFlag.length} color="text-red-400"
+                collapsed={collapsedSections.overdue} onToggle={() => toggleSection('overdue')}
+                badge={{ text: 'تحتاج اهتمام', color: 'text-red-400 bg-red-500/10' }} />
               {!collapsedSections.overdue && (
                 <div className="space-y-2">
                   <AnimatePresence mode="popLayout">
                     {overdueWithFlag.map(t => (
-                      <TaskItem key={t.id} task={t}
-                        isRecommended={recommendedId === t.id}
-                        onComplete={handleComplete}
-                        onDelete={handleDelete}
-                        onEdit={handleEdit}
-                        onRecommendClick={handleRecommendClick} />
+                      <TaskCard key={t.id} task={t} isRecommended={recommendedId === t.id}
+                        onComplete={handleComplete} onDelete={handleDelete} onEdit={handleEdit} onSplit={setSplittingTask} />
                     ))}
                   </AnimatePresence>
                 </div>
@@ -810,158 +921,103 @@ export default function TasksView() {
             </div>
           )}
 
-          {/* 2. Today section (pending only) */}
+          {/* SECTION 2: Today's Pending Tasks */}
           <div>
-            <SectionHeader
-              icon="📅"
-              label="مهام اليوم"
-              count={todayPending.length}
-              color="text-white"
-              collapsed={collapsedSections.today}
-              onToggle={() => toggleSection('today')}
-            />
+            <SectionHeader icon="📅" label="مهام اليوم" count={todayPending.length} color="text-white"
+              collapsed={collapsedSections.today} onToggle={() => toggleSection('today')} />
             {!collapsedSections.today && todayPending.length > 0 && (
               <div className="space-y-2">
                 <AnimatePresence mode="popLayout">
                   {todayPending.map(t => (
-                    <TaskItem key={t.id} task={t}
-                      isRecommended={recommendedId === t.id}
-                      onComplete={handleComplete}
-                      onDelete={handleDelete}
-                      onEdit={handleEdit}
-                      onRecommendClick={handleRecommendClick} />
+                    <TaskCard key={t.id} task={t} isRecommended={recommendedId === t.id}
+                      onComplete={handleComplete} onDelete={handleDelete} onEdit={handleEdit} onSplit={setSplittingTask} />
                   ))}
                 </AnimatePresence>
               </div>
             )}
-            {!collapsedSections.today && todayPending.length === 0 && overdueTasks.length === 0 && (
-              <div className="text-center py-8">
-                <div className="text-4xl mb-3">☀️</div>
-                <p className="text-sm text-gray-400">لا توجد مهام لليوم</p>
-                <button onClick={() => setShowAdd(true)}
-                  className="mt-2 text-xs text-primary-400 hover:text-primary-300 flex items-center gap-1 mx-auto min-h-[44px]">
-                  <Plus size={12} /> أضف مهمة
-                </button>
+            {!collapsedSections.today && todayPending.length === 0 && overdueTasks.length === 0 && todayCompleted.length === 0 && (
+              <div className="text-center py-10">
+                <div className="text-5xl mb-3">☀️</div>
+                <p className="text-sm text-gray-400 mb-1">يومك فاضي</p>
+                <p className="text-xs text-gray-600">أضف مهمة جديدة للبدء</p>
               </div>
             )}
           </div>
 
-          {/* 3. Completed today section — ALWAYS shown (both today & all modes) */}
-          {todayCompleted.length > 0 && (
-            <div>
-              <SectionHeader
-                icon="✅"
-                label="مكتملة اليوم"
-                count={actualCompletedToday}
-                color="text-green-500"
-                collapsed={!!collapsedSections.todayCompleted}
-                onToggle={() => toggleSection('todayCompleted')}
-              />
-              {!collapsedSections.todayCompleted && (
-                <div className="space-y-2">
-                  {todayCompleted.map(t => (
-                    <TaskItem key={t.id} task={t}
-                      isRecommended={false}
-                      onComplete={() => {}}
-                      onDelete={handleDelete}
-                      onEdit={handleEdit}
-                      onRecommendClick={() => {}} />
-                  ))}
-                  <div className="text-center py-2">
-                    <p className="text-xs text-green-400/70">
-                      🎉 {actualCompletedToday} {actualCompletedToday === 1 ? 'مهمة مكتملة' : 'مهام مكتملة'} اليوم
+          {/* SECTION 3: Completed Today — ALWAYS VISIBLE, NEVER DISAPPEAR */}
+          {/* This section renders even if todayCompleted is empty to show "no completions yet" */}
+          <div>
+            <SectionHeader icon="✅" label="مكتملة اليوم" count={actualCompletedToday} color="text-green-500"
+              collapsed={!!collapsedSections.todayDone} onToggle={() => toggleSection('todayDone')}
+              badge={actualCompletedToday > 0 ? { text: `${actualCompletedToday} مهمة`, color: 'text-green-400 bg-green-500/10' } : undefined} />
+            {!collapsedSections.todayDone && (
+              <div className="space-y-2">
+                {todayCompleted.length > 0 ? (
+                  <>
+                    <AnimatePresence mode="popLayout">
+                      {todayCompleted.map(t => (
+                        <TaskCard key={t.id} task={t} isRecommended={false} showTimestamp
+                          onComplete={() => {}} onDelete={handleDelete} onEdit={handleEdit} />
+                      ))}
+                    </AnimatePresence>
+                    <p className="text-center text-xs text-green-400/60 py-1">
+                      ✅ {actualCompletedToday === 1 ? 'مهمة واحدة مكتملة' : `${actualCompletedToday} مهام مكتملة`} اليوم — لن تختفي
                     </p>
+                  </>
+                ) : (
+                  <div className="text-center py-4 bg-white/[0.02] rounded-xl border border-white/[0.03]">
+                    <p className="text-xs text-gray-500">لم تكتمل مهام اليوم بعد — أنجز مهمة وستظهر هنا</p>
                   </div>
-                </div>
-              )}
-            </div>
-          )}
+                )}
+              </div>
+            )}
+          </div>
 
-          {/* 4. All completed section (in 'all' view mode) — shown BEFORE upcoming */}
-          {showAllCompleted && allCompleted.length > 0 && (
+          {/* All completed (all mode) */}
+          {viewMode === 'all' && allCompleted.length > 0 && (
             <div>
-              <SectionHeader
-                icon="🏆"
-                label="كل المكتملة"
-                count={allCompleted.length}
-                color="text-gray-400"
-                collapsed={collapsedSections.allCompleted !== false}
-                onToggle={() => toggleSection('allCompleted')}
-              />
-              {collapsedSections.allCompleted === false && (
+              <SectionHeader icon="🏆" label="كل المكتملة" count={allCompleted.length} color="text-gray-400"
+                collapsed={collapsedSections.allDone !== false} onToggle={() => toggleSection('allDone')} />
+              {collapsedSections.allDone === false && (
                 <div className="space-y-2">
                   {allCompleted.slice(0, 20).map(t => (
-                    <TaskItem key={t.id} task={t}
-                      isRecommended={false}
-                      onComplete={() => {}}
-                      onDelete={handleDelete}
-                      onEdit={handleEdit}
-                      onRecommendClick={() => {}} />
+                    <TaskCard key={t.id} task={t} isRecommended={false} showTimestamp
+                      onComplete={() => {}} onDelete={handleDelete} onEdit={handleEdit} />
                   ))}
                 </div>
               )}
             </div>
           )}
 
-          {/* 5. Upcoming section (all mode only) — shown LAST */}
-          {showUpcoming && upcomingTasks.length > 0 && (
+          {/* Upcoming (all mode) */}
+          {viewMode === 'all' && upcomingTasks.length > 0 && (
             <div>
-              <SectionHeader
-                icon="🔜"
-                label="قادمة"
-                count={upcomingTasks.length}
-                color="text-blue-400"
-                collapsed={collapsedSections.upcoming}
-                onToggle={() => toggleSection('upcoming')}
-              />
+              <SectionHeader icon="🔜" label="قادمة" count={upcomingTasks.length} color="text-blue-400"
+                collapsed={collapsedSections.upcoming} onToggle={() => toggleSection('upcoming')} />
               {!collapsedSections.upcoming && (
                 <div className="space-y-2">
                   <AnimatePresence mode="popLayout">
                     {upcomingTasks.map(t => (
-                      <TaskItem key={t.id} task={t}
-                        isRecommended={false}
-                        onComplete={handleComplete}
-                        onDelete={handleDelete}
-                        onEdit={handleEdit}
-                        onRecommendClick={handleRecommendClick} />
+                      <TaskCard key={t.id} task={t} isRecommended={false}
+                        onComplete={handleComplete} onDelete={handleDelete} onEdit={handleEdit} onSplit={setSplittingTask} />
                     ))}
                   </AnimatePresence>
                 </div>
               )}
-            </div>
-          )}
-
-          {/* Global empty state */}
-          {isEmpty && (
-            <div className="text-center py-16">
-              <div className="text-6xl mb-4">{viewMode === 'today' ? '☀️' : '📋'}</div>
-              <h3 className="text-lg font-semibold text-gray-400 mb-2">
-                {viewMode === 'today' ? 'يومك فاضي!' : 'لا توجد مهام'}
-              </h3>
-              <p className="text-sm text-gray-600 mb-4">أضف مهمة جديدة للبدء</p>
-              <button onClick={() => setShowAdd(true)}
-                className="px-6 py-3 bg-primary-500 text-white rounded-xl font-bold text-sm active:scale-95 shadow-lg shadow-primary-500/20 min-h-[48px]">
-                <Plus size={16} className="inline ml-1" /> إضافة مهمة
-              </button>
             </div>
           )}
         </div>
       )}
 
-      {/* Add Task Modal */}
+      {/* ── Modals ──────────────────────────────────────────────── */}
       <AnimatePresence>
-        {showAdd && (
-          <AddTaskModal isOpen={showAdd} onClose={() => setShowAdd(false)}
-            onSubmit={d => createMutation.mutate(d)} isPending={createMutation.isPending} />
-        )}
+        {showAdd && <AddTaskModal isOpen={showAdd} onClose={() => setShowAdd(false)} onSubmit={d => createMutation.mutate(d)} isPending={createMutation.isPending} />}
       </AnimatePresence>
-
-      {/* Edit Task Modal */}
       <AnimatePresence>
-        {editingTask && (
-          <EditTaskModal isOpen={!!editingTask} onClose={() => setEditingTask(null)}
-            task={editingTask} onSubmit={handleUpdate} isPending={updateMutation.isPending} />
-        )}
+        {editingTask && <EditTaskModal isOpen={!!editingTask} onClose={() => setEditingTask(null)} task={editingTask} onSubmit={handleUpdate} isPending={updateMutation.isPending} />}
+      </AnimatePresence>
+      <AnimatePresence>
+        {splittingTask && <SmartSplitModal isOpen={!!splittingTask} onClose={() => setSplittingTask(null)} task={splittingTask} onSplit={handleSplitTask} />}
       </AnimatePresence>
     </div>
   );

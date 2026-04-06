@@ -13,7 +13,7 @@
  * - Loading/error states for dashboard query
  */
 
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { dashboardAPI } from '../../utils/api';
 import Header from '../layout/Header';
@@ -36,17 +36,19 @@ import FocusTimerView from '../focus/FocusTimerView';
 import ExecutionScreen from '../execution/ExecutionScreen';
 import DailyExecutionFlow from '../execution/DailyExecutionFlow';
 import ExportView from '../export/ExportView';
+import GoalsView from '../goals/GoalsView';
 import useAuthStore from '../../store/authStore';
 import ErrorBoundary from '../common/ErrorBoundary';
 import MobileBottomNav, { getPersistedView } from '../layout/MobileBottomNav';
 import QuickCommandInput from '../flow/QuickCommandInput';
 import GlobalSearch from '../search/GlobalSearch';
-import QuickWidget from '../widget/QuickWidget';
+// QuickWidget REMOVED — Phase 10: floating button completely eliminated per user request
 
+// Merged: "execution" and "daily_flow" point to the SAME DailyExecutionFlow
 const VIEWS = {
   dashboard:     DashboardHome,
   daily_flow:    DailyExecutionFlow,
-  execution:     ExecutionScreen,
+  execution:     DailyExecutionFlow,  // merged with daily_flow
   tasks:         TasksView,
   habits:        HabitsView,
   mood:          MoodView,
@@ -68,6 +70,7 @@ const VIEWS = {
   settings:      SettingsView,
   focus:         FocusTimerView,
   export:        ExportView,
+  goals:         GoalsView,
 };
 
 // Views that need fullHeight mode (own scroll management)
@@ -93,15 +96,50 @@ export default function Dashboard() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
+
+  // Listen for navigation events from QuickWidget
+  useEffect(() => {
+    const handleNav = (e) => {
+      const view = e?.detail?.view;
+      if (view && VIEWS[view]) setActiveView(view);
+    };
+    window.addEventListener('lifeflow-navigate', handleNav);
+    return () => window.removeEventListener('lifeflow-navigate', handleNav);
+  }, []);
   const userPlan = user?.subscription_plan || 'free';
 
-  const { data: dashboardData, isLoading, isError, refetch } = useQuery({
+  const { data: dashboardData, isLoading: queryLoading, isError, refetch } = useQuery({
     queryKey: ['dashboard'],
     queryFn: dashboardAPI.getDashboard,
     staleTime: 3 * 60 * 1000,
     refetchInterval: 5 * 60 * 1000,
-    retry: 2,
+    retry: 1, // Phase 13: Reduced from 2 to 1 to prevent long loading
   });
+
+  // Phase 13: CRITICAL FIX — Dashboard loading timeout.
+  // If dashboardAPI takes >3s, render the page anyway with null data.
+  // This prevents the app from staying stuck on the skeleton forever.
+  const [dashLoadTimedOut, setDashLoadTimedOut] = useState(false);
+  const dashTimerRef = useRef(null);
+  useEffect(() => {
+    if (!queryLoading) {
+      setDashLoadTimedOut(false);
+      if (dashTimerRef.current) { clearTimeout(dashTimerRef.current); dashTimerRef.current = null; }
+      return;
+    }
+    // If already timed out, don't restart timer
+    if (dashLoadTimedOut) return;
+    dashTimerRef.current = setTimeout(() => {
+      if (!dashboardData) {
+        console.warn('[Dashboard][Phase13] Dashboard query timed out after 3s — rendering with empty data');
+        setDashLoadTimedOut(true);
+      }
+    }, 3000);
+    return () => { if (dashTimerRef.current) clearTimeout(dashTimerRef.current); };
+  }, [queryLoading, dashboardData, dashLoadTimedOut]);
+
+  // Phase 13: isLoading is false if timed out
+  const isLoading = queryLoading && !dashLoadTimedOut;
 
   // Safe view resolution — prevent crash if view name is invalid
   const ActiveView = VIEWS[activeView] || DashboardHome;
@@ -151,10 +189,7 @@ export default function Dashboard() {
           </MobileLayout>
         </div>
 
-        {/* Quick Widget — daily summary */}
-        <ErrorBoundary compact>
-          <QuickWidget />
-        </ErrorBoundary>
+        {/* QuickWidget REMOVED — Phase 10: floating ⚡ button completely eliminated */}
 
         {/* Global Search Modal */}
         <GlobalSearch

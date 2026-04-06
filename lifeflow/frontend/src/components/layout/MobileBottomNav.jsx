@@ -14,7 +14,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Home, CheckSquare, Target, Sparkles, MoreHorizontal, X,
   BarChart2, Bell, Calendar, Heart, Globe, Link2, Activity,
-  Crown, Settings, LogOut, User, ChevronDown, Timer, Rocket, FileDown,
+  Crown, Settings, LogOut, User, ChevronDown, Timer, Rocket, FileDown, Flag,
 } from 'lucide-react';
 import useAuthStore from '../../store/authStore';
 import toast from 'react-hot-toast';
@@ -36,9 +36,9 @@ export function persistView(view) {
 // ─── Primary nav items (always visible) ───────────────────────────
 const NAV_ITEMS = [
   { id: 'dashboard', icon: Home,        label: 'الرئيسية' },
+  { id: 'daily_flow',icon: Rocket,      label: 'نفّذ' },
   { id: 'tasks',     icon: CheckSquare, label: 'المهام',   badge: 'tasks' },
   { id: 'habits',    icon: Target,      label: 'العادات' },
-  { id: 'assistant', icon: Sparkles,    label: 'المساعد' },
   { id: '__more__',  icon: MoreHorizontal, label: 'المزيد' },
 ];
 
@@ -47,8 +47,8 @@ const MORE_SECTIONS = [
   {
     title: 'الأدوات',
     items: [
-      { id: 'daily_flow',    icon: Rocket,    label: 'خطة يومك',        desc: 'ابدأ وأدر يومك بالكامل' },
-      { id: 'execution',     icon: Target,    label: 'نفّذ الآن',       desc: 'وضع التنفيذ المركز' },
+      { id: 'assistant',     icon: Sparkles, label: 'المساعد الذكي',  desc: 'تكلم وهو هيساعدك' },
+      { id: 'goals',         icon: Flag,      label: 'الأهداف',         desc: 'إدارة وتتبع الأهداف' },
       { id: 'focus',         icon: Timer,     label: 'وقت التركيز',    desc: 'بومودورو تايمر' },
       { id: 'calendar',      icon: Calendar,  label: 'التقويم',         desc: 'الأحداث والمواعيد' },
       { id: 'mood',          icon: Heart,     label: 'المزاج',          desc: 'تتبع المزاج اليومي' },

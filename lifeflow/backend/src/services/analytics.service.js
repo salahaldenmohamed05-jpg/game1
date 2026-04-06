@@ -81,6 +81,7 @@ async function fetchAnalyticsData(userId, dateStr, timezone = 'Africa/Cairo') {
     Task.findAll({
       where: { user_id: userId },
       order: [['due_date', 'ASC']],
+      raw: true,
     }),
 
     // Active habits (this is the REAL total, not log count)
@@ -291,10 +292,11 @@ async function getAnalyticsSummary(userId, timezone = 'Africa/Cairo') {
   return {
     productivity_score: productivityScore,
     tasks: {
-      total:     data.todayTasks.length + data.overdueTasks.length,
-      completed: data.completedToday.length,
-      pending:   data.pendingTasks.length,
-      overdue:   overdueTzAware,
+      total:           data.allTasks.length,
+      completed:       data.allTasks.filter(t => t.status === 'completed').length,
+      completed_today: data.completedToday.length,
+      pending:         data.pendingTasks.length,
+      overdue:         overdueTzAware,
     },
     habits: {
       total:      data.habitsScheduledToday.length,

@@ -6,6 +6,17 @@
  */
 
 require('dotenv').config({ override: true }); // override any sandbox env vars with .env values
+
+// ── Safe Demo Mode ─────────────────────────────────────────────────────────
+// When DEMO_MODE=true (or when Stripe/Redis/FCM are unavailable), the system
+// runs in safe demo mode: disabled Stripe charges, mock FCM, in-memory fallback
+// for Redis, and never crashes on missing external services.
+const DEMO_MODE = process.env.DEMO_MODE === 'true' ||
+  process.env.NODE_ENV !== 'production' ||
+  !process.env.STRIPE_SECRET_KEY ||
+  !process.env.REDIS_URL;
+global.__LIFEFLOW_DEMO_MODE = DEMO_MODE;
+
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
@@ -54,10 +65,15 @@ const vaRoutes           = require('./routes/va.routes');          // Full Adapt
 const searchRoutes       = require('./routes/search.routes');      // Global Search
 const exportRoutes       = require('./routes/export.routes');      // Data Export (CSV/JSON/PDF)
 const dailyFlowRoutes    = require('./routes/daily-flow.routes');  // Phase 4: Daily Execution Flow
+const phase6Routes       = require('./routes/phase6.routes');      // Phase 6: External Execution Layer
+const phase7Routes       = require('./routes/phase7.routes');      // Phase 7: Production Infrastructure
+const brainRoutes        = require('./routes/brain.routes');       // Phase 12: Real-Time Cognitive Brain
 
 // Import scheduler
 const { initScheduler } = require('./services/scheduler.service');
 const { initProactiveMonitor } = require('./services/proactive.monitor.service');
+const { initQueue } = require('./services/notification.queue.service');
+const { trackingMiddleware } = require('./services/event.tracking.service');
 
 const app = express();
 const server = http.createServer(app);
@@ -83,6 +99,28 @@ io.on('connection', (socket) => {
   socket.on('join_user_room', (userId) => {
     socket.join(`user_${userId}`);
     logger.info(`User ${userId} joined their room`);
+  });
+
+  // Phase 12.6: Frontend requests immediate brain state on connect
+  // This triggers INITIAL_LOAD recompute and pushes the result via brain:update
+  socket.on('brain:request_initial', async (data) => {
+    const userId = data?.userId;
+    logger.info(`[Brain][Socket] brain:request_initial received. userId=${userId}, socketId=${socket.id}`);
+    if (!userId) {
+      logger.warn(`[Brain][Socket] brain:request_initial: no userId, ignoring`);
+      return;
+    }
+    try {
+      const startMs = Date.now();
+      const brainService = require('./services/brain.service');
+      const state = await brainService.getBrainState(userId);
+      const elapsed = Date.now() - startMs;
+      // Push directly to this socket (not broadcast — just the requesting client)
+      socket.emit('brain:update', { userId, brainState: state });
+      logger.info(`[Brain][Socket] Pushed initial state to socket ${socket.id} for user ${userId} in ${elapsed}ms. Decision: "${state?.currentDecision?.taskTitle || state?.currentDecision?.type || 'null'}"`);
+    } catch (err) {
+      logger.error(`[Brain][Socket] brain:request_initial error for user ${userId}: ${err.message}`);
+    }
   });
 
   socket.on('disconnect', () => {
@@ -125,6 +163,9 @@ app.use((req, res, next) => {
 // ============================================
 const API = '/api/v1';
 
+// ── Phase 7: Event tracking middleware (BEFORE routes so it attaches res.on('finish') listeners) ──
+app.use(`${API}`, trackingMiddleware);
+
 // ── Rate limiters per tier ──────────────────────────────────────────────────
 app.use(`${API}/auth`, authLimiter, authRoutes);
 app.use(`${API}/users`, userRoutes);
@@ -137,23 +178,26 @@ app.use(`${API}/calendar`, calendarRoutes);
 app.use(`${API}/voice`, voiceRoutes);
 app.use(`${API}/ai/v2`,        aiStrictLimiter, aiCentralRoutes);  // Centralized AI layer (Gemini/Groq) — strict rate limit
 app.use(`${API}/ai`, aiLimiter, aiRoutes);
-app.use(`${API}/dashboard`, cacheMiddleware(60, 'dashboard'), dashboardRoutes); // Cache 60s
-app.use(`${API}/performance`, cacheMiddleware(120, 'perf'), performanceRoutes); // Cache 2min
+app.use(`${API}/dashboard`, dashboardRoutes); // Cache moved inside routes (after auth)
+app.use(`${API}/performance`, performanceRoutes);
 app.use(`${API}/subscription`, subscriptionRoutes);
-app.use(`${API}/intelligence`, cacheMiddleware(120, 'intel'), intelligenceRoutes); // Cache 2min
+app.use(`${API}/intelligence`, intelligenceRoutes);
 app.use(`${API}/adaptive`,     adaptiveRoutes);
 app.use(`${API}/assistant`,    aiLimiter, assistantRoutes);  // New: AI Personal Assistant
 app.use(`${API}/chat`,         aiLimiter, chatRoutes);        // Phase 16: Persistent chat sessions
 app.use(`${API}/logs`,         logsRoutes);        // Error & activity logging
 app.use(`${API}/profile-settings`, profileRoutes);   // Profile & Settings core system
 app.use(`${API}/decision`,         decisionRoutes);   // Phase K: Core Brain Decision Engine
-app.use(`${API}/analytics`,        cacheMiddleware(180, 'analytics'), analyticsRoutes); // Cache 3min
+app.use(`${API}/analytics`,        analyticsRoutes); // Cache moved inside routes (after auth)
 app.use(`${API}/user-model`,       userModelRoutes);   // Phase P: Persistent Per-User Intelligence
 app.use(`${API}/engine`,           engineRoutes);       // Execution Engine: Life Execution System
 app.use(`${API}/va`,               vaRoutes);             // Full Adaptive VA: Presence + Communication + Follow-up
 app.use(`${API}/search`,           searchLimiter, searchRoutes);     // Global Search
 app.use(`${API}/export`,           exportLimiter, exportRoutes);     // Data Export
-app.use(`${API}/daily-flow`,       dailyFlowRoutes);                 // Phase 4: Daily Execution Flow
+app.use(`${API}/daily-flow`,       writeLimiter, dailyFlowRoutes);    // Phase 4: Daily Execution Flow (rate limited)
+app.use(`${API}/phase6`,           phase6Routes);                    // Phase 6: External Execution Layer
+app.use(`${API}/phase7`,           phase7Routes);                    // Phase 7: Production Infrastructure
+app.use(`${API}/brain`,            brainRoutes);                     // Phase 12: Real-Time Cognitive Brain
 
 // ============================================
 // Health Check
@@ -174,6 +218,7 @@ const healthHandler = (req, res) => {
     status: 'ok',
     app: 'LifeFlow API',
     version: '1.0.0',
+    demo_mode: global.__LIFEFLOW_DEMO_MODE || false,
     timestamp: new Date().toISOString(),
     timezone: process.env.DEFAULT_TIMEZONE || 'Africa/Cairo',
     ai: aiStatus,
@@ -233,6 +278,24 @@ async function startServer() {
     // Start AI proactive monitoring
     initProactiveMonitor(io);
     logger.info('✅ Proactive AI monitor started');
+
+    // Phase 7: Initialize notification queue
+    try {
+      global.__lifeflow_io = io; // Make io available globally for queue workers
+      await initQueue();
+      logger.info('✅ Notification queue initialized');
+    } catch (queueErr) {
+      logger.warn('⚠️  Notification queue not available, using direct send:', queueErr.message);
+    }
+
+    // Phase 12: Initialize Brain Service with Socket.IO
+    try {
+      const brainService = require('./services/brain.service');
+      brainService.init(io);
+      logger.info('✅ Brain service initialized');
+    } catch (brainErr) {
+      logger.warn('⚠️  Brain service not available:', brainErr.message);
+    }
 
     // Start HTTP server with EADDRINUSE protection
     server.on('error', (err) => {

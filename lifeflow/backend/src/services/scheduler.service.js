@@ -65,7 +65,64 @@ function initScheduler(io) {
   // Step 2: Run daily execution loop at 8:00 AM
   cron.schedule('0 8 * * *', () => runDailyExecutionLoop(), { timezone: 'Africa/Cairo' });
 
-  logger.info('✅ All schedulers initialized');
+  // ── Phase 6: Smart Notification Engine (runs every 90 minutes during waking hours) ──
+  cron.schedule('30 7,9,10,12,13,15,17,18,20,22 * * *', () => runSmartNotificationEngine(), { timezone: 'Africa/Cairo' });
+
+  // ── Phase 7: Behavioral data persistence — daily profile update at 2:30 AM ──
+  cron.schedule('30 2 * * *', () => runBehavioralPersistence(), { timezone: 'Africa/Cairo' });
+
+  logger.info('✅ All schedulers initialized (Phase 6 + Phase 7 Production Infrastructure)');
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Phase 6: Smart Notification Engine — runs periodically for all users
+// ──────────────────────────────────────────────────────────────────────────────
+async function runSmartNotificationEngine() {
+  logger.info('🔔 [CRON] Running Phase 6 Smart Notification Engine...');
+  try {
+    const smartEngine = require('./smart.notification.engine');
+    await smartEngine.runForAllUsers(ioInstance);
+    logger.info('🔔 [CRON] Smart Notification Engine complete');
+  } catch (err) {
+    logger.error('[CRON] Smart Notification Engine error:', err.message);
+    // Phase 7: Never silently fail — log to Redis
+    try {
+      const redis = require('./redis.persistence.service');
+      await redis.logFailure('scheduler_smart_engine', { error: err.message, stack: err.stack?.slice(0, 500) });
+    } catch (_) {}
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Phase 7: Behavioral data persistence — persists profiles for AI
+// ──────────────────────────────────────────────────────────────────────────────
+async function runBehavioralPersistence() {
+  logger.info('🧠 [CRON] Running Phase 7 behavioral data persistence...');
+  try {
+    const redis = require('./redis.persistence.service');
+    const users = await User.findAll({ where: { is_active: true }, attributes: ['id'], raw: true });
+    
+    let updated = 0;
+    for (const user of users.slice(0, 500)) {
+      try {
+        const profile = await redis.getBehavioralProfile(user.id);
+        if (profile.totalDaysTracked > 0) {
+          await redis.updateBehavioralProfile(user.id, {
+            lastPersisted: new Date().toISOString(),
+          });
+          updated++;
+        }
+      } catch (_) {}
+    }
+    
+    logger.info(`🧠 [CRON] Behavioral persistence complete: ${updated} profiles updated`);
+  } catch (err) {
+    logger.error('[CRON] Behavioral persistence error:', err.message);
+    try {
+      const redis = require('./redis.persistence.service');
+      await redis.logFailure('scheduler_behavioral_persist', { error: err.message });
+    } catch (_) {}
+  }
 }
 
 /**

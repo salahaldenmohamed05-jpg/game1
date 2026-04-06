@@ -51,11 +51,13 @@ const keyGenerator = (req) => {
   return req.user?.id || req.ip;
 };
 
-// ── Auth Limiter (strict) ───────────────────────────────────────────────────
-// 15 requests per 15 minutes per IP — protects against brute-force
+// ── Auth Limiter (strict in production, relaxed in demo) ────────────────────
+// Production: 15 requests per 15 minutes per IP — protects against brute-force
+// Demo mode: 200 requests per 15 minutes — allows QA testing
+const isDemoMode = global.__LIFEFLOW_DEMO_MODE || process.env.NODE_ENV !== 'production';
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max:      15,
+  max:      isDemoMode ? 200 : 15,
   standardHeaders: true,
   legacyHeaders:   false,
   handler: createRateLimitHandler('auth'),
@@ -118,10 +120,10 @@ const exportLimiter = rateLimit({
 });
 
 // ── Global Limiter (lenient) ────────────────────────────────────────────────
-// 200 requests per minute per IP — general DoS protection (reduced from 300)
+// 500 requests per minute per IP in demo, 200 in production — general DoS protection
 const globalLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max:      200,
+  max:      isDemoMode ? 500 : 200,
   standardHeaders: true,
   legacyHeaders:   false,
   handler: createRateLimitHandler('global'),

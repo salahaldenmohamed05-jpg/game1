@@ -232,6 +232,7 @@ export const goalsAPI = {
   getGoals: () => api.get('/engine/goals'),
   createGoal: (data) => api.post('/engine/goals', data),
   updateGoal: (id, data) => api.put(`/engine/goals/${id}`, data),
+  deleteGoal: (id) => api.delete(`/engine/goals/${id}`),
 };
 
 // ─── Mood API ─────────────────────────────────────────────────────────────────
@@ -358,6 +359,17 @@ export const decisionAPI = {
   getSignals: (params = {}) => api.get('/decision/signals', { params }),
   getDebug: () => api.get('/decision/debug'),
   sendFeedback: (data) => api.post('/decision/feedback', data),
+};
+
+// ─── Brain API (Phase 12.5 — Self-Adjusting Cognitive Brain) ────────────────
+export const brainAPI = {
+  getState:     () => api.get('/brain/state'),
+  recompute:    (triggerEvent) => api.post('/brain/recompute', { triggerEvent }),
+  reject:       (data) => api.post('/brain/reject', data),
+  activity:     () => api.post('/brain/activity'),
+  getMemory:    () => api.get('/brain/memory'),
+  getSignals:   () => api.get('/brain/signals'),
+  getEventLog:  (limit = 20) => api.get('/brain/eventlog', { params: { limit } }),
 };
 
 // ─── UserModel API (Phase P — Persistent Per-User Intelligence) ─────────────
@@ -572,4 +584,31 @@ export const vaAPI = {
 
   // Phase 7: Testing
   testScenarios:     ()     => api.get('/va/test-scenarios'),
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Phase 6: External Execution Layer API
+// ═══════════════════════════════════════════════════════════════════════════════
+export const phase6API = {
+  // Adaptive Intelligence V2
+  getAdaptiveState:     ()     => api.get('/phase6/adaptive-state'),
+  reportBlockEvent:     (data) => api.post('/phase6/block-event', data),
+  getReorderedPlan:     ()     => api.get('/phase6/reorder-plan'),
+
+  // Cross-Day Intelligence
+  getWeeklyNarrative:   ()     => api.get('/phase6/weekly-narrative'),
+  getStreakWarnings:    ()     => api.get('/phase6/streak-warnings'),
+  checkPerfectDay:      ()     => api.get('/phase6/perfect-day'),
+  getComebackStatus:    ()     => api.get('/phase6/comeback-status'),
+
+  // Smart Notification Engine
+  triggerNotifications: ()     => api.post('/phase6/trigger-notifications'),
+  getNotifSchedule:     ()     => api.get('/phase6/notification-schedule'),
+
+  // Instant Action Layer
+  getWidgetData:        ()     => api.get('/phase6/widget-data'),
+  quickAction:          (data) => api.post('/phase6/quick-action', data),
+
+  // Monetization
+  getSubscriptionGate:  ()     => api.get('/phase6/subscription-gate'),
 };

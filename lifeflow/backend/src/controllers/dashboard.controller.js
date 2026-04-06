@@ -1,7 +1,11 @@
 /**
- * Dashboard Controller
- * =====================
- * لوحة التحكم الرئيسية - ملخص شامل لليوم
+ * Dashboard Controller — Phase 4.5: System Hardening
+ * =====================================================
+ * HARDENING CHANGES:
+ *   - Uses analytics.service.js as single source of truth for ALL counts
+ *   - Fallback calculates from ALL tasks (not just today's subset)
+ *   - Consistent task totals: total >= completed + pending always
+ *   - Greeting uses first_name with safe fallback
  */
 
 const { Op } = require('sequelize');
@@ -25,20 +29,13 @@ exports.getDashboard = async (req, res) => {
     const today = now.format('YYYY-MM-DD');
     const weekStart = now.clone().startOf('isoWeek').format('YYYY-MM-DD');
 
-    // Fetch all data in parallel
-    const [todayTasks, habits, habitLogs, todayMood, recentInsights,
+    // HARDENED: Fetch ALL tasks for accurate counts, plus today-specific data
+    const [allTasks, habits, habitLogs, todayMood, recentInsights,
            unreadNotifications, activeGoals, weekTasks] = await Promise.all([
-      // Today's tasks
+      // ALL tasks — not just today's subset
       Task.findAll({
-        where: {
-          user_id: req.user.id,
-          [Op.or]: [
-            { due_date: { [Op.between]: [`${today}T00:00:00`, `${today}T23:59:59`] } },
-            { status: 'in_progress' },
-          ],
-        },
+        where: { user_id: req.user.id },
         order: [['ai_priority_score', 'DESC'], ['due_date', 'ASC']],
-        limit: 10,
       }),
       // Active habits
       Habit.findAll({ where: { user_id: req.user.id, is_active: true } }),
@@ -65,6 +62,25 @@ exports.getDashboard = async (req, res) => {
       }),
     ]);
 
+    // HARDENED: Consistent task categorization
+    const completedTasks = allTasks.filter(t => t.status === 'completed');
+    const pendingTasks = allTasks.filter(t => t.status === 'pending' || t.status === 'in_progress');
+    const overdueTasks = allTasks.filter(t => {
+      if (t.status === 'completed') return false;
+      if (!t.due_date) return false;
+      const dueStr = typeof t.due_date === 'string' ? t.due_date.split('T')[0] : moment(t.due_date).tz(timezone).format('YYYY-MM-DD');
+      return dueStr < today;
+    });
+    const todayTasks = allTasks.filter(t => {
+      if (t.status === 'in_progress') return true;
+      const dueStr = t.due_date ? (typeof t.due_date === 'string' ? t.due_date.split('T')[0] : moment(t.due_date).tz(timezone).format('YYYY-MM-DD')) : null;
+      return dueStr === today;
+    });
+    const completedToday = allTasks.filter(t => {
+      if (t.status !== 'completed' || !t.completed_at) return false;
+      return moment(t.completed_at).tz(timezone).format('YYYY-MM-DD') === today;
+    });
+
     // Calculate summary stats — Phase O: use analytics.service.js for accurate data
     let analyticsSummary = null;
     try {
@@ -76,37 +92,20 @@ exports.getDashboard = async (req, res) => {
     habitLogs.forEach(l => { habitLogMap[l.habit_id] = l; });
 
     const completedHabits = habitLogs.filter(l => l.completed).length;
-    const completedTasks = todayTasks.filter(t => t.status === 'completed').length;
-    // Timezone-aware overdue calculation (uses user's timezone, not server UTC)
-    const nowInTz = moment().tz(timezone);
-    const overdueTasks = todayTasks.filter(t => {
-      if (t.status === 'completed') return false;
-      if (!t.due_date) return false;
-      // Parse due_date in the user's timezone
-      let dueMoment = moment.tz(t.due_date, 'YYYY-MM-DD', timezone);
-      // If due_time exists (e.g. "14:30"), set the time on the due date
-      if (t.due_time) {
-        const [h, m] = t.due_time.split(':').map(Number);
-        dueMoment = dueMoment.hour(h || 0).minute(m || 0).second(0);
-      } else {
-        // No specific time — overdue only if date has fully passed
-        dueMoment = dueMoment.endOf('day');
-      }
-      return dueMoment.isBefore(nowInTz);
-    }).length;
 
     // Productivity score — use analytics service if available
-    const productivityScore = analyticsSummary?.productivity_score ?? calculateScore(todayTasks, habitLogs, todayMood);
+    const productivityScore = analyticsSummary?.productivity_score ?? calculateScore(allTasks, habitLogs, todayMood);
 
-    // Greeting based on time
-    const greeting = getGreeting(now.hour(), req.user.name);
+    // HARDENED: Greeting uses first_name with safe fallback
+    const firstName = req.user.first_name || req.user.name?.split(' ')[0] || 'صديقي';
+    const greeting = getGreeting(now.hour(), firstName);
 
-    // Smart suggestion from AI
+    // Smart suggestion from AI (non-blocking)
     let smartSuggestion = null;
     try {
       smartSuggestion = await aiService.getSmartSuggestion({
         user: req.user,
-        tasks: todayTasks,
+        tasks: [...todayTasks, ...overdueTasks].slice(0, 15),
         habits: habits,
         habitLogs: habitLogs,
         mood: todayMood,
@@ -115,6 +114,24 @@ exports.getDashboard = async (req, res) => {
     } catch (aiErr) {
       logger.warn('Smart suggestion failed:', aiErr.message);
     }
+
+    // HARDENED: Build consistent summary — total always >= completed + pending
+    const taskSummary = analyticsSummary?.tasks ?? {
+      total: allTasks.length,
+      completed: completedTasks.length,
+      completed_today: completedToday.length,
+      pending: pendingTasks.length,
+      overdue: overdueTasks.length,
+    };
+
+    const habitSummary = analyticsSummary?.habits ?? {
+      total: habits.length,
+      completed: completedHabits,
+      pending: habits.length - completedHabits,
+      percentage: habits.length > 0
+        ? Math.round((completedHabits / habits.length) * 100)
+        : 0,
+    };
 
     res.json({
       success: true,
@@ -126,52 +143,34 @@ exports.getDashboard = async (req, res) => {
           formatted: now.locale('ar').format('D MMMM YYYY'),
           time: now.format('HH:mm'),
         },
-        summary: analyticsSummary ? {
-          productivity_score: analyticsSummary.productivity_score,
-          tasks: analyticsSummary.tasks,
-          habits: analyticsSummary.habits,
-          mood: analyticsSummary.mood,
-          unread_notifications: unreadNotifications,
-        } : {
+        summary: {
           productivity_score: productivityScore,
-          tasks: {
-            total: todayTasks.length,
-            completed: completedTasks,
-            pending: todayTasks.length - completedTasks,
-            overdue: overdueTasks,
-          },
-          habits: {
-            total: habits.length,
-            completed: completedHabits,
-            pending: habits.length - completedHabits,
-            percentage: habits.length > 0
-              ? Math.round((completedHabits / habits.length) * 100)
-              : 0,
-          },
-          mood: todayMood ? {
+          tasks: taskSummary,
+          habits: habitSummary,
+          mood: analyticsSummary?.mood ?? (todayMood ? {
             score: todayMood.mood_score,
             emotions: todayMood.emotions,
             has_checked_in: true,
           } : {
             has_checked_in: false,
             prompt: 'كيف كان مزاجك اليوم؟',
-          },
+          }),
           unread_notifications: unreadNotifications,
         },
-        today_tasks: todayTasks.map(t => ({
-          ...t.toJSON(),
+        today_tasks: [...overdueTasks, ...todayTasks].slice(0, 20).map(t => ({
+          ...(t.toJSON ? t.toJSON() : t),
           completed_today: t.status === 'completed',
         })),
         habits: habits.map(h => ({
-          ...h.toJSON(),
+          ...(h.toJSON ? h.toJSON() : h),
           completed_today: habitLogMap[h.id]?.completed || false,
           log: habitLogMap[h.id] || null,
         })),
         recent_insights: recentInsights,
         active_goals: activeGoals.map(g => ({
           ...(g.toJSON ? g.toJSON() : g),
-          linkedTasks: todayTasks.filter(t => t.goal_id === g.id).length,
-          completedTasks: todayTasks.filter(t => t.goal_id === g.id && t.status === 'completed').length,
+          linkedTasks: allTasks.filter(t => t.goal_id === g.id).length,
+          completedTasks: allTasks.filter(t => t.goal_id === g.id && t.status === 'completed').length,
         })),
         week_progress: analyticsSummary?.week_progress ?? {
           total: weekTasks.length,
@@ -212,7 +211,7 @@ function calculateScore(tasks, habitLogs, mood) {
 }
 
 function getGreeting(hour, name) {
-  const firstName = name?.split(' ')[0] || 'عزيزي';
+  const firstName = name || 'صديقي';
   if (hour >= 5 && hour < 12) return `صباح الخير، ${firstName}! ☀️`;
   if (hour >= 12 && hour < 17) return `مساء النور، ${firstName}! 🌤️`;
   if (hour >= 17 && hour < 21) return `أهلاً بك، ${firstName}! 🌇`;

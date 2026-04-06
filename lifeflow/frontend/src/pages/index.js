@@ -97,11 +97,20 @@ export default function HomePage() {
       }
     } catch (_) {}
 
+    // No auth — also proceed immediately (will show login page)
+    try {
+      const stored = localStorage.getItem('lifeflow-auth');
+      if (!stored) {
+        setHydrated(true);
+        return;
+      }
+    } catch (_) {}
+
     // Wait for persist middleware signal
     useAuthStore.waitForHydration().then(() => setHydrated(true));
 
-    // HARD CAP: 2 seconds max loading screen
-    const hardTimeout = setTimeout(() => setHydrated(true), 2000);
+    // Phase 13: HARD CAP reduced to 800ms (from 2s) — never block app for 2s
+    const hardTimeout = setTimeout(() => setHydrated(true), 800);
     return () => clearTimeout(hardTimeout);
   }, []);
 

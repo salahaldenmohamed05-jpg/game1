@@ -13,9 +13,23 @@ const logger = require('../utils/logger');
 const moment = require('moment-timezone');
 const { getNow, toUTC, todayString } = require('../utils/time.util');
 
+// ── Input sanitization ─────────────────────────────────────────────────────
+function sanitizeText(str) {
+  if (typeof str !== 'string') return str;
+  return str
+    .replace(/<[^>]*>/g, '')           // Strip HTML tags
+    .replace(/[<>"'`;]/g, '')          // Remove dangerous chars
+    .trim()
+    .slice(0, 1000);                   // Max 1000 chars
+}
+
 // Step 1: Wire behavior events into task lifecycle
 function getBehaviorService() {
   try { return require('../services/behavior.model.service'); } catch (_) { return null; }
+}
+// Phase 12: EventBus for brain recomputation
+function getEventBus() {
+  try { return require('../core/eventBus'); } catch (_) { return null; }
 }
 // Step 2: Wire UserModel events into task lifecycle (Phase P)
 function getUserModelService() {
@@ -407,6 +421,12 @@ exports.createTask = async (req, res) => {
   try {
     const taskData = { ...req.body, user_id: req.user.id };
 
+    // HARDENED: Sanitize text fields to prevent XSS
+    if (taskData.title) taskData.title = sanitizeText(taskData.title);
+    if (taskData.description) taskData.description = sanitizeText(taskData.description).slice(0, 5000);
+    if (taskData.category) taskData.category = sanitizeText(taskData.category).slice(0, 100);
+    if (taskData.notes) taskData.notes = sanitizeText(taskData.notes).slice(0, 2000);
+
     // Normalize start_time / end_time to UTC string if provided as local strings
     if (taskData.start_time) {
       const utc = toUTC(taskData.start_time);
@@ -466,6 +486,10 @@ exports.createTask = async (req, res) => {
     const io = req.app.get('io');
     io?.to(`user_${req.user.id}`).emit('task_created', task);
 
+    // Phase 12: Emit TASK_CREATED → triggers brain.recompute
+    const eb = getEventBus();
+    if (eb) eb.emit(eb.EVENT_TYPES.TASK_CREATED, { userId: req.user.id, taskId: task.id, title: task.title });
+
     res.status(201).json({
       success: true,
       message: 'تم إنشاء المهمة بنجاح ✅',
@@ -490,6 +514,12 @@ exports.updateTask = async (req, res) => {
     if (!task) {
       return res.status(404).json({ success: false, message: 'المهمة غير موجودة' });
     }
+
+    // HARDENED: Sanitize text fields on update
+    if (req.body.title) req.body.title = sanitizeText(req.body.title);
+    if (req.body.description) req.body.description = sanitizeText(req.body.description).slice(0, 5000);
+    if (req.body.category) req.body.category = sanitizeText(req.body.category).slice(0, 100);
+    if (req.body.notes) req.body.notes = sanitizeText(req.body.notes).slice(0, 2000);
 
     if (req.body.status === 'completed' && task.status !== 'completed') {
       req.body.completed_at = new Date();
@@ -589,6 +619,10 @@ exports.completeTask = async (req, res) => {
         );
       }
     }
+
+    // Phase 12: Emit TASK_COMPLETED to EventBus → triggers brain.recompute
+    const eb = getEventBus();
+    if (eb) eb.emit(eb.EVENT_TYPES.TASK_COMPLETED, { userId: req.user.id, taskId: task.id, priority: task.priority, title: task.title });
 
     if (task.is_recurring && task.recurrence_pattern) {
       await createNextRecurringTask(task);

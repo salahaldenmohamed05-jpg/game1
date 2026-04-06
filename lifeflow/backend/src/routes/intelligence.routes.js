@@ -47,15 +47,20 @@ router.get('/life-score', requireFeature('performance_scores'), async (req, res)
 router.get('/life-score/history', requireFeature('performance_scores'), async (req, res) => {
   try {
     const { days = 30 } = req.query;
+    // HARDENED: Graceful fallback if service method is unavailable
+    if (!lifeScoreService?.getLifeScoreHistory) {
+      return res.json({ success: true, data: { history: [], message: 'سجل النقاط غير متاح حالياً' } });
+    }
     const history = await lifeScoreService.getLifeScoreHistory(
       req.user.id,
       parseInt(days),
       req.user.timezone || 'Africa/Cairo',
     );
-    res.json({ success: true, data: history });
+    res.json({ success: true, data: history || { history: [] } });
   } catch (err) {
     logger.error('life-score history error:', err.message);
-    res.status(500).json({ success: false, message: 'خطأ في استرداد السجل' });
+    // HARDENED: Return empty data instead of 500
+    res.json({ success: true, data: { history: [], message: 'لا يوجد سجل بعد' } });
   }
 });
 

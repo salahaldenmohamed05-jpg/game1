@@ -28,11 +28,20 @@ import {
   AlertTriangle,
   Mic, MicOff, Volume2, VolumeX, Globe,
 } from 'lucide-react';
-import { assistantAPI, chatAPI } from '../../utils/api';
+import { assistantAPI, chatAPI, dashboardAPI, taskAPI, habitAPI } from '../../utils/api';
 import { QUICK_PROMPTS, WELCOME_MSG } from '../../constants/smartActions';
 import toast from 'react-hot-toast';
 import ErrorBoundary from '../common/ErrorBoundary';
 import useVoiceChat from '../../hooks/useVoiceChat';
+import { analyzeScenario } from '../../engine/scenarioEngine';
+import { analyzeBehavior, computeAssistantTone } from '../../engine/behavioralEngine';
+import {
+  decide as cognitiveDecide,
+  recordAction as cognitiveRecord,
+  getProfile as getCognitiveProfile,
+  getLastActions,
+} from '../../engine/cognitiveEngine';
+import { useBrainStore } from '../../store/brainStore';
 
 // Safe fallback for WELCOME_MSG in case import fails
 const SAFE_WELCOME = WELCOME_MSG && typeof WELCOME_MSG === 'object'
@@ -479,6 +488,50 @@ export default function AssistantView({ onViewChange }) {
   // Wait for client-side mount to avoid hydration issues
   useEffect(() => { setMounted(true); }, []);
 
+  // ── COGNITIVE LAYER: Fetch real data for context-aware assistant ─────────
+  const { data: dashRaw } = useQuery({
+    queryKey: ['dashboard'],
+    queryFn: () => dashboardAPI.getDashboard().catch(() => ({ data: { data: {} } })),
+    staleTime: 60 * 1000,
+    retry: 0,
+    enabled: mounted,
+  });
+  const dashData = dashRaw?.data?.data || {};
+
+  // Phase 12.5: Brain store is THE ONLY source of truth — no fallback
+  const { brainState, fetchBrainState: fetchBrain } = useBrainStore();
+
+  // Fetch brain state on mount
+  useEffect(() => {
+    if (mounted) fetchBrain();
+  }, [mounted]);
+
+  // Generate cognitive welcome using brain state ONLY (no local cognitive engine)
+  const cognitiveWelcome = useMemo(() => {
+    if (!mounted) return null;
+    try {
+      if (!brainState?.currentDecision) return null; // Loading — no fallback
+
+      const d = brainState.currentDecision;
+      const us = brainState.userState || {};
+      let content = '';
+      if (d.taskId) {
+        content = `${d.why?.[0] || brainState.reason || ''}\n\n`;
+        if (d.smallestStep) content += `👉 ${d.smallestStep}\n\n`;
+        content += `📊 ${us.todayCompleted || 0} مكتمل | ${us.todayPending || 0} متبقي | ⚡ ${
+          us.energy === 'high' ? 'طاقة عالية' : us.energy === 'medium' ? 'طاقة متوسطة' : 'طاقة منخفضة'
+        }`;
+        if (d.confidence) content += ` | 🎯 ${d.confidence}% ثقة`;
+      } else {
+        content = d.why?.[0] || 'أهلاً! قولّي عايز تعمل إيه 👋';
+      }
+      return { id: 'brain-welcome', role: 'assistant', content, suggestions: [] };
+    } catch (e) {
+      console.error('[AssistantView] cognitiveWelcome error:', e);
+      return null;
+    }
+  }, [mounted, brainState]);
+
   // Fetch sessions — with error handling to prevent crash
   const { data: sessionsData, refetch: refetchSessions, isError: sessionsError } = useQuery({
     queryKey: ['chat-sessions'],
@@ -686,15 +739,17 @@ export default function AssistantView({ onViewChange }) {
   // Keep handleSendRef in sync for voice callback
   handleSendRef.current = handleSend;
 
-  // Update welcome message when language changes
+  // Update welcome message when language changes or cognitive data arrives
   useEffect(() => {
-    const welcome = language === 'en' ? SAFE_WELCOME_EN : SAFE_WELCOME;
+    const baseWelcome = language === 'en' ? SAFE_WELCOME_EN : SAFE_WELCOME;
+    // Use cognitive welcome if available and language is Arabic
+    const welcome = (cognitiveWelcome && language === 'ar') ? cognitiveWelcome : baseWelcome;
     setMessages(prev => {
       if (prev.length <= 1) return [welcome];
       // Replace only the welcome message, keep conversation
       return [welcome, ...prev.slice(1)];
     });
-  }, [language]);
+  }, [language, cognitiveWelcome]);
 
   // Error state
   if (viewError) {

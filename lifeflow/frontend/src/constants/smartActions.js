@@ -67,23 +67,26 @@ export const SMART_ACTIONS = [
   },
 ];
 
-// Quick prompts for AssistantView chat (subset — chat context)
+// Quick prompts for AssistantView chat — Atomic Habits aligned
+// Phase 10: Every prompt connects to identity, cues, or rewards
 export const QUICK_PROMPTS = [
-  { text: 'ابدأ يومي',               icon: '☀️' },
-  { text: 'ايه أهم حاجة دلوقتي؟',    icon: '⚡' },
-  { text: 'أضف مهمة',                icon: '📋' },
-  { text: 'سجّل مزاجي',              icon: '💙' },
-  { text: 'كيف طاقتي؟',              icon: '🔋' },
-  { text: 'تقييم يومي',               icon: '🌙' },
+  { text: 'ابدأ يومي الآن',              icon: '🚀' },
+  { text: 'إيه الأهم دلوقتي؟',         icon: '⚡' },
+  { text: 'أنا مش لاقي حافز — ساعدني', icon: '💡' },
+  { text: 'قسّم المهمة لخطوات',        icon: '✂️' },
+  { text: 'تحليل أدائي وعاداتي',       icon: '📊' },
+  { text: 'أنا تعبان — إيه الحل؟',     icon: '🧘' },
 ];
 
 // Placeholder hints for QuickCommandInput (cycles randomly)
 export const QUICK_HINTS = SMART_ACTIONS.map(a => a.label + '...');
 
 // Welcome message for AssistantView
+// Phase 10: Behavioral Engine powered — direct, motivational, context-aware.
+// Uses Egyptian Arabic. NO formal Arabic (فصحى).
 export const WELCOME_MSG = {
   id: 'welcome',
   role: 'assistant',
-  content: 'أهلاً! 👋 أنا عارف كل حاجة عن مهامك وعاداتك وطاقتك. قولّي عايز تعمل إيه!',
-  suggestions: ['ابدأ يومي', 'إيه الأهم دلوقتي؟', 'طاقتي عاملة إزاي؟'],
+  content: 'أهلاً! 👋\n\nأنا مساعدك الشخصي. بستخدم نظام العادات الذرية عشان أساعدك تبني هوية جديدة — مش بس تخلّص مهام.\n\nقوللي عايز تعمل إيه وهنبدأ حالاً.',
+  suggestions: ['ابدأ يومي الآن', 'إيه الأهم دلوقتي؟', 'تحليل أدائي'],
 };

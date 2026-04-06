@@ -1,6 +1,12 @@
 /**
- * Dashboard Home — Phase G: Context-Aware Execution Dashboard
+ * Dashboard Home — Phase G+12.9: Context-Aware Execution Dashboard
  * ================================================================
+ * Phase 12.9 — Truth Alignment:
+ *   - UI consistency check: cognitive nudge card must match brain decision
+ *   - No contradictions: dashboard, execution, assistant show same decision
+ *   - Lifecycle tracing for loading detection
+ *   - Truth-guarded rendering: empty day never gets positive feedback
+ *
  * COMPLETE REWRITE — execution-driving interface, not passive display.
  *
  * PHASE G DECISIONS (Keep / Improve / Remove / Replace):
@@ -47,32 +53,47 @@ import {
   RefreshCw, Sparkles, Zap, Sun, Moon,
   Calendar, Target, Brain, Info, Play,
 } from 'lucide-react';
-import { taskAPI, habitAPI, dashboardAPI, assistantAPI, engineAPI, goalsAPI, analyticsAPI } from '../../utils/api';
+import { taskAPI, habitAPI, dashboardAPI, assistantAPI, goalsAPI, analyticsAPI, phase6API } from '../../utils/api';
 import { SMART_ACTIONS } from '../../constants/smartActions';
 import useSyncStore from '../../store/syncStore';
+import { useBrainStore } from '../../store/brainStore';
 import toast from 'react-hot-toast';
+import {
+  analyzeBehavior,
+  detectBehaviorState,
+  computeRewardIntensity,
+  generateIdentityStatement,
+  computeAssistantTone,
+  BEHAVIOR_STATES,
+  REWARD_LEVELS,
+} from '../../engine/behavioralEngine';
+import { analyzeScenario } from '../../engine/scenarioEngine';
+import {
+  decide as cognitiveDecide,
+  recordAction as cognitiveRecord,
+  reactToCompletion,
+  reactToSkip,
+  getProfile as getCognitiveProfile,
+  updateProfile,
+} from '../../engine/cognitiveEngine';
 
 // ═════════════════════════════════════════════════════════════════════════════
-// EXECUTION STRIP — Top-of-Dashboard widget
-// Shows next action + duration + "Start Now" button → opens ExecutionScreen
+// EXECUTION STRIP — Phase 13: Unified to brainState (no dual source)
+// Shows next action from brainState.currentDecision ONLY
 // ═════════════════════════════════════════════════════════════════════════════
 function ExecutionStrip({ onViewChange }) {
-  const { data: rawData, isLoading } = useQuery({
-    queryKey: ['engine-today'],
-    queryFn: engineAPI.getToday,
-    staleTime: 30 * 1000,
-    refetchInterval: 2 * 60 * 1000,
-    retry: 1,
-  });
-
-  const engineData = rawData?.data?.data || {};
-  const action = engineData?.next_action;
-  const reasoning = engineData?.reasoning || [];
+  // Phase 13: SINGLE SOURCE — read from brainState only, no engineAPI
+  const { brainState, isLoading: brainLoading } = useBrainStore();
+  const decision = brainState?.currentDecision;
+  const dayContext = brainState?.dayContext;
+  const isEmptyDay = dayContext?.classification === 'empty';
+  const hasTask = decision?.taskId && decision?.type !== 'empty' && decision?.type !== 'break' && decision?.type !== 'reflection';
+  const reasoning = decision?.why || [];
   const oneLineReason = reasoning.length > 0
-    ? reasoning[0].replace(/^[⏰📅🔴🟠⚡💪😴🎯💡🚀🧘📈⚠️🔥📱✅🌟]+\s*/g, '').slice(0, 60)
+    ? (typeof reasoning[0] === 'string' ? reasoning[0] : '').replace(/^[⏰📅🔴🟠⚡💪😴🎯💡🚀🧘📈⚠️🔥📱✅🌟]+\s*/g, '').slice(0, 60)
     : null;
 
-  if (isLoading) {
+  if (brainLoading && !brainState) {
     return (
       <div className="glass-card p-3 bg-gradient-to-l from-primary-500/10 to-purple-500/5 border border-primary-500/20">
         <div className="flex items-center gap-3">
@@ -87,20 +108,20 @@ function ExecutionStrip({ onViewChange }) {
     );
   }
 
-  if (!action) {
+  if (!hasTask) {
     return (
       <motion.div
         initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
-        className="glass-card p-3 bg-gradient-to-l from-green-500/10 to-emerald-500/5 border border-green-500/20"
+        className={`glass-card p-3 bg-gradient-to-l ${isEmptyDay ? 'from-gray-500/10 to-slate-500/5 border border-gray-500/20' : 'from-green-500/10 to-emerald-500/5 border border-green-500/20'}`}
         dir="rtl"
       >
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-green-500/15 flex items-center justify-center">
-            <Check size={18} className="text-green-400" />
+          <div className={`w-10 h-10 rounded-xl ${isEmptyDay ? 'bg-gray-500/15' : 'bg-green-500/15'} flex items-center justify-center`}>
+            {isEmptyDay ? <Plus size={18} className="text-gray-400" /> : <Check size={18} className="text-green-400" />}
           </div>
           <div className="flex-1">
-            <p className="text-sm font-bold text-white">يوم منجز!</p>
-            <p className="text-[11px] text-gray-500">لا توجد مهام معلقة — أحسنت</p>
+            <p className="text-sm font-bold text-white">{isEmptyDay ? 'مفيش مهام مسجلة' : 'يوم منجز!'}</p>
+            <p className="text-[11px] text-gray-500">{isEmptyDay ? 'ضيف مهمة واحدة وابدا بيها' : 'لا توجد مهام معلقة — أحسنت'}</p>
           </div>
           <button onClick={() => onViewChange?.('tasks')}
             className="px-3 py-2 bg-white/5 text-gray-400 text-xs rounded-xl hover:bg-white/10 transition-all">
@@ -119,18 +140,15 @@ function ExecutionStrip({ onViewChange }) {
       onClick={() => onViewChange?.('execution')}
     >
       <div className="flex items-center gap-3">
-        {/* Action icon */}
         <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 to-purple-600 flex items-center justify-center flex-shrink-0 shadow-lg shadow-primary-500/25">
           <Zap size={18} className="text-white" />
         </div>
-
-        {/* Action info */}
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-bold text-white truncate">{action.title}</p>
+          <p className="text-sm font-bold text-white truncate">{decision.taskTitle}</p>
           <div className="flex items-center gap-2 mt-0.5">
-            {action.estimated_minutes && (
+            {decision.estimatedMinutes && (
               <span className="text-[11px] text-gray-400 flex items-center gap-1">
-                <Clock size={10} /> {action.estimated_minutes} دقيقة
+                <Clock size={10} /> {decision.estimatedMinutes} دقيقة
               </span>
             )}
             {oneLineReason && (
@@ -138,8 +156,6 @@ function ExecutionStrip({ onViewChange }) {
             )}
           </div>
         </div>
-
-        {/* Start button */}
         <button
           onClick={(e) => { e.stopPropagation(); onViewChange?.('execution'); }}
           className="flex-shrink-0 px-4 py-2.5 bg-gradient-to-l from-primary-500 to-purple-600 text-white text-xs font-bold rounded-xl shadow-lg shadow-primary-500/25 hover:from-primary-600 hover:to-purple-700 active:scale-95 transition-all flex items-center gap-1.5"
@@ -297,44 +313,30 @@ function SectionSkeleton({ lines = 3 }) {
 // remaining time, "Why now?" explanation, and link to execution screen.
 // ═════════════════════════════════════════════════════════════════════════════
 function DoNowCard({ todayFlowData, isLoading, isError, refetch, onViewChange, onCompleteTask }) {
-  // Data from today-flow
+  // Phase 13: SINGLE SOURCE — read from brainState only, no engineAPI
+  const { brainState } = useBrainStore();
+  const brainDecision = brainState?.currentDecision || {};
   const action = todayFlowData?.nextAction || {};
   const [showWhy, setShowWhy] = useState(false);
   const [completing, setCompleting] = useState(false);
 
-  // Also fetch engine data for detailed reasoning
-  const { data: engineRaw } = useQuery({
-    queryKey: ['engine-today'],
-    queryFn: engineAPI.getToday,
-    staleTime: 30 * 1000,
-    refetchInterval: 2 * 60 * 1000,
-    retry: 1,
-  });
-  const engineData = engineRaw?.data?.data || {};
-  const engineAction = engineData?.next_action || {};
-  const reasoning = engineData?.reasoning || [];
+  // Phase 13: Use brainState reasoning instead of engineAPI
+  const reasoning = brainDecision.why || action.reason || [];
 
-  // Time-aware: use engine's time-aware data (computed on backend)
-  const taskDueTime = engineAction.due_time || action.due_time;
-  const engineTimeRemaining = engineAction._time_remaining;
-  const engineTimeRemainingMins = engineAction._time_remaining_minutes;
-  const engineNotDueYet = engineAction._not_due_yet;
-  const engineIsOverdue = engineAction._is_overdue;
+  // Phase 13: Use brainState for time data instead of engineAPI
+  const taskDueTime = action.due_time;
 
-  // Fallback: compute remaining time on frontend if engine didn't provide it
+  // Compute remaining time on frontend
   const timeRemaining = useMemo(() => {
-    if (engineTimeRemaining) {
-      return { text: engineTimeRemaining, isOverdue: !!engineIsOverdue, minutesLeft: engineTimeRemainingMins || 0 };
-    }
     if (!taskDueTime) return null;
     const result = getTimeRemaining(action.due_date || new Date().toISOString().split('T')[0], taskDueTime);
     return result;
-  }, [engineTimeRemaining, engineIsOverdue, engineTimeRemainingMins, taskDueTime, action.due_date]);
+  }, [taskDueTime, action.due_date]);
 
   // Determine if task is approaching (within 60 min) or not due yet
-  const isApproaching = timeRemaining && !timeRemaining.isOverdue && !engineNotDueYet;
-  const isNotDueYet = !!engineNotDueYet;
-  const isOverdueTask = engineIsOverdue || timeRemaining?.isOverdue || (action.urgency === 'critical' && Array.isArray(action.reason) &&
+  const isApproaching = timeRemaining && !timeRemaining.isOverdue;
+  const isNotDueYet = false; // simplified — no engine data
+  const isOverdueTask = timeRemaining?.isOverdue || (action.urgency === 'critical' && Array.isArray(action.reason) &&
     action.reason.some(r => typeof r === 'string' && r.includes('متأخرة')));
   const hasReschedule = !!action.reschedule_suggestion;
 
@@ -346,7 +348,7 @@ function DoNowCard({ todayFlowData, isLoading, isError, refetch, onViewChange, o
       decisionAPI.sendFeedback({
         action: action.action || 'start_task',
         feedback: 'accepted',
-        task_id: action.task_id || engineAction.id || null,
+        task_id: action.task_id || brainDecision.taskId || null,
       }).catch(() => {});
     } catch {}
     // Route task actions through the Execution Screen (engine flow)
@@ -361,7 +363,7 @@ function DoNowCard({ todayFlowData, isLoading, isError, refetch, onViewChange, o
     } else {
       onViewChange?.('execution');
     }
-  }, [completing, action, engineAction, onViewChange]);
+  }, [completing, action, brainDecision, onViewChange]);
 
   const handleReschedule = useCallback(async () => {
     if (!action.task_id) return;
@@ -510,10 +512,10 @@ function DoNowCard({ todayFlowData, isLoading, isError, refetch, onViewChange, o
           <div className="skeleton h-5 rounded w-3/4" />
           <div className="skeleton h-3 rounded w-full" />
         </div>
-      ) : action.title || action.task_title || engineAction.title ? (
+      ) : action.title || action.task_title || brainDecision.taskTitle ? (
         <div onClick={e => e.stopPropagation()}>
           <p className="text-base font-bold text-white mb-1.5 leading-snug">
-            {action.title || action.task_title || engineAction.title}
+            {action.title || action.task_title || brainDecision.taskTitle}
           </p>
           {action.confidence != null && (
             <div className="flex items-center gap-2 mb-2">
@@ -556,9 +558,24 @@ function DoNowCard({ todayFlowData, isLoading, isError, refetch, onViewChange, o
         </div>
       ) : (
         <div className="text-center py-3" onClick={e => e.stopPropagation()}>
-          <Check size={24} className="text-green-400 mx-auto mb-2" />
-          <p className="text-sm font-bold text-white mb-1">يوم منجز!</p>
-          <p className="text-xs text-gray-500 mb-2">لا توجد مهام معلقة — أحسنت</p>
+          {/* Phase 12.10 Fix M3: Check dayContext before showing congrats */}
+          {(() => {
+            const dc = useBrainStore.getState()?.brainState?.dayContext;
+            const isEmpty = dc?.classification === 'empty';
+            return isEmpty ? (
+              <>
+                <Plus size={24} className="text-gray-400 mx-auto mb-2" />
+                <p className="text-sm font-bold text-white mb-1">مفيش مهام مسجلة</p>
+                <p className="text-xs text-gray-500 mb-2">ابدا بمهمة واحدة صغيرة</p>
+              </>
+            ) : (
+              <>
+                <Check size={24} className="text-green-400 mx-auto mb-2" />
+                <p className="text-sm font-bold text-white mb-1">يوم منجز!</p>
+                <p className="text-xs text-gray-500 mb-2">لا توجد مهام معلقة — أحسنت</p>
+              </>
+            );
+          })()}
           <button onClick={() => onViewChange?.('tasks')}
             className="text-xs text-primary-400 hover:text-primary-300 flex items-center gap-1 mx-auto">
             <Plus size={10} /> أضف مهمة جديدة
@@ -663,15 +680,16 @@ function MiniProgressRing({ progress, size = 80, strokeWidth = 6 }) {
 }
 
 // ─── Motivational Quotes ─────────────────────────────────────────────────
+// Phase 9.0: Direct, motivational, no generic filler — every quote drives action
 const MOTIVATIONAL_QUOTES = [
-  { ar: 'النجاح ليس نهائياً والفشل ليس قاتلاً، الشجاعة للاستمرار هي ما تهم', en: 'Success is not final, failure is not fatal' },
-  { ar: 'كل يوم جديد هو فرصة جديدة لتكون أفضل', en: 'Every day is a new opportunity' },
-  { ar: 'التركيز هو مفتاح الإنتاجية', en: 'Focus is the key to productivity' },
-  { ar: 'خطوة صغيرة كل يوم تصنع فرقاً كبيراً', en: 'Small steps every day make a big difference' },
-  { ar: 'الإنجاز الحقيقي يبدأ من الانضباط', en: 'Real achievement starts with discipline' },
-  { ar: 'لا تقارن نفسك بالآخرين، قارنها بنفسك بالأمس', en: 'Compare yourself to who you were yesterday' },
-  { ar: 'الراحة ليست كسلاً، هي جزء من الإنتاجية', en: 'Rest is not laziness, it is part of productivity' },
-  { ar: 'ابدأ من حيث أنت واستخدم ما لديك', en: 'Start where you are, use what you have' },
+  { ar: 'المهمة اللي قدامك دلوقتي أهم من 10 مهام مستقبلية — ركّز', en: 'The task in front of you now matters most' },
+  { ar: 'خطوة صغيرة دلوقتي > خطة كبيرة بكرة', en: 'One small step now > big plan tomorrow' },
+  { ar: 'كل مهمة بتكملها بتبني ثقة — استمر', en: 'Every completed task builds confidence' },
+  { ar: 'الانضباط مش عقاب — دا أنت بتبني هوية جديدة', en: 'Discipline builds your new identity' },
+  { ar: 'لو حاسس بالتعب، خذ استراحة. مش لازم تكسر نفسك', en: 'Rest is part of performance' },
+  { ar: 'قارن نفسك بنفسك إمبارح — أنت بتتحسن', en: 'Compare yourself to yesterday' },
+  { ar: 'ابدأ بالأصعب لما طاقتك عالية — النتيجة هتفرق', en: 'Start hard when energy is high' },
+  { ar: 'مش لازم يومك يكون مثالي — لازم يكون أفضل من إمبارح', en: 'Not perfect, just better than yesterday' },
 ];
 
 function TodaySummaryCard({ dashboardData, onViewChange }) {
@@ -683,6 +701,8 @@ function TodaySummaryCard({ dashboardData, onViewChange }) {
   const habitsCompleted= summary?.habits?.completed || 0;
   const overdue        = summary?.tasks?.overdue || 0;
 
+  // REAL PROGRESS: % = (completed tasks + completed habits) / (total tasks + total habits)
+  // This updates INSTANTLY because invalidateAll() is called on every task/habit mutation
   const totalItems   = tasksTotal + habitsTotal;
   const doneItems    = tasksCompleted + habitsCompleted;
   const progressPct  = totalItems > 0 ? Math.round((doneItems / totalItems) * 100) : 0;
@@ -1410,13 +1430,201 @@ export default function DashboardHome({ dashboardData, isLoading, isError, onVie
   });
   const todayFlowData = todayFlowRaw?.data?.data || {};
 
-  // Mutations
+  // ── Completion celebration state ──
+  const [celebration, setCelebration] = useState(null);
+  const completionCountRef = useRef(0);
+
+  // ═══ PHASE 12.6 v4.0: Brain Store — THE ONLY source of truth for decisions ═══
+  // ═══ Phase 12.8: RESILIENT brain store access ═══
+  // HARD RULE: The UI must NEVER stay in a loading state. Period.
+  const { brainState, fetchBrainState, rejectDecision, isLoading: brainLoading } = useBrainStore();
+
+  // Refresh brain state when dashboard data changes (NOT on mount — initBrain handles that)
+  useEffect(() => {
+    if (dashboardData?.today_tasks || dashboardData?.habits) {
+      fetchBrainState(); // non-forced: uses cache if fresh
+    }
+  }, [dashboardData?.today_tasks, dashboardData?.habits]);
+
+  // Phase 12.8: TWO-LAYER failsafe
+  // Layer 1: brainStore has its own 3s failsafe (sets brainState to fallback)
+  // Layer 2: THIS component has a 2s failsafe (stops showing skeleton, renders without brain)
+  // RESULT: Maximum possible loading time = 2 seconds in this component
+  const [brainTimedOut, setBrainTimedOut] = useState(false);
+  useEffect(() => {
+    if (brainState) {
+      setBrainTimedOut(false);
+      return;
+    }
+    // 2 seconds — shorter than brainStore's 3s, because we want the dashboard
+    // to render SOMETHING even if the brain store failsafe hasn't fired yet
+    const timer = setTimeout(() => {
+      if (!useBrainStore.getState().brainState) {
+        console.warn('[DashboardHome] Phase 12.8: Brain state not available after 2s — rendering without it');
+        setBrainTimedOut(true);
+      }
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [brainState]);
+
+  // Convert brainState to cognitiveDecision-compatible shape — NO fallback
+  // Phase 12.7: now includes intent, intentLabel, dayContext, tone
+  // Phase 12.9: UI consistency — truth-guarded rendering
+  const cognitiveDecision = useMemo(() => {
+    if (!brainState?.currentDecision) return null; // Loading — show skeleton briefly
+    const d = brainState.currentDecision;
+    const us = brainState.userState || {};
+    const as = brainState.adaptiveSignals || {};
+    const dc = brainState.dayContext || null;
+
+    // Phase 12.9 TASK 5: UI Consistency Guard
+    // Ensure cognitiveDecision is truth-aligned before UI renders it
+    let truthGuardedTone = d.tone || null;
+    let truthGuardedConfidence = d.confidence || 0;
+    let truthGuardedWhy = d.why || [];
+
+    // GUARD: Empty day must never get positive tone in UI
+    if (dc?.classification === 'empty') {
+      if (truthGuardedTone === 'positive') truthGuardedTone = 'neutral';
+      // Strip any congratulatory reasons that leaked through
+      const congrats = ['احسنت', 'ممتاز', 'يوم منتج', 'شغل حقيقي'];
+      truthGuardedWhy = truthGuardedWhy.filter(r =>
+        typeof r !== 'string' || !congrats.some(c => r.includes(c))
+      );
+      if (truthGuardedWhy.length === 0) {
+        truthGuardedWhy = ['النهارده مفيش مهام مسجلة'];
+      }
+    }
+
+    // GUARD: safeMode states get reduced confidence
+    if (brainState.safeMode) {
+      truthGuardedConfidence = 0;
+      truthGuardedTone = 'neutral';
+    }
+
+    return {
+      chosen_task: d.taskId ? { id: d.taskId, title: d.taskTitle, type: d.type, is_habit: d.type === 'habit', priority: d.priority, estimatedMinutes: d.estimatedMinutes } : null,
+      state: d.type === 'break' ? 'overwhelmed' :
+             us.momentum === 'high' ? 'momentum' :
+             us.burnoutRisk > 0.6 ? 'overwhelmed' :
+             us.energy === 'low' ? 'low_energy' :
+             as.rejectionStreak >= 2 ? 'procrastinating' : 'normal',
+      assistant_message: truthGuardedWhy[0] || brainState.reason || '',
+      smallest_step: d.smallestStep,
+      blocker: d.blocker || null,
+      energy: us.energy || 'medium',
+      xp_reward: { total: 0 },
+      why: truthGuardedWhy,
+      confidence: truthGuardedConfidence,
+      memory_summary: {
+        consecutive_completions: as.completionStreak || 0,
+        consecutive_skips: as.rejectionStreak || 0,
+      },
+      decisionMemory: brainState.decisionMemory || null,
+      difficultyModifier: as.difficultyModifier || 1.0,
+      inactivityStrategy: as.inactivityStrategy || 'normal',
+      // Phase 12.7: Intent + Context
+      intent: d.intent || null,
+      intentLabel: d.intentLabel || '',
+      tone: truthGuardedTone,
+      dayContext: dc,
+      _fromBrain: true,
+    };
+  }, [brainState]);
+
+  // BEHAVIORAL ENGINE: Still used for identity + scenario (backward compat)
+  const behaviorAnalysis = useMemo(() => {
+    const safeHabits = Array.isArray(dashboardData?.habits) ? dashboardData.habits : [];
+    const safeTasks = Array.isArray(dashboardData?.today_tasks) ? dashboardData.today_tasks : [];
+    const bestStreak = safeHabits.reduce((max, h) => Math.max(max, h.current_streak || 0), 0);
+    return analyzeBehavior({
+      tasks: safeTasks,
+      habits: safeHabits,
+      streak: bestStreak,
+      consecutiveCompletions: cognitiveDecision?.memory_summary?.consecutive_completions || completionCountRef.current,
+      daysSinceLastActivity: 0,
+      skips: cognitiveDecision?.memory_summary?.consecutive_skips || 0,
+    });
+  }, [dashboardData?.habits, dashboardData?.today_tasks, cognitiveDecision]);
+
+  // SCENARIO ENGINE: Detect current scenario using cognitive state
+  const currentScenario = useMemo(() => {
+    if (!behaviorAnalysis) return null;
+    return analyzeScenario(behaviorAnalysis.inputs, {
+      nextTaskTitle: cognitiveDecision?.chosen_task?.title || behaviorAnalysis.nextAction?.action?.item?.title,
+    });
+  }, [behaviorAnalysis, cognitiveDecision]);
+
+  // Update adaptive profile daily
+  useEffect(() => {
+    if (dashboardData?.today_tasks || dashboardData?.habits) {
+      try {
+        updateProfile({
+          tasks: Array.isArray(dashboardData?.today_tasks) ? dashboardData.today_tasks : [],
+          habits: Array.isArray(dashboardData?.habits) ? dashboardData.habits : [],
+        });
+      } catch { /* silent */ }
+    }
+  }, [dashboardData?.today_tasks, dashboardData?.habits]);
+
+  // Cognitive Engine powered completion messages — context-aware XP
+  const getCompletionCelebration = useCallback((type, taskObj) => {
+    completionCountRef.current += 1;
+    const safeTasks = Array.isArray(dashboardData?.today_tasks) ? dashboardData.today_tasks : [];
+    const safeHabits = Array.isArray(dashboardData?.habits) ? dashboardData.habits : [];
+
+    // Use cognitive engine for instant reaction
+    if (taskObj) {
+      try {
+        const reaction = reactToCompletion(taskObj, safeTasks, safeHabits);
+        return {
+          text: reaction.celebration.text,
+          emoji: reaction.celebration.emoji,
+          count: completionCountRef.current,
+          xp: reaction.xp_earned?.total || 0,
+          nextTask: reaction.next_decision?.chosen_task?.title,
+        };
+      } catch { /* fallback below */ }
+    }
+
+    // Fallback: use behavioral engine
+    const reward = computeRewardIntensity({
+      streak: behaviorAnalysis?.inputs?.streak || 0,
+      completedToday: completionCountRef.current,
+      behaviorState: behaviorAnalysis?.behaviorState || 'steady',
+      energyLevel: behaviorAnalysis?.energy?.level || 'medium',
+      isFirstOfDay: completionCountRef.current === 1,
+      isHabit: type === 'habit',
+      taskPriority: 'medium',
+    });
+
+    return {
+      text: reward.message,
+      emoji: reward.emoji,
+      count: completionCountRef.current,
+      xp: reward.totalXP,
+    };
+  }, [behaviorAnalysis, dashboardData?.today_tasks, dashboardData?.habits]);
+
+  // Mutations with cognitive engine integration
   const completeTask = useMutation({
     mutationFn: (id) => taskAPI.completeTask(id),
-    onSuccess: () => {
+    onSuccess: (_, id) => {
       invalidateAll();
       recordAction('task_completed');
-      toast.success('أحسنت!');
+      // Find the task object for cognitive reaction
+      const safeTasks = Array.isArray(dashboardData?.today_tasks) ? dashboardData.today_tasks : [];
+      const taskObj = safeTasks.find(t => t.id === id) || { id, title: 'مهمة' };
+      cognitiveRecord('complete', { task_id: id, task_title: taskObj.title, type: 'task' });
+      const celeb = getCompletionCelebration('task', taskObj);
+      setCelebration(celeb);
+      const nextHint = celeb.nextTask ? ` → التالي: ${celeb.nextTask}` : '';
+      toast(`${celeb.text}${celeb.xp ? ` (+${celeb.xp} XP)` : ''}${nextHint}`, {
+        icon: celeb.emoji,
+        duration: 3000,
+        style: { background: '#0f2b1a', color: '#4ade80', border: '1px solid rgba(74,222,128,0.3)', fontWeight: 700 },
+      });
+      setTimeout(() => setCelebration(null), 3000);
       refetchFlow();
     },
     onError: () => toast.error('فشل إنهاء المهمة'),
@@ -1424,10 +1632,20 @@ export default function DashboardHome({ dashboardData, isLoading, isError, onVie
 
   const logHabit = useMutation({
     mutationFn: (id) => habitAPI.checkIn(id, {}),
-    onSuccess: () => {
+    onSuccess: (_, id) => {
       invalidateAll();
       recordAction('habit_checkin');
-      toast.success('رائع!');
+      const safeHabits = Array.isArray(dashboardData?.habits) ? dashboardData.habits : [];
+      const habitObj = safeHabits.find(h => h.id === id) || { id, name: 'عادة' };
+      cognitiveRecord('complete', { task_id: id, task_title: habitObj.name, type: 'habit' });
+      const celeb = getCompletionCelebration('habit', habitObj);
+      setCelebration(celeb);
+      toast(`${celeb.text}${celeb.xp ? ` (+${celeb.xp} XP)` : ''}`, {
+        icon: celeb.emoji,
+        duration: 2500,
+        style: { background: '#1a0f2b', color: '#a78bfa', border: '1px solid rgba(167,139,250,0.3)', fontWeight: 700 },
+      });
+      setTimeout(() => setCelebration(null), 3000);
     },
     onError: () => toast.error('فشل تسجيل العادة'),
   });
@@ -1453,6 +1671,31 @@ export default function DashboardHome({ dashboardData, isLoading, isError, onVie
     onViewChange?.('dashboard');
   }, [loadingAction, onViewChange]);
 
+  // ── Phase 6: Cross-Day Intelligence Queries ──
+  const { data: streakWarningsRaw } = useQuery({
+    queryKey: ['phase6-streak-warnings'],
+    queryFn: phase6API.getStreakWarnings,
+    staleTime: 5 * 60 * 1000,
+    retry: 0,
+  });
+  const streakWarnings = streakWarningsRaw?.data?.data?.warnings || [];
+
+  const { data: comebackRaw } = useQuery({
+    queryKey: ['phase6-comeback'],
+    queryFn: phase6API.getComebackStatus,
+    staleTime: 10 * 60 * 1000,
+    retry: 0,
+  });
+  const comebackStatus = comebackRaw?.data?.data;
+
+  const { data: weeklyNarrativeRaw } = useQuery({
+    queryKey: ['phase6-weekly-narrative'],
+    queryFn: phase6API.getWeeklyNarrative,
+    staleTime: 30 * 60 * 1000,
+    retry: 0,
+  });
+  const weeklyNarrative = weeklyNarrativeRaw?.data?.data;
+
   // Smart reschedule for overdue
   const handleRescheduleOverdue = useCallback(async () => {
     try {
@@ -1477,6 +1720,12 @@ export default function DashboardHome({ dashboardData, isLoading, isError, onVie
     });
   }, [dashboardData?.today_tasks]);
 
+  // Compute identity statement using Behavioral Engine (MUST be before early returns)
+  const identityStatement = useMemo(() => {
+    const h = Array.isArray(dashboardData?.habits) ? dashboardData.habits : [];
+    return generateIdentityStatement(h);
+  }, [dashboardData?.habits]);
+
   // ─── Full error state ──────────────────────────────────────────────────────
   if (isError && !dashboardData) {
     return (
@@ -1494,25 +1743,116 @@ export default function DashboardHome({ dashboardData, isLoading, isError, onVie
   const date = dashboardData?.date || {};
   const today_tasks = Array.isArray(dashboardData?.today_tasks) ? dashboardData.today_tasks : [];
   const habits = Array.isArray(dashboardData?.habits) ? dashboardData.habits : [];
-  const smartActions = Array.isArray(SMART_ACTIONS) ? SMART_ACTIONS : [];
+
+  // Defensive: no identityStatement hook needed here — moved before early returns
+  // Count for daily-flow CTA visibility
+  const pendingTasks = today_tasks.filter(t => t.status !== 'completed');
+  const hasStartedDay = todayFlowData?.nextAction || todayFlowData?.lifeFeed?.length > 0;
+  
+  // REAL PROGRESS — used by Execute ↔ Your Day integration bar
+  const summary = dashboardData?.summary;
+  const totalItems = (summary?.tasks?.total || 0) + (summary?.habits?.total || 0);
+  const doneItems = (summary?.tasks?.completed || 0) + (summary?.habits?.completed || 0);
 
   return (
     <div className="space-y-3 sm:space-y-4 max-w-5xl mx-auto">
 
+      {/* ═══ COMPLETION CELEBRATION OVERLAY ═══ */}
+      <AnimatePresence>
+        {celebration && celebration.count >= 3 && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.8 }}
+            className="fixed inset-0 z-[95] flex items-center justify-center pointer-events-none"
+          >
+            <div className="text-center">
+              <motion.span
+                initial={{ scale: 0 }} animate={{ scale: [0, 1.3, 1] }}
+                transition={{ duration: 0.5 }}
+                className="text-7xl block mb-2"
+              >
+                {celebration.emoji}
+              </motion.span>
+              <motion.p
+                initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.2 }}
+                className="text-lg font-black text-white text-glow"
+              >
+                {celebration.text}
+              </motion.p>
+              <motion.p
+                initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+                transition={{ delay: 0.4 }}
+                className="text-sm text-primary-400 font-bold mt-1"
+              >
+                {celebration.count} إنجاز متتالي اليوم!
+              </motion.p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Burnout Alert (from unified today-flow) */}
       <BurnoutAlert todayFlowData={todayFlowData} />
 
-      {/* Overdue Tasks Strategy Banner */}
-      <OverdueStrategyBanner
-        tasks={overdueTasks}
-        onRescheduleAll={handleRescheduleOverdue}
-        onViewChange={onViewChange}
-      />
+      {/* ═══ Phase 6: COMEBACK SYSTEM — warm welcome for returning users ═══ */}
+      {comebackStatus?.is_comeback && (
+        <motion.div
+          initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
+          className="glass-card p-4 bg-gradient-to-l from-blue-500/15 to-purple-500/10 border border-blue-500/25"
+          dir="rtl"
+        >
+          <div className="flex items-center gap-3 mb-2">
+            <span className="text-2xl">💙</span>
+            <div>
+              <p className="text-sm font-bold text-white">{comebackStatus.welcome_message}</p>
+              {comebackStatus.at_risk_streaks?.length > 0 && (
+                <p className="text-[11px] text-orange-400 mt-0.5">
+                  ⚠️ {comebackStatus.at_risk_streaks.length} سلسلة في خطر — سجّل اليوم!
+                </p>
+              )}
+            </div>
+          </div>
+          {comebackStatus.recovery_plan && (
+            <div className="flex gap-2 mt-2 flex-wrap">
+              <button onClick={() => onViewChange?.('habits')} className="text-[10px] px-2.5 py-1 rounded-lg bg-blue-500/20 text-blue-300 border border-blue-500/30 hover:bg-blue-500/30 transition">
+                🔄 {comebackStatus.recovery_plan.step_1}
+              </button>
+              <button onClick={() => onViewChange?.('tasks')} className="text-[10px] px-2.5 py-1 rounded-lg bg-purple-500/20 text-purple-300 border border-purple-500/30 hover:bg-purple-500/30 transition">
+                📋 {comebackStatus.recovery_plan.step_2}
+              </button>
+            </div>
+          )}
+        </motion.div>
+      )}
 
-      {/* Engagement Feedback */}
-      <EngagementBar dashboardData={dashboardData} />
+      {/* ═══ Phase 6: STREAK WARNINGS — loss aversion ═══ */}
+      {streakWarnings.length > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }}
+          className="glass-card p-3 border border-orange-500/25 bg-gradient-to-l from-orange-500/10 to-red-500/5"
+          dir="rtl"
+        >
+          <div className="flex items-center gap-2 mb-1.5">
+            <Flame size={14} className="text-orange-400" />
+            <span className="text-xs font-bold text-orange-300">سلسلات في خطر!</span>
+          </div>
+          <div className="space-y-1">
+            {streakWarnings.slice(0, 3).map((w, i) => (
+              <button key={i}
+                onClick={() => onViewChange?.('habits')}
+                className="w-full flex items-center justify-between text-[11px] px-2 py-1 rounded bg-orange-500/10 hover:bg-orange-500/20 transition"
+              >
+                <span className="text-white">{w.message_ar}</span>
+                <span className="text-orange-400 font-bold text-[10px] whitespace-nowrap mr-2">🔥 {w.streak} يوم</span>
+              </button>
+            ))}
+          </div>
+        </motion.div>
+      )}
 
-      {/* Greeting */}
+      {/* ═══ GREETING + IDENTITY FRAMING (moved to top, first thing user sees) ═══ */}
       {greeting && (
         <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
           className="flex items-center justify-between" dir="rtl"
@@ -1520,6 +1860,16 @@ export default function DashboardHome({ dashboardData, isLoading, isError, onVie
           <div>
             <h1 className="text-xl sm:text-2xl font-black text-white">{greeting}</h1>
             <p className="text-gray-500 text-xs mt-0.5">{date?.day_name} · {date?.formatted}</p>
+            {/* Identity framing — behavioral psychology */}
+            {identityStatement && (
+              <motion.p
+                initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }}
+                transition={{ delay: 0.3 }}
+                className="text-[11px] text-primary-400 font-medium mt-1.5 flex items-center gap-1"
+              >
+                <Flame size={11} className="text-orange-400" /> {identityStatement}
+              </motion.p>
+            )}
           </div>
           <button onClick={() => onViewChange?.('analytics')}
             className="text-xs text-gray-500 hover:text-primary-400 transition-colors flex items-center gap-1">
@@ -1528,7 +1878,228 @@ export default function DashboardHome({ dashboardData, isLoading, isError, onVie
         </motion.div>
       )}
 
-      {/* Merged "Do Now" Card — combines ExecutionStrip + ContextAwareActionCard */}
+      {/* ═══ COGNITIVE ENGINE: Data-Driven Decision Nudge (Phase 12.7: Intent-Aware) ═══ */}
+      {/* Shows the ONE most important action with real task name + intent label + specific reason */}
+      {cognitiveDecision?.chosen_task && (
+        <motion.div
+          initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.15 }}
+          className={`glass-card p-3.5 border ${
+            cognitiveDecision.state === 'momentum' ? 'border-green-500/20 bg-gradient-to-l from-green-500/8 to-emerald-500/5' :
+            cognitiveDecision.state === 'procrastinating' ? 'border-yellow-500/20 bg-gradient-to-l from-yellow-500/8 to-orange-500/5' :
+            cognitiveDecision.state === 'overwhelmed' ? 'border-amber-500/20 bg-gradient-to-l from-amber-500/8 to-red-500/5' :
+            cognitiveDecision.state === 'low_energy' ? 'border-blue-500/20 bg-gradient-to-l from-blue-500/8 to-cyan-500/5' :
+            'border-primary-500/20 bg-gradient-to-l from-primary-500/8 to-purple-500/5'
+          }`}
+          dir="rtl"
+        >
+          <div className="flex items-start gap-2.5">
+            <span className="text-lg flex-shrink-0">
+              {cognitiveDecision.state === 'momentum' ? '🚀' :
+               cognitiveDecision.state === 'procrastinating' ? '💡' :
+               cognitiveDecision.state === 'overwhelmed' ? '🧘' :
+               cognitiveDecision.state === 'low_energy' ? '😴' :
+               cognitiveDecision.state === 'late_start' ? '⏰' :
+               cognitiveDecision.chosen_task.is_habit ? '🔥' :
+               cognitiveDecision.intent === 'deadline' ? '⏰' :
+               cognitiveDecision.intent === 'urgent' ? '🚨' :
+               cognitiveDecision.intent === 'growth' ? '🌱' :
+               cognitiveDecision.intent === 'maintenance' ? '🔧' : '🎯'}
+            </span>
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-bold text-white leading-relaxed">
+                {cognitiveDecision.assistant_message}
+              </p>
+              {cognitiveDecision.smallest_step && (
+                <p className="text-[11px] text-gray-400 mt-1 leading-relaxed">
+                  👉 {cognitiveDecision.smallest_step}
+                </p>
+              )}
+              {cognitiveDecision.blocker && (
+                <p className="text-[10px] text-amber-400/70 mt-1 flex items-center gap-1">
+                  <AlertTriangle size={9} /> {cognitiveDecision.blocker}
+                </p>
+              )}
+            </div>
+            <div className="flex flex-col items-end gap-1 flex-shrink-0">
+              {/* Phase 12.7: Intent badge */}
+              {cognitiveDecision.intentLabel && (
+                <span className={`text-[9px] px-2 py-0.5 rounded-full ${
+                  cognitiveDecision.intent === 'deadline' ? 'bg-red-500/15 text-red-400' :
+                  cognitiveDecision.intent === 'urgent' ? 'bg-orange-500/15 text-orange-400' :
+                  cognitiveDecision.intent === 'growth' ? 'bg-emerald-500/15 text-emerald-400' :
+                  'bg-gray-500/15 text-gray-400'
+                }`}>
+                  {cognitiveDecision.intent === 'deadline' ? '⏰' :
+                   cognitiveDecision.intent === 'urgent' ? '🚨' :
+                   cognitiveDecision.intent === 'growth' ? '🌱' : '🔧'} {cognitiveDecision.intentLabel}
+                </span>
+              )}
+              <span className={`text-[9px] px-2 py-0.5 rounded-full ${
+                cognitiveDecision.energy === 'high' ? 'bg-green-500/15 text-green-400' :
+                cognitiveDecision.energy === 'medium' ? 'bg-yellow-500/15 text-yellow-400' :
+                'bg-blue-500/15 text-blue-400'
+              }`}>
+                ⚡ {cognitiveDecision.energy === 'high' ? 'طاقة عالية' : cognitiveDecision.energy === 'medium' ? 'طاقة متوسطة' : 'طاقة منخفضة'}
+              </span>
+              {cognitiveDecision.xp_reward?.total > 0 && (
+                <span className="text-[9px] text-primary-400 font-bold">
+                  +{cognitiveDecision.xp_reward.total} XP
+                </span>
+              )}
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+      {/* Phase 12.8: Loading state — shows for MAX 2 seconds, then disappears */}
+      {!cognitiveDecision?.chosen_task && brainLoading && !brainTimedOut && (
+        <div className="glass-card p-3.5 border border-primary-500/20 bg-gradient-to-l from-primary-500/8 to-purple-500/5" dir="rtl">
+          <div className="flex items-center gap-2.5">
+            <div className="skeleton w-6 h-6 rounded-full" />
+            <div className="flex-1 space-y-1.5">
+              <div className="skeleton h-3.5 w-3/4 rounded" />
+              <div className="skeleton h-3 w-1/2 rounded" />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Phase 12.8: Fallback — brain didn't load. Show connection error + retry.
+          HARD RULE: NEVER infinite loading. This card is the exit. */}
+      {!cognitiveDecision && brainTimedOut && (
+        <div className="glass-card p-3.5 border border-amber-500/20 bg-gradient-to-l from-amber-500/8 to-orange-500/5" dir="rtl">
+          <div className="flex items-start gap-2.5">
+            <span className="text-lg">⚠️</span>
+            <div className="flex-1">
+              <p className="text-xs font-bold text-white mb-1">في مشكلة مؤقتة في التوصيل</p>
+              <p className="text-[11px] text-gray-400">المهام والعادات شغالة عادي — القرار الذكي بس متاخر</p>
+              <button
+                onClick={() => { setBrainTimedOut(false); fetchBrainState(true); }}
+                className="mt-2 px-3 py-1.5 text-[11px] text-primary-400 hover:text-white bg-primary-500/10 hover:bg-primary-500/20 rounded-lg border border-primary-500/20 transition-all"
+              >
+                🔄 جرب تاني
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Phase 12.7: Context-aware brain message for empty/reflection/break/end_of_day types */}
+      {/* Tone adapts: productive=positive, partial=constructive, empty=neutral */}
+      {cognitiveDecision && !cognitiveDecision.chosen_task && brainState?.currentDecision && (
+        <motion.div
+          initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }}
+          className={`glass-card p-3.5 border ${
+            cognitiveDecision.tone === 'positive' || brainState.dayContext?.classification === 'productive'
+              ? 'border-green-500/20 bg-gradient-to-l from-green-500/8 to-emerald-500/5'
+              : cognitiveDecision.tone === 'constructive' || brainState.dayContext?.classification === 'partial'
+                ? 'border-yellow-500/20 bg-gradient-to-l from-yellow-500/8 to-amber-500/5'
+                : brainState.currentDecision.type === 'break'
+                  ? 'border-amber-500/20 bg-gradient-to-l from-amber-500/8 to-red-500/5'
+                  : 'border-primary-500/20 bg-gradient-to-l from-primary-500/8 to-purple-500/5'
+          }`}
+          dir="rtl"
+        >
+          <div className="flex items-start gap-2.5">
+            <span className="text-lg flex-shrink-0">
+              {brainState.currentDecision.type === 'reflection' ? '🌙' :
+               brainState.currentDecision.type === 'break' ? '🧘' :
+               brainState.dayContext?.classification === 'productive' ? '🏆' :
+               brainState.dayContext?.classification === 'partial' ? '📋' :
+               brainState.dayContext?.classification === 'empty' ? '📝' : '✨'}
+            </span>
+            <div className="flex-1 min-w-0">
+              {brainState.currentDecision.taskTitle && (
+                <p className="text-xs font-bold text-white leading-relaxed mb-1">
+                  {brainState.currentDecision.taskTitle}
+                </p>
+              )}
+              {/* Phase 12.7: Show day context label */}
+              {brainState.dayContext?.label_ar && (
+                <span className={`inline-block text-[9px] px-2 py-0.5 rounded-full mb-1.5 ${
+                  brainState.dayContext.classification === 'productive' ? 'bg-green-500/15 text-green-400' :
+                  brainState.dayContext.classification === 'partial' ? 'bg-yellow-500/15 text-yellow-400' :
+                  'bg-gray-500/15 text-gray-400'
+                }`}>
+                  {brainState.dayContext.classification === 'productive' ? '✅' :
+                   brainState.dayContext.classification === 'partial' ? '🔄' : '📭'} {brainState.dayContext.label_ar}
+                  {brainState.dayContext.completionRatio > 0 && ` (${brainState.dayContext.completionRatio}%)`}
+                </span>
+              )}
+              {/* Show all why reasons (not just first) */}
+              {brainState.currentDecision.why?.map((reason, i) => (
+                <p key={i} className="text-xs text-gray-300 leading-relaxed">
+                  {i === 0 ? '' : '• '}{reason}
+                </p>
+              ))}
+              {!brainState.currentDecision.why?.length && brainState.reason && (
+                <p className="text-xs text-gray-300 leading-relaxed">{brainState.reason}</p>
+              )}
+              {brainState.currentDecision.smallestStep && (
+                <p className="text-[11px] text-gray-400 mt-1 leading-relaxed">
+                  👉 {brainState.currentDecision.smallestStep}
+                </p>
+              )}
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+      {/* ═══ EXECUTE ↔ YOUR DAY INTEGRATION — Phase 9.0 ═══ */}
+      {/* Smart CTA: context-aware transition between dashboard (يومك) and execution (نفّذ) */}
+      {pendingTasks.length > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }}
+          className="w-full glass-card overflow-hidden bg-gradient-to-l from-primary-500/12 to-purple-600/8 border border-primary-500/20"
+          dir="rtl"
+        >
+          <button
+            onClick={() => onViewChange?.('daily_flow')}
+            className="w-full p-4 hover:bg-white/[0.02] active:scale-[0.99] transition-all"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-primary-500 to-purple-600 flex items-center justify-center shadow-lg shadow-primary-500/25 flex-shrink-0">
+                <Play size={20} className="text-white" fill="white" />
+              </div>
+              <div className="flex-1 text-right min-w-0">
+                <p className="text-sm font-bold text-white">
+                  {hasStartedDay ? 'كمّل يومك — نفّذ' : 'ابدأ يومك المنظم'}
+                </p>
+                <p className="text-[11px] text-gray-400">
+                  {pendingTasks.length} مهمة متبقية + {habits.filter(h => !h.completed_today).length} عادة — {hasStartedDay ? 'ارجع لخط التنفيذ' : 'النظام جاهز يقودك'}
+                </p>
+              </div>
+              <ArrowRight size={16} className="text-primary-400 flex-shrink-0" />
+            </div>
+          </button>
+          {/* Quick state bar: shows live progress between Execute ↔ Your Day */}
+          <div className="px-4 pb-3 pt-0">
+            <div className="flex items-center gap-2">
+              <div className="flex-1 h-1.5 bg-white/5 rounded-full overflow-hidden">
+                <motion.div
+                  initial={{ width: 0 }}
+                  animate={{ width: `${totalItems > 0 ? Math.round((doneItems / totalItems) * 100) : 0}%` }}
+                  transition={{ duration: 0.8, ease: 'easeOut' }}
+                  className="h-full bg-gradient-to-l from-primary-500 to-green-500 rounded-full"
+                />
+              </div>
+              <span className="text-[10px] text-gray-500 font-bold">
+                {doneItems}/{totalItems}
+              </span>
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+      {/* Overdue Tasks Strategy Banner */}
+      <OverdueStrategyBanner
+        tasks={overdueTasks}
+        onRescheduleAll={handleRescheduleOverdue}
+        onViewChange={onViewChange}
+      />
+
+      {/* Merged "Do Now" Card — the most important action */}
       <DoNowCard
         todayFlowData={todayFlowData}
         isLoading={flowLoading}
@@ -1538,33 +2109,17 @@ export default function DashboardHome({ dashboardData, isLoading, isError, onVie
         onCompleteTask={() => invalidateAll()}
       />
 
+      {/* ═══ STREAK PRESSURE STRIP — always visible when streaks exist ═══ */}
+      <StreakPressureStrip habits={habits} onViewChange={onViewChange} />
+
       {/* Today Summary */}
       <TodaySummaryCard dashboardData={dashboardData} onViewChange={onViewChange} />
 
-      {/* Contextual Quick Actions — Phase H: intent-based entry points */}
-      {smartActions.length > 0 && (
-        <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-0.5" dir="rtl">
-          {smartActions.slice(0, 5).map((action) => (
-            <ContextualAction
-              key={action.id}
-              icon={action.icon}
-              label={action.label}
-              title={action.description}
-              onAction={() => handleQuickAction(action)}
-              loading={false}
-            />
-          ))}
-        </div>
-      )}
+      {/* Engagement Feedback + Achievements */}
+      <EngagementBar dashboardData={dashboardData} />
+      <WeeklyAchievement dashboardData={dashboardData} onViewChange={onViewChange} />
 
-      {/* ═══ Goal Context Card — active goals visible in daily flow ═══ */}
-      <GoalContextCard
-        dashboardData={dashboardData}
-        todayFlowData={todayFlowData}
-        onViewChange={onViewChange}
-      />
-
-      {/* Dynamic Execution Timeline (replaces static Today's Tasks) */}
+      {/* Dynamic Execution Timeline */}
       <DynamicExecutionTimeline
         tasks={today_tasks}
         onCompleteTask={(id) => completeTask.mutate(id)}
@@ -1572,30 +2127,90 @@ export default function DashboardHome({ dashboardData, isLoading, isError, onVie
         onViewChange={onViewChange}
       />
 
-      {/* Behavior Intelligence Card (replaces simple Habits grid) */}
+      {/* Behavior Intelligence Card */}
       <BehaviorIntelligenceCard
         habits={habits}
         onLogHabit={(id) => logHabit.mutate(id)}
         onViewChange={onViewChange}
       />
 
-      {/* ═══ Smart Habit Suggestions — time/pattern/failure-based ═══ */}
-      <HabitSuggestionWidget
-        onLogHabit={(id) => logHabit.mutate(id)}
+      {/* ═══ Goal Context Card ═══ */}
+      <GoalContextCard
+        dashboardData={dashboardData}
+        todayFlowData={todayFlowData}
         onViewChange={onViewChange}
       />
 
       {/* ═══ Streak Celebration & Milestone ═══ */}
       <StreakCelebration habits={habits} dashboardData={dashboardData} />
 
-      {/* ═══ Weekly Achievement Summary ═══ */}
-      <WeeklyAchievement dashboardData={dashboardData} onViewChange={onViewChange} />
-
       {/* Life Feed (collapsible) */}
       <LifeFeedWidget todayFlowData={todayFlowData} />
 
-      {/* ═══ Quick Voice Assistant Access ═══ */}
-      <VoiceAssistantTeaser onViewChange={onViewChange} />
+      {/* ═══ Phase 6: WEEKLY NARRATIVE — Cross-Day Intelligence ═══ */}
+      {weeklyNarrative?.narrative && !weeklyNarrative?.error && (
+        <motion.div
+          initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+          className="glass-card p-4 border border-purple-500/20 bg-gradient-to-l from-purple-500/8 to-indigo-500/5"
+          dir="rtl"
+        >
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <span className="text-lg">{weeklyNarrative.narrative.emoji}</span>
+              <div>
+                <p className="text-xs font-bold text-white">{weeklyNarrative.narrative.title}</p>
+                <p className="text-[10px] text-gray-500">تقرير الأسبوع</p>
+              </div>
+            </div>
+            <div className="text-center">
+              <p className="text-lg font-black text-primary-400">{weeklyNarrative.narrative.overall_score}</p>
+              <p className="text-[8px] text-gray-500">نقطة</p>
+            </div>
+          </div>
+          <p className="text-[11px] text-gray-300 leading-relaxed mb-2">{weeklyNarrative.narrative.body}</p>
+
+          {/* Achievements badges */}
+          {weeklyNarrative.achievements?.length > 0 && (
+            <div className="flex gap-2 flex-wrap mb-2">
+              {weeklyNarrative.achievements.map((a, i) => (
+                <span key={i} className="text-[9px] px-2 py-0.5 rounded-full bg-yellow-500/15 text-yellow-300 border border-yellow-500/20">
+                  {a.badge} {a.title_ar}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* Trends */}
+          {weeklyNarrative.trends?.length > 0 && (
+            <div className="space-y-1">
+              {weeklyNarrative.trends.slice(0, 2).map((t, i) => (
+                <p key={i} className={`text-[10px] flex items-center gap-1 ${t.type === 'positive' ? 'text-green-400' : t.type === 'concern' ? 'text-red-400' : 'text-yellow-400'}`}>
+                  {t.icon} {t.message_ar}
+                </p>
+              ))}
+            </div>
+          )}
+
+          {/* Prediction */}
+          {weeklyNarrative.prediction && (
+            <div className="mt-2 p-2 rounded-lg bg-primary-500/10 border border-primary-500/15">
+              <p className="text-[10px] text-primary-300 flex items-center gap-1">
+                <Brain size={10} /> {weeklyNarrative.prediction.message_ar}
+              </p>
+            </div>
+          )}
+
+          <button
+            onClick={() => onViewChange?.('analytics')}
+            className="mt-2 w-full text-[10px] text-primary-400 hover:text-primary-300 text-center py-1"
+          >
+            عرض التحليلات الكاملة ←
+          </button>
+        </motion.div>
+      )}
+
+      {/* ═══ Evening Reflection CTA ═══ */}
+      <EveningReflectionCTA dashboardData={dashboardData} onViewChange={onViewChange} />
     </div>
   );
 }
@@ -1728,25 +2343,79 @@ function WeeklyAchievement({ dashboardData, onViewChange }) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// VOICE ASSISTANT TEASER — Quick access to voice features
+// STREAK PRESSURE STRIP — Always visible, creates urgency
+// "Don't break the chain" — most powerful behavioral motivator
 // ═════════════════════════════════════════════════════════════════════════════
-function VoiceAssistantTeaser({ onViewChange }) {
+function StreakPressureStrip({ habits, onViewChange }) {
+  const safeHabits = Array.isArray(habits) ? habits : [];
+  const atRisk = safeHabits.filter(h => (h.current_streak || 0) >= 3 && !h.completed_today);
+  if (atRisk.length === 0) return null;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }}
+      className="flex gap-2 overflow-x-auto scrollbar-hide pb-0.5" dir="rtl"
+    >
+      {atRisk.slice(0, 4).map((h) => (
+        <motion.button
+          key={h.id}
+          whileTap={{ scale: 0.95 }}
+          onClick={() => onViewChange?.('habits')}
+          className="flex-shrink-0 flex items-center gap-2 px-3 py-2 rounded-xl bg-gradient-to-l from-orange-500/15 to-red-500/10 border border-orange-500/20 hover:border-orange-500/40 transition-all"
+        >
+          <span className="text-sm">{h.icon || '🔥'}</span>
+          <div className="text-right">
+            <p className="text-[11px] text-white font-bold leading-tight">{h.name}</p>
+            <p className="text-[9px] text-orange-400 font-medium">
+              {h.current_streak} يوم — لا تكسر السلسلة!
+            </p>
+          </div>
+          <Flame size={12} className="text-orange-400 animate-pulse" />
+        </motion.button>
+      ))}
+    </motion.div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// EVENING REFLECTION CTA — Emotional day-closing experience
+// ═════════════════════════════════════════════════════════════════════════════
+function EveningReflectionCTA({ dashboardData, onViewChange }) {
+  const hour = getCairoNow().getHours();
+  const summary = dashboardData?.summary;
+  if (hour < 18 || !summary) return null;
+
+  const tasksCompleted = summary?.tasks?.completed || 0;
+  const habitsCompleted = summary?.habits?.completed || 0;
+  const total = (summary?.tasks?.total || 0) + (summary?.habits?.total || 0);
+  const done = tasksCompleted + habitsCompleted;
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+
+  const getMessage = () => {
+    if (pct >= 80) return { text: 'يوم استثنائي! اختم بملخص رائع', emoji: '🌟', color: 'from-green-500/15 to-emerald-500/10 border-green-500/20' };
+    if (pct >= 50) return { text: 'يوم جيد — شوف إنجازاتك قبل ما تنام', emoji: '🌙', color: 'from-blue-500/15 to-indigo-500/10 border-blue-500/20' };
+    if (pct >= 20) return { text: 'كل إنجاز مهم — راجع يومك', emoji: '💭', color: 'from-purple-500/15 to-indigo-500/10 border-purple-500/20' };
+    return { text: 'بكرة يوم جديد — خطط الآن', emoji: '📋', color: 'from-primary-500/15 to-purple-500/10 border-primary-500/20' };
+  };
+
+  const msg = getMessage();
+
   return (
     <motion.button
       initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
-      onClick={() => onViewChange?.('assistant')}
-      className="w-full glass-card p-3 hover:bg-white/5 transition-all active:scale-[0.99] border border-white/5 hover:border-primary-500/20"
+      onClick={() => onViewChange?.('daily_flow')}
+      className={`w-full glass-card p-4 bg-gradient-to-l ${msg.color} hover:opacity-90 active:scale-[0.99] transition-all`}
       dir="rtl"
     >
       <div className="flex items-center gap-3">
-        <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-primary-500/20 to-purple-500/20 flex items-center justify-center">
-          <Sparkles size={16} className="text-primary-400" />
-        </div>
+        <span className="text-2xl">{msg.emoji}</span>
         <div className="flex-1 text-right">
-          <p className="text-xs font-medium text-white">المساعد الذكي يتعلم أسلوبك</p>
-          <p className="text-[10px] text-gray-500">تكلم بصوتك وهو هيتكيف معاك — جرّب دلوقتي</p>
+          <p className="text-sm font-bold text-white">{msg.text}</p>
+          <p className="text-[10px] text-gray-400">
+            {done}/{total} إنجاز اليوم — {pct}% مكتمل
+          </p>
         </div>
-        <ArrowRight size={14} className="text-gray-600" />
+        <ArrowRight size={14} className="text-gray-500" />
       </div>
     </motion.button>
   );

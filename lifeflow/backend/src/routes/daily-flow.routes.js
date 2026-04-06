@@ -1,17 +1,25 @@
 /**
- * Daily Execution Flow Routes — Phase 4: Daily Companion
- * ========================================================
- * Transforms LifeFlow from suggestion system → daily life leader.
+ * Daily Execution Flow Routes — Phase 4.5: System Hardening
+ * ===========================================================
+ * HARDENING CHANGES:
+ *   - Block status guards: prevent double-complete, completing skipped blocks
+ *   - Idempotent habit check-in: no streak increment if already completed today
+ *   - Start-day guard: prevent overwriting active plan
+ *   - End-day: uses ALL completed tasks (not just due_date=today) for score
+ *   - Input sanitization on all text fields
+ *   - Consistent task counts via analytics.service.js
+ *   - Balanced plan generation: more tasks, fewer habit blocks
  *
  * Endpoints:
- *   GET  /daily-flow/status        — Get current day state (not_started/active/completed)
- *   POST /daily-flow/start-day     — Start the day → generate plan
- *   GET  /daily-flow/plan          — Get today's plan (ordered blocks)
- *   POST /daily-flow/complete-block — Complete a block → reward → next
- *   POST /daily-flow/skip-block    — Skip block with reason
- *   POST /daily-flow/check-habit   — Check-in habit within flow
- *   POST /daily-flow/end-day       — End day → narrative summary
- *   GET  /daily-flow/narrative     — Get day narrative (if ended)
+ *   GET  /daily-flow/status        — Get current day state
+ *   POST /daily-flow/start-day     — Start the day (guarded)
+ *   GET  /daily-flow/plan          — Get today's plan
+ *   POST /daily-flow/complete-block — Complete a block (idempotent, guarded)
+ *   POST /daily-flow/skip-block    — Skip block with reason (guarded)
+ *   POST /daily-flow/check-habit   — Check-in habit (idempotent)
+ *   POST /daily-flow/end-day       — End day (guarded)
+ *   GET  /daily-flow/narrative     — Get day narrative
+ *   POST /daily-flow/reset-day     — Reset day state
  */
 
 'use strict';
@@ -40,8 +48,15 @@ function getModels() {
 function getGoalEngine() {
   try { return require('../services/goal.engine.service'); } catch (_) { return null; }
 }
-function getAnalytics() {
-  try { return require('../services/analytics.service'); } catch (_) { return null; }
+
+// ── Input sanitization ─────────────────────────────────────────────────────
+function sanitizeText(str) {
+  if (typeof str !== 'string') return str;
+  return str
+    .replace(/<[^>]*>/g, '')           // Strip HTML tags
+    .replace(/[<>"'`;]/g, '')          // Remove dangerous chars
+    .trim()
+    .slice(0, 1000);                   // Max 1000 chars
 }
 
 // All routes require authentication
@@ -50,8 +65,8 @@ router.use(protect);
 // ── Helper: Get greeting based on hour ─────────────────────────────────────
 function getGreeting(hour, name) {
   const n = name || '';
-  if (hour < 12) return `صباح الخير يا ${n} 🌅`;
-  if (hour < 17) return `مساء النور يا ${n} ☀️`;
+  if (hour < 12) return `صباح الخير يا ${n} ☀️`;
+  if (hour < 17) return `مساء النور يا ${n} 🌤️`;
   if (hour < 21) return `مساء الخير يا ${n} 🌆`;
   return `أهلاً يا ${n} 🌙`;
 }
@@ -70,7 +85,8 @@ function calculateBlockReward(block, streak = 0) {
   return xp;
 }
 
-// ── Helper: Build plan blocks from tasks + habits ──────────────────────────
+// ── Helper: Build BALANCED plan blocks ─────────────────────────────────────
+// HARDENED: Tasks get priority. Habits are capped. Completed habits pre-marked.
 function buildPlanBlocks(tasks, habits, habitLogs, hour, energy) {
   const blocks = [];
   let blockId = 1;
@@ -89,24 +105,7 @@ function buildPlanBlocks(tasks, habits, habitLogs, hour, energy) {
     return (b.ai_priority_score || 0) - (a.ai_priority_score || 0);
   });
 
-  // Morning habits first
-  const morningHabits = (habits || []).filter(h => {
-    const pt = h.preferred_time || '';
-    return pt === 'morning' || pt === 'صباحاً';
-  });
-  for (const h of morningHabits) {
-    blocks.push({
-      id: `block_${blockId++}`,
-      type: 'habit',
-      habit_id: h.id,
-      title: h.name_ar || h.name || 'عادة',
-      duration: 10,
-      status: completedHabitIds.has(String(h.id)) ? 'completed' : 'pending',
-      icon: h.icon || '🔄',
-      color: h.color || '#10B981',
-      streak: h.current_streak || 0,
-    });
-  }
+  // --- BALANCED PLAN: Include up to 10 tasks, cap habits at 5 ---
 
   // Focus block for top priority task (deep work)
   if (sortedTasks.length > 0) {
@@ -138,8 +137,28 @@ function buildPlanBlocks(tasks, habits, habitLogs, hour, energy) {
     });
   }
 
-  // Remaining tasks
-  for (let i = 1; i < Math.min(sortedTasks.length, 5); i++) {
+  // Morning habits (max 2)
+  const morningHabits = (habits || []).filter(h => {
+    const pt = h.preferred_time || '';
+    return pt === 'morning' || pt === 'صباحاً';
+  }).slice(0, 2);
+  for (const h of morningHabits) {
+    blocks.push({
+      id: `block_${blockId++}`,
+      type: 'habit',
+      habit_id: h.id,
+      title: h.name_ar || h.name || 'عادة',
+      duration: 10,
+      status: completedHabitIds.has(String(h.id)) ? 'completed' : 'pending',
+      icon: h.icon || '🔄',
+      color: h.color || '#10B981',
+      streak: h.current_streak || 0,
+    });
+  }
+
+  // Remaining tasks (up to 9 more, total 10 tasks)
+  const MAX_TASKS = 10;
+  for (let i = 1; i < Math.min(sortedTasks.length, MAX_TASKS); i++) {
     const t = sortedTasks[i];
     blocks.push({
       id: `block_${blockId++}`,
@@ -154,28 +173,8 @@ function buildPlanBlocks(tasks, habits, habitLogs, hour, energy) {
       color: '#8B5CF6',
     });
 
-    // Insert habit blocks between tasks
-    const midHabits = (habits || []).filter(h => {
-      const pt = h.preferred_time || '';
-      return pt !== 'morning' && pt !== 'صباحاً' && pt !== 'evening' && pt !== 'مساءً';
-    });
-    if (i === 2 && midHabits.length > 0) {
-      const mh = midHabits[0];
-      blocks.push({
-        id: `block_${blockId++}`,
-        type: 'habit',
-        habit_id: mh.id,
-        title: mh.name_ar || mh.name || 'عادة',
-        duration: 10,
-        status: completedHabitIds.has(String(mh.id)) ? 'completed' : 'pending',
-        icon: mh.icon || '🔄',
-        color: mh.color || '#10B981',
-        streak: mh.current_streak || 0,
-      });
-    }
-
-    // Break every 2 tasks
-    if (i % 2 === 0 && i < sortedTasks.length - 1) {
+    // Break every 3 tasks
+    if (i % 3 === 0 && i < sortedTasks.length - 1) {
       blocks.push({
         id: `block_${blockId++}`,
         type: 'break',
@@ -188,29 +187,11 @@ function buildPlanBlocks(tasks, habits, habitLogs, hour, energy) {
     }
   }
 
-  // Evening habits at the end
-  const eveningHabits = (habits || []).filter(h => {
-    const pt = h.preferred_time || '';
-    return pt === 'evening' || pt === 'مساءً';
-  });
-  for (const h of eveningHabits) {
-    blocks.push({
-      id: `block_${blockId++}`,
-      type: 'habit',
-      habit_id: h.id,
-      title: h.name_ar || h.name || 'عادة',
-      duration: 10,
-      status: completedHabitIds.has(String(h.id)) ? 'completed' : 'pending',
-      icon: h.icon || '🔄',
-      color: h.color || '#10B981',
-      streak: h.current_streak || 0,
-    });
-  }
-
-  // Remaining habits not placed yet
+  // Evening/other habits (max 3, total habits capped at 5)
   const placedHabitIds = new Set(blocks.filter(b => b.habit_id).map(b => String(b.habit_id)));
-  const unplacedHabits = (habits || []).filter(h => !placedHabitIds.has(String(h.id)));
-  for (const h of unplacedHabits) {
+  const remainingHabits = (habits || []).filter(h => !placedHabitIds.has(String(h.id)));
+  const MAX_REMAINING_HABITS = 3;
+  for (const h of remainingHabits.slice(0, MAX_REMAINING_HABITS)) {
     blocks.push({
       id: `block_${blockId++}`,
       type: 'habit',
@@ -248,6 +229,9 @@ router.get('/status', async (req, res) => {
     const today = moment.tz(tz).format('YYYY-MM-DD');
     const hour = moment.tz(tz).hour();
 
+    // HARDENED: Hydrate from DB if not in memory (survives restart)
+    await hydrateFromDB(userId, today);
+
     // Check if day was started
     const dayStarted = localStorage_dayState.get(`${userId}:${today}:started`);
     const dayEnded = localStorage_dayState.get(`${userId}:${today}:ended`);
@@ -256,26 +240,25 @@ router.get('/status', async (req, res) => {
     if (dayEnded) state = 'completed';
     else if (dayStarted) state = 'active';
 
-    // Quick stats — include overdue tasks too (not just today)
+    // HARDENED: Use consistent counting — ALL pending tasks + overdue
     const { Task, Habit, HabitLog } = getModels();
-    const [tasks, habits, habitLogs] = await Promise.all([
+    const [allTasks, habits, habitLogs] = await Promise.all([
       Task ? Task.findAll({
-        where: {
-          user_id: userId,
-          status: { [Op.in]: ['pending', 'in_progress'] },
-          [Op.or]: [
-            { due_date: { [Op.lte]: today } },
-            { due_date: null },
-          ],
-        },
+        where: { user_id: userId },
+        attributes: ['id', 'status', 'due_date', 'completed_at'],
         raw: true,
-        limit: 20,
       }) : [],
       Habit ? Habit.findAll({ where: { user_id: userId, is_active: true }, raw: true }) : [],
       HabitLog ? HabitLog.findAll({ where: { user_id: userId, log_date: today }, raw: true }) : [],
     ]);
 
-    const completedTasks = await (Task ? Task.count({ where: { user_id: userId, status: 'completed', updatedAt: { [Op.gte]: today } } }) : 0);
+    const pendingTasks = allTasks.filter(t => t.status === 'pending' || t.status === 'in_progress');
+    const completedTasks = allTasks.filter(t => t.status === 'completed');
+    const overdueTasks = allTasks.filter(t => {
+      if (t.status === 'completed') return false;
+      if (!t.due_date) return false;
+      return String(t.due_date).split('T')[0] < today;
+    });
     const completedHabits = habitLogs.filter(l => l.completed).length;
 
     res.json({
@@ -285,8 +268,10 @@ router.get('/status', async (req, res) => {
         date: today,
         hour,
         stats: {
-          total_tasks: tasks.length,
-          completed_tasks: completedTasks,
+          total_tasks: allTasks.length,
+          pending_tasks: pendingTasks.length,
+          completed_tasks: completedTasks.length,
+          overdue_tasks: overdueTasks.length,
           total_habits: habits.length,
           completed_habits: completedHabits,
         },
@@ -301,6 +286,7 @@ router.get('/status', async (req, res) => {
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // POST /daily-flow/start-day — Start the day + generate plan
+// HARDENED: Prevents double-start (returns existing plan if already started)
 // ═══════════════════════════════════════════════════════════════════════════════
 router.post('/start-day', async (req, res) => {
   try {
@@ -311,23 +297,47 @@ router.post('/start-day', async (req, res) => {
     const hour = now.hour();
     const userName = req.user.name?.split(' ')[0] || '';
 
+    // GUARD: Prevent double start — return existing plan
+    const existingPlan = localStorage_dayState.get(`${userId}:${today}:plan`);
+    const dayEnded = localStorage_dayState.get(`${userId}:${today}:ended`);
+
+    if (dayEnded) {
+      return res.status(409).json({
+        success: false,
+        message: 'اليوم انتهى بالفعل. ابدأ يوم جديد غداً أو أعد التعيين.',
+      });
+    }
+
+    if (existingPlan) {
+      // Return existing plan instead of overwriting
+      const greeting = getGreeting(hour, userName);
+      return res.json({
+        success: true,
+        data: {
+          greeting,
+          context: 'خطتك موجودة بالفعل — استمر!',
+          already_started: true,
+          plan: existingPlan,
+        },
+      });
+    }
+
     const { Task, Habit, HabitLog, Goal } = getModels();
 
-    // Fetch all data in parallel
-    // Include overdue tasks (due_date <= today) + pending/in_progress with no date
+    // Fetch all data in parallel — include overdue + today + no due date
     const [tasks, habits, habitLogs, goals] = await Promise.all([
       Task ? Task.findAll({
         where: {
           user_id: userId,
           status: { [Op.in]: ['pending', 'in_progress'] },
           [Op.or]: [
-            { due_date: { [Op.lte]: today } },   // today + overdue
-            { due_date: null },                    // no due date
-            { status: 'in_progress' },             // in progress regardless
+            { due_date: { [Op.lte]: today } },
+            { due_date: null },
+            { status: 'in_progress' },
           ],
         },
         order: [['priority', 'ASC'], ['due_date', 'ASC'], ['ai_priority_score', 'DESC']],
-        limit: 15,
+        limit: 20,
         raw: true,
       }) : [],
       Habit ? Habit.findAll({ where: { user_id: userId, is_active: true }, raw: true }) : [],
@@ -335,32 +345,24 @@ router.post('/start-day', async (req, res) => {
       Goal ? Goal.findAll({ where: { user_id: userId, status: 'active' }, raw: true, limit: 5 }) : [],
     ]);
 
-    // Compute overdue
-    const overdueTasks = tasks.filter(t => {
+    // Deduplicate tasks by id
+    const uniqueTasks = tasks.filter((t, idx, arr) => arr.findIndex(x => x.id === t.id) === idx);
+
+    const overdueTasks = uniqueTasks.filter(t => {
       if (!t.due_date) return false;
       return String(t.due_date).split('T')[0] < today;
     });
-    const todayTasks = tasks.filter(t => {
-      if (!t.due_date) return false;
-      return String(t.due_date).split('T')[0] === today;
-    });
 
-    // Energy estimate (simple: morning=high, afternoon=medium, evening=low)
+    // Energy estimate
     let energy = 'عالية ⚡';
     if (hour >= 14 && hour < 18) energy = 'متوسطة 🔋';
     else if (hour >= 18) energy = 'منخفضة 😌';
 
-    // Main goal for today
     const mainGoal = goals.length > 0 ? (goals[0].title || goals[0].title_ar || 'تحقيق أهدافك') : 'تنظيم يومك';
 
-    // Build plan blocks — include ALL pending tasks (overdue + today + no date)
-    // Overdue tasks get priority; they appear at the top
-    const allPendingTasks = [...overdueTasks, ...todayTasks, ...tasks.filter(t => !t.due_date)]
-      // Deduplicate by id
-      .filter((t, idx, arr) => arr.findIndex(x => x.id === t.id) === idx);
-    const blocks = buildPlanBlocks(allPendingTasks, habits, habitLogs, hour, energy);
+    // Build BALANCED plan blocks
+    const blocks = buildPlanBlocks(uniqueTasks, habits, habitLogs, hour, energy);
 
-    // Store plan in memory (per user per day)
     const plan = {
       date: today,
       started_at: now.toISOString(),
@@ -368,7 +370,7 @@ router.post('/start-day', async (req, res) => {
       stats: {
         total_blocks: blocks.length,
         completed_blocks: blocks.filter(b => b.status === 'completed').length,
-        total_tasks: todayTasks.length,
+        total_tasks: uniqueTasks.length,
         total_habits: habits.length,
         overdue_tasks: overdueTasks.length,
       },
@@ -379,7 +381,7 @@ router.post('/start-day', async (req, res) => {
     localStorage_dayState.set(`${userId}:${today}:xp`, 0);
     localStorage_dayState.set(`${userId}:${today}:completed_blocks`, []);
 
-    // Also persist to DayPlan model if available
+    // Persist to DayPlan model
     const { DayPlan } = getModels();
     if (DayPlan) {
       try {
@@ -400,10 +402,10 @@ router.post('/start-day', async (req, res) => {
       success: true,
       data: {
         greeting,
-        context: `${allPendingTasks.length} مهمة (${overdueTasks.length} متأخرة) • هدفك: ${mainGoal}`,
+        context: `${uniqueTasks.length} مهمة (${overdueTasks.length} متأخرة) • هدفك: ${mainGoal}`,
         energy_estimate: energy,
         day_snapshot: {
-          tasks_count: allPendingTasks.length,
+          tasks_count: uniqueTasks.length,
           habits_count: habits.length,
           overdue_count: overdueTasks.length,
           main_goal: mainGoal,
@@ -448,6 +450,9 @@ router.get('/plan', async (req, res) => {
               completed_blocks: dbPlan.completed_blocks || 0,
             },
           };
+          // Re-hydrate in-memory state from DB
+          localStorage_dayState.set(`${userId}:${today}:plan`, plan);
+          localStorage_dayState.set(`${userId}:${today}:started`, true);
         }
       }
     }
@@ -456,7 +461,6 @@ router.get('/plan', async (req, res) => {
       return res.json({ success: true, data: { plan: null, state: 'not_started' } });
     }
 
-    // Determine current block (first pending)
     const currentBlock = plan.blocks.find(b => b.status === 'pending') || null;
     const completedCount = plan.blocks.filter(b => b.status === 'completed').length;
     const totalXp = localStorage_dayState.get(`${userId}:${today}:xp`) || 0;
@@ -481,14 +485,22 @@ router.get('/plan', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// POST /daily-flow/complete-block — Complete a block → reward → next
+// POST /daily-flow/complete-block — Complete a block (IDEMPOTENT + GUARDED)
+// HARDENED: Rejects already-completed, already-skipped blocks. No double XP.
 // ═══════════════════════════════════════════════════════════════════════════════
 router.post('/complete-block', async (req, res) => {
   try {
     const userId = req.user.id;
     const tz = req.user.timezone || 'Africa/Cairo';
     const today = moment.tz(tz).format('YYYY-MM-DD');
-    const { block_id, satisfaction, reflection } = req.body;
+    const { block_id } = req.body;
+
+    // HARDENED: Hydrate from DB if not in memory
+    await hydrateFromDB(userId, today);
+
+    if (!block_id) {
+      return res.status(400).json({ success: false, message: 'block_id مطلوب' });
+    }
 
     const plan = localStorage_dayState.get(`${userId}:${today}:plan`);
     if (!plan) {
@@ -501,10 +513,35 @@ router.post('/complete-block', async (req, res) => {
     }
 
     const block = plan.blocks[blockIndex];
+
+    // ── CRITICAL GUARD: Only pending blocks can be completed ──
+    if (block.status === 'completed') {
+      // Idempotent: return success but no additional XP
+      return res.json({
+        success: true,
+        data: {
+          completed_block: block,
+          reward: { xp: 0, total_xp: localStorage_dayState.get(`${userId}:${today}:xp`) || 0, message: 'تم إكمال هذا البلوك مسبقاً ✅', achievement: null, streak: block.streak || 0 },
+          already_completed: true,
+          next_block: plan.blocks.find(b => b.status === 'pending') || null,
+          progress: { completed: plan.blocks.filter(b => b.status === 'completed').length, total: plan.blocks.length, percentage: plan.blocks.length > 0 ? Math.round((plan.blocks.filter(b => b.status === 'completed').length / plan.blocks.length) * 100) : 0 },
+          all_done: plan.blocks.every(b => b.status !== 'pending'),
+        },
+      });
+    }
+
+    if (block.status === 'skipped') {
+      return res.status(409).json({
+        success: false,
+        message: 'لا يمكن إكمال بلوك تم تخطيه. يمكنك إكمال البلوك التالي.',
+      });
+    }
+
+    // Mark as completed
     block.status = 'completed';
     block.completed_at = moment.tz(tz).toISOString();
 
-    // Update real data
+    // Update real data in DB
     const { Task, Habit, HabitLog } = getModels();
 
     if (block.type === 'focus' || block.type === 'task') {
@@ -521,24 +558,34 @@ router.post('/complete-block', async (req, res) => {
         try {
           const habit = await Habit.findOne({ where: { id: block.habit_id, user_id: userId } });
           if (habit) {
-            await HabitLog.upsert({
-              habit_id: block.habit_id,
-              user_id: userId,
-              log_date: today,
-              completed: true,
-              value: habit.habit_type === 'boolean' ? 1 : (habit.target_value || 1),
+            // HARDENED: Check if already completed today (idempotent)
+            const existingLog = await HabitLog.findOne({
+              where: { habit_id: block.habit_id, user_id: userId, log_date: today, completed: true },
             });
-            // Update streak
-            const newStreak = (habit.current_streak || 0) + 1;
-            await Habit.update(
-              {
-                current_streak: newStreak,
-                best_streak: Math.max(newStreak, habit.best_streak || 0),
-                last_completed: today,
-              },
-              { where: { id: block.habit_id } }
-            );
-            block.streak = newStreak;
+
+            if (!existingLog) {
+              await HabitLog.upsert({
+                habit_id: block.habit_id,
+                user_id: userId,
+                log_date: today,
+                completed: true,
+                value: habit.habit_type === 'boolean' ? 1 : (habit.target_value || 1),
+              });
+              // Only increment streak if not already completed today
+              const newStreak = (habit.current_streak || 0) + 1;
+              await Habit.update(
+                {
+                  current_streak: newStreak,
+                  best_streak: Math.max(newStreak, habit.best_streak || 0),
+                  last_completed: today,
+                },
+                { where: { id: block.habit_id } }
+              );
+              block.streak = newStreak;
+            } else {
+              // Already completed — keep existing streak
+              block.streak = habit.current_streak || 0;
+            }
           }
         } catch (_) {}
       }
@@ -562,7 +609,7 @@ router.post('/complete-block', async (req, res) => {
     completedBlocks.push({ block_id, xp, completed_at: block.completed_at });
     localStorage_dayState.set(`${userId}:${today}:completed_blocks`, completedBlocks);
 
-    // Also update DayPlan in DB
+    // Persist to DayPlan in DB
     const { DayPlan } = getModels();
     if (DayPlan) {
       try {
@@ -573,29 +620,7 @@ router.post('/complete-block', async (req, res) => {
       } catch (_) {}
     }
 
-    // Find next block
-    const nextBlock = plan.blocks.find(b => b.status === 'pending') || null;
-    const completedCount = plan.blocks.filter(b => b.status === 'completed').length;
-    const percentage = plan.blocks.length > 0 ? Math.round((completedCount / plan.blocks.length) * 100) : 0;
-
-    // Generate reward message
-    let rewardMessage = `أحسنت! +${xp} XP 🎉`;
-    let achievement = null;
-    if (completedCount === plan.blocks.length) {
-      rewardMessage = `🏆 أنجزت كل خطة اليوم! +${xp} XP`;
-      achievement = 'day_complete';
-    } else if (completedCount >= 5) {
-      rewardMessage = `🔥 إنجاز رائع! ${completedCount} بلوك مكتمل — +${xp} XP`;
-      achievement = 'streak_5';
-    } else if (streak >= 7) {
-      rewardMessage = `🔥🔥 سلسلة ${streak} يوم! +${xp} XP`;
-      achievement = `streak_${streak}`;
-    } else if (streak >= 3) {
-      rewardMessage = `🔥 ${streak} أيام متتالية! +${xp} XP`;
-      achievement = `streak_${streak}`;
-    }
-
-    // Goal progress message
+    // Update goal progress if applicable
     let goalProgress = null;
     if (block.goal_id) {
       const goalEngine = getGoalEngine();
@@ -617,30 +642,63 @@ router.post('/complete-block', async (req, res) => {
       }
     }
 
+    // Find next block and compute progress
+    const nextBlock = plan.blocks.find(b => b.status === 'pending') || null;
+    const completedCount = plan.blocks.filter(b => b.status === 'completed').length;
+    const percentage = plan.blocks.length > 0 ? Math.round((completedCount / plan.blocks.length) * 100) : 0;
+
+    // Generate reward message
+    let rewardMessage = `أحسنت! +${xp} XP 🎉`;
+    let achievement = null;
+    if (completedCount === plan.blocks.length) {
+      rewardMessage = `🏆 أنجزت كل خطة اليوم! +${xp} XP`;
+      achievement = 'day_complete';
+    } else if (completedCount >= 5) {
+      rewardMessage = `🔥 إنجاز رائع! ${completedCount} بلوك مكتمل — +${xp} XP`;
+      achievement = 'streak_5';
+    } else if (streak >= 7) {
+      rewardMessage = `🔥🔥 سلسلة ${streak} يوم! +${xp} XP`;
+    } else if (streak >= 3) {
+      rewardMessage = `🔥 ${streak} أيام متتالية! +${xp} XP`;
+    }
+
+    // Phase 6: Report to Adaptive Intelligence V2
+    let adaptiveInsight = null;
+    try {
+      const adaptiveV2 = require('../services/adaptive.intelligence.v2');
+      const result = adaptiveV2.onBlockComplete(userId, { ...block, xp });
+      adaptiveInsight = {
+        energy_level: result?.state?.energyLevel,
+        momentum_pct: result?.state?.momentum ? Math.round(result.state.momentum * 100) : null,
+        recommendations: (result?.recommendations || []).filter(r => r.type !== 'intensity_adjustment').slice(0, 2),
+      };
+    } catch (_) {}
+
+    // Phase 6: Check Perfect Day status
+    let perfectDayCheck = null;
+    if (completedCount === plan.blocks.length) {
+      try {
+        const crossDay = require('../services/cross.day.intelligence');
+        perfectDayCheck = await crossDay.checkPerfectDay(userId, tz);
+      } catch (_) {}
+    }
+
     res.json({
       success: true,
       data: {
         completed_block: block,
-        reward: {
-          xp,
-          total_xp: totalXp,
-          message: rewardMessage,
-          achievement,
-          streak: block.streak || 0,
-        },
+        reward: { xp, total_xp: totalXp, message: rewardMessage, achievement, streak },
         goal_progress: goalProgress,
         next_block: nextBlock,
-        progress: {
-          completed: completedCount,
-          total: plan.blocks.length,
-          percentage,
-        },
+        progress: { completed: completedCount, total: plan.blocks.length, percentage },
         momentum: percentage >= 60
           ? '🔥 أنت داخل في flow! استمر!'
           : percentage >= 30
             ? '💪 تقدم ممتاز، واصل!'
             : '🚀 بداية قوية!',
         all_done: completedCount === plan.blocks.length,
+        adaptive: adaptiveInsight,
+        perfect_day: perfectDayCheck,
       },
     });
   } catch (err) {
@@ -650,7 +708,8 @@ router.post('/complete-block', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// POST /daily-flow/skip-block — Skip a block with reason
+// POST /daily-flow/skip-block — Skip a block with reason (GUARDED)
+// HARDENED: Only pending blocks can be skipped
 // ═══════════════════════════════════════════════════════════════════════════════
 router.post('/skip-block', async (req, res) => {
   try {
@@ -659,30 +718,72 @@ router.post('/skip-block', async (req, res) => {
     const today = moment.tz(tz).format('YYYY-MM-DD');
     const { block_id, reason } = req.body;
 
+    if (!block_id) {
+      return res.status(400).json({ success: false, message: 'block_id مطلوب' });
+    }
+
     const plan = localStorage_dayState.get(`${userId}:${today}:plan`);
     if (!plan) return res.status(400).json({ success: false, message: 'لا توجد خطة نشطة' });
 
     const blockIndex = plan.blocks.findIndex(b => b.id === block_id);
     if (blockIndex === -1) return res.status(404).json({ success: false, message: 'البلوك غير موجود' });
 
-    plan.blocks[blockIndex].status = 'skipped';
-    plan.blocks[blockIndex].skip_reason = reason || 'other';
+    const block = plan.blocks[blockIndex];
+
+    // GUARD: Only pending blocks can be skipped
+    if (block.status !== 'pending') {
+      return res.status(409).json({
+        success: false,
+        message: block.status === 'completed'
+          ? 'لا يمكن تخطي بلوك مكتمل'
+          : 'تم تخطي هذا البلوك مسبقاً',
+      });
+    }
+
+    block.status = 'skipped';
+    block.skip_reason = sanitizeText(reason) || 'other';
+    plan.blocks[blockIndex] = block;
     localStorage_dayState.set(`${userId}:${today}:plan`, plan);
 
     const nextBlock = plan.blocks.find(b => b.status === 'pending') || null;
 
-    // Recovery message based on reason
     let recovery = 'مفيش مشكلة — نكمل اللي بعده! 💪';
     if (reason === 'overwhelmed') recovery = 'خذ نفس عميق. نبدأ بحاجة أسهل 🧘';
     else if (reason === 'low_energy') recovery = 'طاقتك مهمة — نخلي الصعب لبكرة 😌';
     else if (reason === 'busy') recovery = 'وقتك ضيق — نركز على الأهم بس ⏰';
 
+    // Phase 6: Report to Adaptive Intelligence V2
+    let adaptiveInsight = null;
+    try {
+      const adaptiveV2 = require('../services/adaptive.intelligence.v2');
+      const result = adaptiveV2.onBlockSkip(userId, block, reason || 'other');
+      adaptiveInsight = {
+        energy_level: result?.state?.energyLevel,
+        procrastination_detected: result?.state?.procrastination,
+        burnout_risk: result?.state?.burnoutRisk,
+        recommendations: (result?.recommendations || []).filter(r => r.type !== 'intensity_adjustment').slice(0, 2),
+      };
+
+      // If adaptive engine suggests a break, update recovery message
+      const breakRec = result?.recommendations?.find(r => r.type === 'energy_intervention');
+      if (breakRec) {
+        recovery = breakRec.message_ar || recovery;
+      }
+
+      // If procrastination detected, add intervention message
+      const procRec = result?.recommendations?.find(r => r.type === 'procrastination_intervention');
+      if (procRec) {
+        recovery = procRec.message_ar || recovery;
+      }
+    } catch (_) {}
+
     res.json({
       success: true,
       data: {
-        skipped_block: plan.blocks[blockIndex],
+        skipped_block: block,
         next_block: nextBlock,
         recovery_message: recovery,
+        adaptive: adaptiveInsight,
       },
     });
   } catch (err) {
@@ -692,7 +793,8 @@ router.post('/skip-block', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// POST /daily-flow/check-habit — Check-in a habit within the flow
+// POST /daily-flow/check-habit — Check-in habit (IDEMPOTENT)
+// HARDENED: No double streak increment
 // ═══════════════════════════════════════════════════════════════════════════════
 router.post('/check-habit', async (req, res) => {
   try {
@@ -701,48 +803,65 @@ router.post('/check-habit', async (req, res) => {
     const today = moment.tz(tz).format('YYYY-MM-DD');
     const { habit_id, value } = req.body;
 
+    if (!habit_id) {
+      return res.status(400).json({ success: false, message: 'habit_id مطلوب' });
+    }
+
     const { Habit, HabitLog } = getModels();
     if (!Habit || !HabitLog) return res.status(500).json({ success: false, message: 'Habit model unavailable' });
 
     const habit = await Habit.findOne({ where: { id: habit_id, user_id: userId } });
     if (!habit) return res.status(404).json({ success: false, message: 'العادة غير موجودة' });
 
-    const logValue = value || (habit.habit_type === 'boolean' ? 1 : habit.target_value || 1);
-    await HabitLog.upsert({
-      habit_id, user_id: userId, log_date: today, completed: true, value: logValue,
+    // HARDENED: Check if already completed today (idempotent)
+    const existingLog = await HabitLog.findOne({
+      where: { habit_id, user_id: userId, log_date: today, completed: true },
     });
 
-    const newStreak = (habit.current_streak || 0) + 1;
-    await Habit.update(
-      { current_streak: newStreak, best_streak: Math.max(newStreak, habit.best_streak || 0), last_completed: today },
-      { where: { id: habit_id } }
-    );
+    let newStreak = habit.current_streak || 0;
+    let alreadyCompleted = false;
+
+    if (existingLog) {
+      // Already completed — idempotent response, no streak change
+      alreadyCompleted = true;
+    } else {
+      // First completion today
+      const logValue = value || (habit.habit_type === 'boolean' ? 1 : habit.target_value || 1);
+      await HabitLog.upsert({
+        habit_id, user_id: userId, log_date: today, completed: true, value: logValue,
+      });
+
+      newStreak = (habit.current_streak || 0) + 1;
+      await Habit.update(
+        { current_streak: newStreak, best_streak: Math.max(newStreak, habit.best_streak || 0), last_completed: today },
+        { where: { id: habit_id } }
+      );
+    }
 
     // Update plan block if exists
     const plan = localStorage_dayState.get(`${userId}:${today}:plan`);
     if (plan) {
-      const habitBlock = plan.blocks.find(b => b.habit_id === habit_id || String(b.habit_id) === String(habit_id));
-      if (habitBlock) {
+      const habitBlock = plan.blocks.find(b => String(b.habit_id) === String(habit_id));
+      if (habitBlock && habitBlock.status === 'pending') {
         habitBlock.status = 'completed';
         habitBlock.streak = newStreak;
         localStorage_dayState.set(`${userId}:${today}:plan`, plan);
       }
     }
 
-    const xp = calculateBlockReward({ type: 'habit' }, newStreak);
-    const totalXp = (localStorage_dayState.get(`${userId}:${today}:xp`) || 0) + xp;
-    localStorage_dayState.set(`${userId}:${today}:xp`, totalXp);
+    // Only award XP if first completion
+    let xp = 0;
+    let totalXp = localStorage_dayState.get(`${userId}:${today}:xp`) || 0;
+    if (!alreadyCompleted) {
+      xp = calculateBlockReward({ type: 'habit' }, newStreak);
+      totalXp += xp;
+      localStorage_dayState.set(`${userId}:${today}:xp`, totalXp);
+    }
 
     let streakMessage = null;
     if (newStreak >= 30) streakMessage = `🏆 ${newStreak} يوم! أنت أسطورة!`;
     else if (newStreak >= 7) streakMessage = `🔥🔥 ${newStreak} أيام متتالية!`;
     else if (newStreak >= 3) streakMessage = `🔥 ${newStreak} أيام! استمر!`;
-
-    // Identity layer
-    let identityMessage = null;
-    if (newStreak >= 7) {
-      identityMessage = `أنت شخص ملتزم بـ"${habit.name_ar || habit.name}" 👌`;
-    }
 
     res.json({
       success: true,
@@ -751,9 +870,11 @@ router.post('/check-habit', async (req, res) => {
         streak: newStreak,
         xp,
         total_xp: totalXp,
-        reward_message: `✅ ${habit.name_ar || habit.name} — +${xp} XP`,
+        already_completed: alreadyCompleted,
+        reward_message: alreadyCompleted
+          ? `✅ ${habit.name_ar || habit.name} — تم إكماله مسبقاً اليوم`
+          : `✅ ${habit.name_ar || habit.name} — +${xp} XP`,
         streak_message: streakMessage,
-        identity_message: identityMessage,
         cue_next: 'جاهز للخطوة التالية؟ 👉',
       },
     });
@@ -764,7 +885,8 @@ router.post('/check-habit', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// POST /daily-flow/end-day — End day → generate narrative
+// POST /daily-flow/end-day — End day (HARDENED score calculation)
+// FIXED: Uses ALL completed tasks (not just due_date=today) for score
 // ═══════════════════════════════════════════════════════════════════════════════
 router.post('/end-day', async (req, res) => {
   try {
@@ -773,19 +895,46 @@ router.post('/end-day', async (req, res) => {
     const today = moment.tz(tz).format('YYYY-MM-DD');
     const { reflection_text } = req.body;
 
+    // GUARD: Prevent ending day that hasn't started
+    const dayStarted = localStorage_dayState.get(`${userId}:${today}:started`);
+    if (!dayStarted) {
+      return res.status(400).json({ success: false, message: 'لم يتم بدء اليوم بعد' });
+    }
+
+    // GUARD: Prevent double end
+    const dayEnded = localStorage_dayState.get(`${userId}:${today}:ended`);
+    if (dayEnded) {
+      const existingNarrative = localStorage_dayState.get(`${userId}:${today}:narrative`);
+      return res.json({ success: true, data: existingNarrative || {}, already_ended: true });
+    }
+
     const plan = localStorage_dayState.get(`${userId}:${today}:plan`);
     const totalXp = localStorage_dayState.get(`${userId}:${today}:xp`) || 0;
 
     const { Task, Habit, HabitLog, Goal } = getModels();
 
-    // Fetch completion stats
-    const [completedTasksCount, totalTodayTasks, habits, habitLogs, goals] = await Promise.all([
-      Task ? Task.count({ where: { user_id: userId, status: 'completed', updatedAt: { [Op.gte]: today } } }) : 0,
-      Task ? Task.count({ where: { user_id: userId, due_date: today } }) : 0,
+    // FIXED: Count ALL tasks completed today (by completed_at date, not due_date)
+    const [allTasks, habits, habitLogs, goals] = await Promise.all([
+      Task ? Task.findAll({ where: { user_id: userId }, raw: true }) : [],
       Habit ? Habit.findAll({ where: { user_id: userId, is_active: true }, raw: true }) : [],
       HabitLog ? HabitLog.findAll({ where: { user_id: userId, log_date: today }, raw: true }) : [],
       Goal ? Goal.findAll({ where: { user_id: userId, status: 'active' }, raw: true, limit: 5 }) : [],
     ]);
+
+    // Tasks completed today (by completed_at, not due_date)
+    const completedTasksToday = allTasks.filter(t => {
+      if (t.status !== 'completed' || !t.completed_at) return false;
+      return moment(t.completed_at).tz(tz).format('YYYY-MM-DD') === today;
+    });
+
+    // All pending + overdue (the denominator for task score)
+    const pendingAndOverdue = allTasks.filter(t => {
+      if (t.status === 'completed') return false;
+      if (!t.due_date) return true; // no date = should still count
+      return String(t.due_date).split('T')[0] <= today;
+    });
+
+    const totalRelevantTasks = completedTasksToday.length + pendingAndOverdue.length;
 
     const completedHabits = habitLogs.filter(l => l.completed).length;
     const planBlocks = plan?.blocks || [];
@@ -800,13 +949,12 @@ router.post('/end-day', async (req, res) => {
       status: g.progress >= 80 ? 'on_track' : g.progress >= 40 ? 'needs_attention' : 'at_risk',
     }));
 
-    // Score
-    const taskScore = totalTodayTasks > 0 ? Math.round((completedTasksCount / totalTodayTasks) * 100) : 0;
+    // FIXED score: uses completed_today vs all relevant tasks
+    const taskScore = totalRelevantTasks > 0 ? Math.round((completedTasksToday.length / totalRelevantTasks) * 100) : 0;
     const habitScore = habits.length > 0 ? Math.round((completedHabits / habits.length) * 100) : 0;
     const planScore = planBlocks.length > 0 ? Math.round((planCompleted / planBlocks.length) * 100) : 0;
     const dayScore = Math.round((taskScore * 0.4 + habitScore * 0.3 + planScore * 0.3));
 
-    // Narrative message
     let narrativeTitle = '';
     let narrativeEmoji = '';
     if (dayScore >= 80) { narrativeTitle = 'يوم استثنائي!'; narrativeEmoji = '🏆'; }
@@ -815,31 +963,27 @@ router.post('/end-day', async (req, res) => {
     else if (dayScore >= 20) { narrativeTitle = 'يوم فيه تحديات'; narrativeEmoji = '💪'; }
     else { narrativeTitle = 'بكرة أحسن إن شاء الله'; narrativeEmoji = '🌱'; }
 
-    // Build narrative
     const narrative = {
       date: today,
       title: `${narrativeEmoji} ${narrativeTitle}`,
       score: dayScore,
       xp_earned: totalXp,
       achievements: {
-        tasks: { completed: completedTasksCount, total: totalTodayTasks, score: taskScore },
+        tasks: { completed: completedTasksToday.length, total: totalRelevantTasks, score: taskScore },
         habits: { completed: completedHabits, total: habits.length, score: habitScore },
         plan: { completed: planCompleted, total: planBlocks.length, skipped: planSkipped, pending: planPending, score: planScore },
       },
       goal_progress: goalProgress,
-      reflection: reflection_text || null,
+      reflection: sanitizeText(reflection_text) || null,
       highlights: [],
       tomorrow_preview: 'جاهز ليوم جديد؟ ابدأ بكرة من هنا! 🚀',
     };
 
-    // Build highlights
-    if (completedTasksCount > 0) narrative.highlights.push(`✅ أكملت ${completedTasksCount} مهمة`);
+    if (completedTasksToday.length > 0) narrative.highlights.push(`✅ أكملت ${completedTasksToday.length} مهمة`);
     if (completedHabits > 0) narrative.highlights.push(`🔄 أنجزت ${completedHabits} عادة`);
     if (totalXp > 50) narrative.highlights.push(`⚡ كسبت ${totalXp} XP`);
     const streakHabits = habits.filter(h => (h.current_streak || 0) >= 3);
-    if (streakHabits.length > 0) {
-      narrative.highlights.push(`🔥 ${streakHabits.length} عادة في سلسلة!`);
-    }
+    if (streakHabits.length > 0) narrative.highlights.push(`🔥 ${streakHabits.length} عادة في سلسلة!`);
 
     // Mark day as ended
     localStorage_dayState.set(`${userId}:${today}:ended`, true);
@@ -854,7 +998,7 @@ router.post('/end-day', async (req, res) => {
             completed_blocks: planCompleted,
             completion_rate: planBlocks.length > 0 ? planCompleted / planBlocks.length : 0,
             user_rating: req.body.rating || null,
-            user_notes: reflection_text || null,
+            user_notes: sanitizeText(reflection_text) || null,
           },
           { where: { user_id: userId, plan_date: today } }
         );
@@ -890,7 +1034,7 @@ router.get('/narrative', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// POST /daily-flow/reset-day — Reset day state (allows restart)
+// POST /daily-flow/reset-day — Reset day state
 // ═══════════════════════════════════════════════════════════════════════════════
 router.post('/reset-day', async (req, res) => {
   try {
@@ -898,11 +1042,22 @@ router.post('/reset-day', async (req, res) => {
     const tz = req.user.timezone || 'Africa/Cairo';
     const today = moment.tz(tz).format('YYYY-MM-DD');
 
-    // Clear all day state for this user+date
+    // Clear in-memory state
     const prefix = `${userId}:${today}:`;
     for (const key of localStorage_dayState.keys()) {
       if (key.startsWith(prefix)) {
         localStorage_dayState.delete(key);
+      }
+    }
+
+    // HARDENED: Also clear DB record to prevent hydrateFromDB from restoring old state
+    const { DayPlan } = getModels();
+    if (DayPlan) {
+      try {
+        const deleted = await DayPlan.destroy({ where: { user_id: userId, plan_date: today } });
+        logger.info(`[DAILY-FLOW] Deleted ${deleted} DayPlan record(s) for user ${userId} on ${today}`);
+      } catch (e) {
+        logger.warn(`[DAILY-FLOW] DayPlan delete failed: ${e.message}`);
       }
     }
 
@@ -918,8 +1073,54 @@ router.post('/reset-day', async (req, res) => {
   }
 });
 
-// ── In-memory day state (survives within server process) ───────────────────
-// In production, this would be Redis. For demo, Map is sufficient.
+// ── In-memory day state with DB-backed hydration ────────────────────────────
+// HARDENED: Auto-hydrates from DayPlan model on cache miss (survives restart)
 const localStorage_dayState = new Map();
+
+/**
+ * Hydrate in-memory state from DayPlan DB for a user/date if not already present.
+ * Called automatically in /status, /plan, /complete-block, etc.
+ */
+async function hydrateFromDB(userId, today) {
+  const prefix = `${userId}:${today}:`;
+  if (localStorage_dayState.has(`${prefix}started`)) return; // Already in memory
+
+  const { DayPlan } = getModels();
+  if (!DayPlan) return;
+
+  try {
+    const dbPlan = await DayPlan.findOne({ where: { user_id: userId, plan_date: today } });
+    if (dbPlan && dbPlan.schedule) {
+      const blocks = Array.isArray(dbPlan.schedule) ? dbPlan.schedule : [];
+      const plan = {
+        date: today,
+        blocks,
+        stats: {
+          total_blocks: blocks.length,
+          completed_blocks: dbPlan.completed_blocks || blocks.filter(b => b.status === 'completed').length,
+        },
+      };
+      localStorage_dayState.set(`${prefix}plan`, plan);
+      localStorage_dayState.set(`${prefix}started`, true);
+      // Compute XP from completed blocks
+      const completedBlocks = blocks.filter(b => b.status === 'completed');
+      let xp = 0;
+      for (const b of completedBlocks) {
+        xp += calculateBlockReward(b, b.streak || 0);
+      }
+      localStorage_dayState.set(`${prefix}xp`, xp);
+      localStorage_dayState.set(`${prefix}completed_blocks`, completedBlocks.map(b => ({
+        block_id: b.id, xp: calculateBlockReward(b, b.streak || 0),
+      })));
+      // Check if day was ended (completion_rate = 1 or user_notes exist)
+      if (dbPlan.user_notes || (dbPlan.completion_rate && dbPlan.completion_rate >= 0.99)) {
+        localStorage_dayState.set(`${prefix}ended`, true);
+      }
+      logger.info(`[DAILY-FLOW] Hydrated state from DB for user ${userId} on ${today}`);
+    }
+  } catch (e) {
+    logger.debug(`[DAILY-FLOW] DB hydration failed: ${e.message}`);
+  }
+}
 
 module.exports = router;

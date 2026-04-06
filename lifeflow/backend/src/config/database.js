@@ -75,6 +75,8 @@ function registerModels() {
   require('../models/user_settings.model');
   // Execution Engine — persistent session tracking
   require('../models/execution_session.model');
+  // Phase 13 — persistent decision memory (brain state survives restarts)
+  require('../models/decision_memory.model');
 }
 
 async function connectDB() {

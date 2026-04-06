@@ -73,6 +73,13 @@ function getBehaviorEngine() {
 function getGoalEngine() {
   try { return require('../services/goal.engine.service'); } catch (e) { return null; }
 }
+// Phase 12: EventBus + Brain Service
+function getEventBus() {
+  try { return require('../core/eventBus'); } catch (e) { return null; }
+}
+function getBrainService() {
+  try { return require('../services/brain.service'); } catch (e) { return null; }
+}
 
 // ─── Session timeout constants ──────────────────────────────────────────────
 const SESSION_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours → auto-abandon
@@ -1325,6 +1332,18 @@ router.post('/complete', async (req, res) => {
         }).catch(() => {});
       }
 
+      // Phase 12: Emit to EventBus → triggers brain.recompute
+      const eb1 = getEventBus();
+      if (eb1) {
+        const evType = activeSession.target_type === 'habit' ? 'HABIT_COMPLETED' : 'TASK_COMPLETED';
+        eb1.emit(eb1.EVENT_TYPES[evType], {
+          userId,
+          taskId: activeSession.target_id,
+          title: activeSession.target_title,
+          type: activeSession.target_type,
+        });
+      }
+
       // ── BEHAVIOR ADAPTATION Phase — adjust difficulty + update goal progress
       const behaviorEngine = getBehaviorEngine();
       const goalEngine = getGoalEngine();
@@ -1483,6 +1502,17 @@ router.post('/skip', async (req, res) => {
         skip_type: skip_type || 'lazy',
         reason: reason_text,
       }).catch(() => {});
+    }
+
+    // Phase 12: Emit TASK_SKIPPED to EventBus → triggers brain.recompute
+    const eb2 = getEventBus();
+    if (eb2) {
+      eb2.emit(eb2.EVENT_TYPES.TASK_SKIPPED, {
+        userId,
+        taskId: task_id || activeSession?.target_id,
+        skipType: skip_type || 'lazy',
+        title: activeSession?.target_title || '',
+      });
     }
 
     // ── MICRO-ADAPTATION: Generate lighter alternative instantly ──────────
@@ -2092,6 +2122,27 @@ router.put('/goals/:id', async (req, res) => {
   } catch (err) {
     logger.error('[ENGINE] PUT /goals/:id error:', err.message);
     res.status(500).json({ success: false, message: 'فشل في تحديث الهدف' });
+  }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// DELETE /engine/goals/:id — Delete a goal
+// ═════════════════════════════════════════════════════════════════════════════
+router.delete('/goals/:id', async (req, res) => {
+  const userId = req.user.id;
+  try {
+    const Goal = getModels().Goal;
+    if (!Goal) return res.status(500).json({ success: false, message: 'نموذج الأهداف غير متاح' });
+
+    const goal = await Goal.findOne({ where: { id: req.params.id, user_id: userId } });
+    if (!goal) return res.status(404).json({ success: false, message: 'الهدف غير موجود' });
+
+    await goal.destroy();
+    logger.info(`[ENGINE] Deleted goal "${goal.title}" for user ${userId}`);
+    res.json({ success: true, message: 'تم حذف الهدف' });
+  } catch (err) {
+    logger.error('[ENGINE] DELETE /goals/:id error:', err.message);
+    res.status(500).json({ success: false, message: 'فشل في حذف الهدف' });
   }
 });
 

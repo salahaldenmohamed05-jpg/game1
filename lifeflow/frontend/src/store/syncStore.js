@@ -67,6 +67,14 @@ const useSyncStore = create((set, get) => ({
     qc.invalidateQueries({ queryKey: ['mood-log'] });
     // Chat sessions
     qc.invalidateQueries({ queryKey: ['chat-sessions'] });
+    // Goals
+    qc.invalidateQueries({ queryKey: ['goals'] });
+    // Engine / execution
+    qc.invalidateQueries({ queryKey: ['engine-today'] });
+    qc.invalidateQueries({ queryKey: ['habit-suggestions'] });
+    // Phase 6 cross-day
+    qc.invalidateQueries({ queryKey: ['phase6-streak-warnings'] });
+    qc.invalidateQueries({ queryKey: ['phase6-comeback'] });
     get().bump();
   },
 }));

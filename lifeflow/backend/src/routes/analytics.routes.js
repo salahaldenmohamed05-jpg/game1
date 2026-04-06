@@ -14,13 +14,15 @@
 
 const router  = require('express').Router();
 const { protect } = require('../middleware/auth.middleware');
+const { cacheMiddleware } = require('../config/redis');
 const analytics   = require('../services/analytics.service');
 const logger      = require('../utils/logger');
 
+// HARDENED: Auth runs first, THEN cache (so cache key includes user_id)
 router.use(protect);
 
 // ─── Dashboard Summary ─────────────────────────────────────────────────────
-router.get('/summary', async (req, res) => {
+router.get('/summary', cacheMiddleware(60, 'analytics'), async (req, res) => {
   try {
     const tz = req.user.timezone || 'Africa/Cairo';
     const summary = await analytics.getAnalyticsSummary(req.user.id, tz);
@@ -32,7 +34,7 @@ router.get('/summary', async (req, res) => {
 });
 
 // ─── Overview Tab ───────────────────────────────────────────────────────────
-router.get('/overview', async (req, res) => {
+router.get('/overview', cacheMiddleware(60, 'analytics'), async (req, res) => {
   try {
     const tz = req.user.timezone || 'Africa/Cairo';
     const overview = await analytics.getAnalyticsOverview(req.user.id, tz);
@@ -44,7 +46,7 @@ router.get('/overview', async (req, res) => {
 });
 
 // ─── Unified Analytics ──────────────────────────────────────────────────────
-router.get('/unified', async (req, res) => {
+router.get('/unified', cacheMiddleware(120, 'analytics'), async (req, res) => {
   try {
     const tz = req.user.timezone || 'Africa/Cairo';
     const result = await analytics.getUnifiedAnalytics(req.user.id, tz);

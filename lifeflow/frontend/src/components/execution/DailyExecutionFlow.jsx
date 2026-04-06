@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { dailyFlowAPI } from '../../utils/api';
 import toast from 'react-hot-toast';
+import { recordAction as cognitiveRecord } from '../../engine/cognitiveEngine';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONSTANTS
@@ -89,9 +90,23 @@ function StartDayScreen({ onStartDay, isLoading, stats }) {
         initial={{ y: 10, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         transition={{ delay: 0.4 }}
-        className="text-gray-400 mb-8 text-sm"
+        className="text-gray-400 mb-2 text-sm"
       >
         جاهز نبدأ يوم بسيط ومنظم؟ 💪
+      </motion.p>
+
+      {/* Intent setting — micro-commitment */}
+      <motion.p
+        initial={{ y: 10, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        transition={{ delay: 0.45 }}
+        className="text-primary-400 text-xs font-medium mb-6 bg-primary-500/10 px-4 py-2 rounded-xl border border-primary-500/15 inline-block"
+      >
+        {taskCount > 0 && habitCount > 0
+          ? `🎯 ${taskCount} مهمة + ${habitCount} عادة — النظام هيقودك خطوة بخطوة`
+          : taskCount > 0
+            ? `🎯 ${taskCount} مهمة بانتظارك — نرتبهم ونبدأ`
+            : '🎯 يوم جديد مليان فرص!'}
       </motion.p>
 
       {/* Day snapshot cards — real data */}
@@ -239,8 +254,15 @@ function DailyPlanTimeline({ plan, currentBlock, progress, onSelectBlock, onEndD
                     <span className={`text-xs px-1.5 py-0.5 rounded ${
                       block.priority === 'urgent' ? 'bg-red-500/20 text-red-400' :
                       block.priority === 'high' ? 'bg-orange-500/20 text-orange-400' :
+                      block.priority === 'medium' ? 'bg-yellow-500/20 text-yellow-400' :
                       'bg-gray-500/20 text-gray-400'
-                    }`}>{block.priority}</span>
+                    }`}>{
+                      block.priority === 'urgent' ? 'عاجل' :
+                      block.priority === 'high' ? 'عالي' :
+                      block.priority === 'medium' ? 'متوسط' :
+                      block.priority === 'low' ? 'منخفض' :
+                      block.priority
+                    }</span>
                   )}
                 </div>
               </div>
@@ -453,30 +475,49 @@ function RewardMoment({ reward, goalProgress, nextBlock, momentum, onNext, onEnd
         {reward?.message || 'أحسنت! 🎉'}
       </motion.h2>
 
-      {/* XP earned */}
+      {/* XP earned with animated counter */}
       <motion.div
         initial={{ y: 20, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         transition={{ delay: 0.4 }}
         className="flex items-center gap-4 mb-4"
       >
-        <div className="glass-card px-4 py-2 text-center">
-          <span className="text-lg font-bold text-yellow-400">+{reward?.xp || 0}</span>
-          <p className="text-xs text-gray-500">XP</p>
-        </div>
+        <motion.div
+          initial={{ scale: 0.5 }} animate={{ scale: [0.5, 1.2, 1] }}
+          transition={{ delay: 0.5, duration: 0.5 }}
+          className="glass-card px-5 py-3 text-center bg-gradient-to-br from-yellow-500/15 to-orange-500/10 border border-yellow-500/25"
+        >
+          <span className="text-2xl font-black text-yellow-400">+{reward?.xp || 0}</span>
+          <p className="text-xs text-yellow-300/70 font-medium">XP</p>
+        </motion.div>
         {reward?.streak > 0 && (
-          <div className="glass-card px-4 py-2 text-center">
+          <motion.div
+            initial={{ scale: 0.5 }} animate={{ scale: [0.5, 1.2, 1] }}
+            transition={{ delay: 0.6, duration: 0.5 }}
+            className="glass-card px-4 py-3 text-center bg-gradient-to-br from-orange-500/15 to-red-500/10 border border-orange-500/25"
+          >
             <span className="text-lg font-bold text-orange-400 flex items-center gap-1">
               <Flame size={16} /> {reward.streak}
             </span>
-            <p className="text-xs text-gray-500">سلسلة</p>
-          </div>
+            <p className="text-xs text-orange-300/70">سلسلة</p>
+          </motion.div>
         )}
-        <div className="glass-card px-4 py-2 text-center">
+        <div className="glass-card px-4 py-3 text-center">
           <span className="text-lg font-bold text-primary-400">{reward?.total_xp || 0}</span>
-          <p className="text-xs text-gray-500">إجمالي XP</p>
+          <p className="text-xs text-gray-500">إجمالي</p>
         </div>
       </motion.div>
+
+      {/* Momentum message */}
+      {(reward?.xp || 0) >= 20 && (
+        <motion.p
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+          transition={{ delay: 0.7 }}
+          className="text-sm text-primary-400 font-bold mb-2 text-center"
+        >
+          أنت في الـ Flow! استمر 🔥
+        </motion.p>
+      )}
 
       {/* Goal progress */}
       {goalProgress && (
@@ -555,8 +596,15 @@ function DayNarrative({ narrative, onRestart }) {
       className="px-4 pb-8"
       dir="rtl"
     >
-      {/* Title */}
+      {/* Title with emotional framing */}
       <div className="text-center mb-6 pt-4">
+        <motion.div
+          initial={{ scale: 0 }} animate={{ scale: 1 }}
+          transition={{ type: 'spring', stiffness: 200 }}
+          className="text-5xl mb-3 block"
+        >
+          {score >= 80 ? '🏆' : score >= 50 ? '🌟' : score >= 30 ? '💪' : '🌙'}
+        </motion.div>
         <motion.h1
           initial={{ scale: 0.8 }}
           animate={{ scale: 1 }}
@@ -564,7 +612,11 @@ function DayNarrative({ narrative, onRestart }) {
         >
           {title}
         </motion.h1>
-        <p className="text-sm text-gray-400">ملخص يومك</p>
+        <p className="text-sm text-gray-400">
+          {score >= 80 ? 'يوم استثنائي — أنت بتبني هوية الإنجاز'
+           : score >= 50 ? 'يوم منتج — كل خطوة بتفرق'
+           : 'بكرة فرصة جديدة — المهم إنك بدأت'}
+        </p>
       </div>
 
       {/* Score ring */}
@@ -652,9 +704,12 @@ function DayNarrative({ narrative, onRestart }) {
         </div>
       )}
 
-      {/* Tomorrow CTA */}
+      {/* Tomorrow CTA with commitment prompt */}
       <div className="text-center mt-6">
-        <p className="text-sm text-gray-400 mb-3">{tomorrow_preview || 'بكرة يوم جديد — جاهز تبدأ؟'}</p>
+        <div className="glass-card p-4 mb-4 bg-gradient-to-r from-primary-500/10 to-purple-500/5 border border-primary-500/20">
+          <p className="text-xs text-gray-500 mb-1">💬 كلمة لبكرة:</p>
+          <p className="text-sm text-white font-medium">{tomorrow_preview || 'بكرة يوم جديد مليان فرص — نام وارتاح وبكرة نكمل!'}</p>
+        </div>
         <button
           onClick={onRestart}
           className="px-8 py-3 bg-gradient-to-l from-primary-500 to-secondary-500 text-white font-bold rounded-2xl shadow-glow hover:shadow-xl transition-all"

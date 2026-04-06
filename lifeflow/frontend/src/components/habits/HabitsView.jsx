@@ -587,7 +587,7 @@ export default function HabitsView() {
                 isChecking={checkingId === h.id}
                 onCheckIn={id => checkInMutation.mutate(id)}
                 onLogValue={(id, val) => logValueMutation.mutate({ id, value: val })}
-                onDelete={id => deleteMutation.mutate(id)} />
+                onDelete={id => { if (window.confirm('هل أنت متأكد من حذف هذه العادة؟')) deleteMutation.mutate(id); }} />
             ))}
           </AnimatePresence>
         </div>

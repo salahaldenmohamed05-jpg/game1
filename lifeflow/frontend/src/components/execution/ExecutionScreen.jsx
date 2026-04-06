@@ -35,6 +35,8 @@ import {
 import { engineAPI, habitAPI, vaAPI } from '../../utils/api';
 import useSyncStore from '../../store/syncStore';
 import toast from 'react-hot-toast';
+import { recordAction as cognitiveRecord, reactToCompletion, reactToSkip } from '../../engine/cognitiveEngine';
+import { useBrainStore } from '../../store/brainStore';
 
 // ─── Skip reasons ─────────────────────────────────────────────────────────────
 const SKIP_REASONS = [
@@ -116,6 +118,7 @@ function FocusTimer({ startedAt, activeSeconds, isPaused, estimatedMinutes }) {
 export default function ExecutionScreen({ onViewChange }) {
   const queryClient = useQueryClient();
   const { invalidateAll, recordAction } = useSyncStore();
+  const { brainState, forceRecompute } = useBrainStore();
 
   // ── State ──────────────────────────────────────────────────────────────────
   const [phase, setPhase] = useState('action');       // 'action' | 'focus' | 'done' | 'followup'
@@ -263,13 +266,19 @@ export default function ExecutionScreen({ onViewChange }) {
       setFollowupData(null);
       invalidateAll();
       recordAction('task_completed');
+      // Record in cognitive memory for learning
+      cognitiveRecord('complete', {
+        task_id: action?.id,
+        task_title: action?.title,
+        type: 'task',
+      });
     },
     onError: () => toast.error('فشل تسجيل الإنجاز'),
   });
 
   const skipMutation = useMutation({
     mutationFn: (data) => engineAPI.skip(data),
-    onSuccess: (res) => {
+    onSuccess: (res, data) => {
       setShowSkipReasons(false);
       resetIdle();
       const d = res?.data?.data;
@@ -282,6 +291,12 @@ export default function ExecutionScreen({ onViewChange }) {
       }
       invalidateAll();
       recordAction('task_skipped');
+      // Record skip in cognitive memory with reason for learning
+      cognitiveRecord('skip', {
+        task_id: action?.id,
+        task_title: action?.title,
+        reason: data?.reason || 'unknown',
+      });
     },
   });
 
@@ -711,19 +726,44 @@ export default function ExecutionScreen({ onViewChange }) {
       <div className="max-w-md mx-auto px-4 pt-8" dir="rtl">
         <motion.div initial={{ scale: 0.7, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
           transition={{ type: 'spring', damping: 12 }} className="text-center mb-6">
-          <motion.div initial={{ rotate: -10 }} animate={{ rotate: [0, 10, -10, 0] }}
-            transition={{ duration: 0.6, delay: 0.2 }}>
+          {/* Multi-step celebration animation */}
+          <motion.div
+            initial={{ rotate: -10 }} animate={{ rotate: [0, 10, -10, 5, 0] }}
+            transition={{ duration: 0.8, delay: 0.2 }}
+          >
             <Award size={56} className="text-yellow-400 mx-auto mb-3" />
           </motion.div>
-          <h1 className="text-2xl font-black text-white mb-2">أحسنت! 🎉</h1>
-          <div className="inline-flex items-center gap-2 px-4 py-2 bg-yellow-500/15 rounded-xl border border-yellow-500/25">
-            <Zap size={16} className="text-yellow-400" />
-            <span className="text-sm font-bold text-yellow-300">+{reward.xp || 10} XP</span>
-            {reward.streak_continued && <Flame size={14} className="text-orange-400" />}
-          </div>
+          <motion.h1
+            initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
+            transition={{ delay: 0.3 }}
+            className="text-2xl font-black text-white mb-1"
+          >
+            {(reward.xp || 10) >= 25 ? 'أداء استثنائي!' : 'أحسنت!'}
+          </motion.h1>
+          {/* Identity reinforcement based on action type */}
+          <motion.p
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+            transition={{ delay: 0.45 }}
+            className="text-xs text-gray-400 mb-3"
+          >
+            {reward.streak_continued ? `🔥 ${reward.streak || 1} يوم متتالي — أنت بتبني هوية الانضباط`
+              : 'كل خطوة بتقربك من أهدافك'}
+          </motion.p>
+          <motion.div
+            initial={{ scale: 0 }} animate={{ scale: [0, 1.2, 1] }}
+            transition={{ delay: 0.4, duration: 0.4 }}
+            className="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-l from-yellow-500/20 to-orange-500/15 rounded-xl border border-yellow-500/30"
+          >
+            <Zap size={18} className="text-yellow-400" />
+            <span className="text-lg font-black text-yellow-300">+{reward.xp || 10} XP</span>
+            {reward.streak_continued && <Flame size={16} className="text-orange-400" />}
+          </motion.div>
           {reward.achievement && (
-            <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.5 }}
-              className="text-sm text-yellow-400 font-bold mt-2">{reward.achievement}</motion.p>
+            <motion.div initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.6 }}
+              className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 bg-purple-500/15 rounded-full border border-purple-500/25">
+              <span className="text-sm">🏅</span>
+              <span className="text-xs text-purple-300 font-bold">{reward.achievement}</span>
+            </motion.div>
           )}
         </motion.div>
 
