@@ -21,14 +21,11 @@ const useAuthStore = create(
       isAuthenticated: false,
       isLoading: false,
 
-      // Login — supports email or phone
-      login: async (email, password, phone) => {
+      // Login — email + password only (Phase 13.1)
+      login: async (email, password) => {
         set({ isLoading: true });
         try {
-          const loginPayload = phone
-            ? { phone, password }
-            : { email, password };
-          const response = await authAPI.login(loginPayload);
+          const response = await authAPI.login({ email, password });
           // Axios response shape: { data: { success, message, data: { user, accessToken, refreshToken } } }
           const outer = response?.data || response;  // { success, message, data: {...} }
           const payload = outer?.data || outer;       // { user, accessToken, refreshToken }
@@ -55,7 +52,7 @@ const useAuthStore = create(
         }
       },
 
-      // Register — supports email or phone
+      // Register — email only (Phase 13.1)
       register: async (data) => {
         set({ isLoading: true });
         try {

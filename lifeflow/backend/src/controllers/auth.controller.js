@@ -1,7 +1,9 @@
 /**
- * Auth Controller — المصادقة الكاملة
- * =====================================
- * يدعم: البريد الإلكتروني + رقم الهاتف، تأكيد OTP، نسيان كلمة المرور
+ * Auth Controller — Phase 13.1 (Email Only)
+ * =============================================
+ * يدعم: البريد الإلكتروني فقط، تأكيد OTP، نسيان كلمة المرور
+ * Issue 6: تم إزالة دعم رقم الهاتف
+ * Issue 5: تحسين التحقق من البريد وإعادة تعيين كلمة المرور
  */
 
 const jwt = require('jsonwebtoken');
@@ -28,82 +30,118 @@ const generateTokens = (userId) => {
 const generateOTP = () => String(Math.floor(100000 + Math.random() * 900000));
 
 /**
- * Simulate email / SMS sending (logs OTP — no SMTP in sandbox).
- * In production: integrate nodemailer / Twilio here.
+ * Send OTP via email (uses nodemailer when SMTP configured, falls back to log).
+ * Phase 13.1: Proper SMTP integration with fallback.
  */
-const sendOTP = (contact, otp, type = 'reset') => {
+const sendOTP = async (email, otp, type = 'reset') => {
   const label = type === 'verify' ? 'تفعيل الحساب' : 'إعادة تعيين كلمة المرور';
-  logger.info(`[AUTH-OTP] ${label} | contact=${contact} | otp=${otp} | (sandbox — check server logs)`);
+
+  // Try nodemailer if SMTP is configured
+  if (process.env.SMTP_HOST && process.env.SMTP_USER) {
+    try {
+      const nodemailer = require('nodemailer');
+      const transporter = nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port: parseInt(process.env.SMTP_PORT || '587'),
+        secure: process.env.SMTP_SECURE === 'true',
+        auth: {
+          user: process.env.SMTP_USER,
+          pass: process.env.SMTP_PASS,
+        },
+      });
+
+      const subject = type === 'verify' ? 'LifeFlow — تأكيد البريد الإلكتروني' : 'LifeFlow — إعادة تعيين كلمة المرور';
+      const html = `
+        <div dir="rtl" style="font-family: 'Segoe UI', Tahoma, sans-serif; max-width: 500px; margin: auto; padding: 24px;">
+          <h2 style="color: #6C63FF;">LifeFlow</h2>
+          <p>مرحباً! رمز ${label} الخاص بك:</p>
+          <div style="background: #f0f0ff; padding: 16px; border-radius: 12px; text-align: center; margin: 16px 0;">
+            <span style="font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #6C63FF;">${otp}</span>
+          </div>
+          <p style="color: #666; font-size: 14px;">هذا الرمز صالح لمدة ${type === 'verify' ? '10' : '15'} دقائق.</p>
+          <p style="color: #999; font-size: 12px;">إذا لم تطلب هذا الرمز، تجاهل هذه الرسالة.</p>
+        </div>
+      `;
+
+      await transporter.sendMail({
+        from: process.env.SMTP_FROM || `"LifeFlow" <${process.env.SMTP_USER}>`,
+        to: email,
+        subject,
+        html,
+      });
+
+      logger.info(`[AUTH-OTP] ${label} | email=${email} | SMTP sent successfully`);
+      return true;
+    } catch (smtpErr) {
+      logger.warn(`[AUTH-OTP] SMTP failed: ${smtpErr.message} — falling back to log`);
+    }
+  }
+
+  // Fallback: log OTP (sandbox/dev mode)
+  logger.info(`[AUTH-OTP] ${label} | email=${email} | otp=${otp} | (sandbox — check server logs)`);
+  return false;
 };
 
 /* ─────────────────────────────────────────────
    POST /api/v1/auth/register
-   Supports email OR phone number
+   Email-only registration (Phase 13.1)
    ───────────────────────────────────────────── */
 exports.register = async (req, res) => {
   try {
-    const { name, email, phone, password, timezone = 'Africa/Cairo', language = 'ar' } = req.body;
+    const { name, email, password, timezone = 'Africa/Cairo', language = 'ar' } = req.body;
 
+    // Phase 13.1 Issue 6: Email only — phone auth removed
     if (!name?.trim()) {
       return res.status(400).json({ success: false, message: 'الاسم مطلوب' });
     }
-    if (!email && !phone) {
-      return res.status(400).json({ success: false, message: 'البريد الإلكتروني أو رقم الهاتف مطلوب' });
+    if (!email) {
+      return res.status(400).json({ success: false, message: 'البريد الإلكتروني مطلوب' });
     }
     if (!password || password.length < 6) {
       return res.status(400).json({ success: false, message: 'كلمة المرور يجب أن تكون 6 أحرف على الأقل' });
     }
 
     // Validate email format
-    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.status(400).json({ success: false, message: 'صيغة البريد الإلكتروني غير صحيحة' });
     }
 
-    // Check duplicates
-    if (email) {
-      const exists = await User.findOne({ where: { email } });
-      if (exists) return res.status(400).json({ success: false, message: 'البريد الإلكتروني مسجل مسبقاً' });
-    }
-    if (phone) {
-      const exists = await User.findOne({ where: { phone } });
-      if (exists) return res.status(400).json({ success: false, message: 'رقم الهاتف مسجل مسبقاً' });
-    }
+    // Check duplicate email
+    const exists = await User.findOne({ where: { email } });
+    if (exists) return res.status(400).json({ success: false, message: 'البريد الإلكتروني مسجل مسبقاً' });
 
     const verifyOTP = generateOTP();
     const verifyExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 min
-    const userEmail = email || `phone_${phone.replace(/\D/g, '')}@lifeflow.app`;
 
     const user = await User.create({
       name: name.trim(),
-      email: userEmail,
-      phone: phone || null,
+      email,
       password,
       timezone,
       language,
-      is_verified: !email, // phone = auto-verified; email = needs OTP
-      email_verify_token: email ? verifyOTP : null,
-      email_verify_expires: email ? verifyExpires : null,
+      is_verified: false,
+      email_verify_token: verifyOTP,
+      email_verify_expires: verifyExpires,
     });
 
-    if (email) sendOTP(email, verifyOTP, 'verify');
+    // Phase 13.1 Issue 5: Send verification OTP via email
+    sendOTP(email, verifyOTP, 'verify');
 
     const { accessToken, refreshToken } = generateTokens(user.id);
     await user.update({ refresh_token: refreshToken });
 
-    logger.info(`[AUTH] New user registered: ${email || phone}`);
+    logger.info(`[AUTH] New user registered: ${email}`);
 
     res.status(201).json({
       success: true,
-      message: email
-        ? `مرحباً ${name}! تم إنشاء حسابك. رمز التحقق أُرسل إلى بريدك 📧`
-        : `مرحباً ${name}! تم إنشاء حسابك بنجاح 🎉`,
+      message: `مرحباً ${name}! تم إنشاء حسابك. رمز التحقق أُرسل إلى بريدك 📧`,
       data: {
         user: user.toSafeObject(),
         accessToken,
         refreshToken,
-        verify_required: email ? !user.is_verified : false,
+        verify_required: true,
         // In sandbox: expose OTP for testing
-        ...(process.env.NODE_ENV !== 'production' && email && { _sandbox_otp: verifyOTP }),
+        ...(process.env.NODE_ENV !== 'production' && { _sandbox_otp: verifyOTP }),
       },
     });
   } catch (error) {
@@ -237,25 +275,23 @@ exports.resetPassword = async (req, res) => {
 
 /* ─────────────────────────────────────────────
    POST /api/v1/auth/login
-   Supports email OR phone
+   Email-only login (Phase 13.1)
    ───────────────────────────────────────────── */
 exports.login = async (req, res) => {
   try {
-    const { email, phone, password } = req.body;
+    const { email, password } = req.body;
 
-    if (!password || (!email && !phone)) {
-      return res.status(400).json({ success: false, message: 'بيانات الدخول مطلوبة' });
+    // Phase 13.1 Issue 6: Email only — phone auth removed
+    if (!password || !email) {
+      return res.status(400).json({ success: false, message: 'البريد الإلكتروني وكلمة المرور مطلوبان' });
     }
 
-    const whereClause = email ? { email } : { phone };
-    const user = await User.findOne({ where: whereClause });
+    const user = await User.findOne({ where: { email } });
 
     if (!user || !(await user.comparePassword(password))) {
       return res.status(401).json({
         success: false,
-        message: email
-          ? 'البريد الإلكتروني أو كلمة المرور غير صحيحة'
-          : 'رقم الهاتف أو كلمة المرور غير صحيحة',
+        message: 'البريد الإلكتروني أو كلمة المرور غير صحيحة',
       });
     }
 
@@ -266,7 +302,7 @@ exports.login = async (req, res) => {
     const { accessToken, refreshToken } = generateTokens(user.id);
     await user.update({ refresh_token: refreshToken, last_login: new Date() });
 
-    logger.info(`[AUTH] User logged in: ${email || phone}`);
+    logger.info(`[AUTH] User logged in: ${email}`);
 
     res.json({
       success: true,

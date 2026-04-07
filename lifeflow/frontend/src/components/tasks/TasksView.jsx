@@ -193,6 +193,149 @@ function CircularProgress({ completed, total, overdue }) {
   );
 }
 
+// ─── Inline Subtasks Component ───────────────────────────────────────────────
+
+function InlineSubtasks({ taskId }) {
+  const [expanded, setExpanded] = useState(false);
+  const [newTitle, setNewTitle] = useState('');
+  const [showAdd, setShowAdd] = useState(false);
+  const queryClient = useQueryClient();
+
+  const { data: subtaskData, isLoading } = useQuery({
+    queryKey: ['subtasks', taskId],
+    queryFn: () => taskAPI.getSubtasks(taskId),
+    enabled: expanded,
+    select: (res) => {
+      const d = res?.data?.data || {};
+      return { subtasks: d.subtasks || [], stats: d.stats || {} };
+    },
+  });
+
+  const completeMutation = useMutation({
+    mutationFn: (subtaskId) => taskAPI.completeSubtask(taskId, subtaskId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['subtasks', taskId] });
+      queryClient.invalidateQueries({ queryKey: ['tasks-smart-view'] });
+      queryClient.invalidateQueries({ queryKey: ['tasks-all'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      toast.success('تم إكمال الخطوة');
+    },
+  });
+
+  const createMutation = useMutation({
+    mutationFn: (data) => taskAPI.createSubtask(taskId, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['subtasks', taskId] });
+      setNewTitle('');
+      setShowAdd(false);
+      toast.success('تمت إضافة خطوة');
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (subtaskId) => taskAPI.deleteSubtask(taskId, subtaskId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['subtasks', taskId] });
+    },
+  });
+
+  const handleAddSubtask = () => {
+    if (!newTitle.trim()) return;
+    createMutation.mutate({ title: newTitle.trim() });
+  };
+
+  const subtasks = subtaskData?.subtasks || [];
+  const stats = subtaskData?.stats || {};
+
+  return (
+    <div className="mt-2 mr-12">
+      {/* Toggle / summary row */}
+      <button onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-1.5 text-[11px] text-gray-400 hover:text-primary-400 transition-colors py-1">
+        <ChevronDown size={11} className={`transition-transform ${expanded ? 'rotate-180' : ''}`} />
+        <span>الخطوات</span>
+        {stats.total > 0 && (
+          <span className="text-[10px] bg-primary-500/10 text-primary-400 px-1.5 py-0.5 rounded-full font-bold">
+            {stats.completed}/{stats.total}
+          </span>
+        )}
+        {stats.completion_pct > 0 && stats.completion_pct < 100 && (
+          <div className="w-12 h-1 bg-white/10 rounded-full overflow-hidden ml-1">
+            <div className="h-full bg-primary-500 rounded-full" style={{ width: `${stats.completion_pct}%` }} />
+          </div>
+        )}
+        {stats.completion_pct === 100 && (
+          <span className="text-[9px] text-green-400">✅ مكتمل</span>
+        )}
+      </button>
+
+      {/* Expanded subtasks */}
+      {expanded && (
+        <div className="space-y-1 mt-1">
+          {isLoading ? (
+            <div className="py-2"><div className="h-3 w-24 bg-white/5 rounded animate-pulse" /></div>
+          ) : (
+            <>
+              {subtasks.map(st => (
+                <div key={st.id} className="flex items-center gap-2 py-1 group">
+                  <button
+                    onClick={() => !st.completed && completeMutation.mutate(st.id)}
+                    disabled={st.completed}
+                    className={`flex-shrink-0 w-5 h-5 rounded-full border flex items-center justify-center transition-all ${
+                      st.completed ? 'bg-green-500 border-green-500' : 'border-gray-600 hover:border-primary-400'
+                    }`}
+                  >
+                    {st.completed && <Check size={10} className="text-white" strokeWidth={3} />}
+                  </button>
+                  <span className={`text-xs flex-1 ${st.completed ? 'line-through text-gray-500' : 'text-gray-300'}`}>
+                    {st.title}
+                  </span>
+                  {st.estimated_time && (
+                    <span className="text-[9px] text-gray-600">{st.estimated_time}د</span>
+                  )}
+                  <button
+                    onClick={() => deleteMutation.mutate(st.id)}
+                    className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-red-400 p-0.5 transition-opacity"
+                  >
+                    <X size={10} />
+                  </button>
+                </div>
+              ))}
+
+              {/* Add new subtask */}
+              {showAdd ? (
+                <div className="flex items-center gap-1.5 mt-1">
+                  <input
+                    value={newTitle}
+                    onChange={e => setNewTitle(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && handleAddSubtask()}
+                    placeholder="خطوة جديدة..."
+                    className="flex-1 bg-white/5 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-primary-500/30"
+                    autoFocus
+                  />
+                  <button onClick={handleAddSubtask} disabled={!newTitle.trim() || createMutation.isPending}
+                    className="text-primary-400 hover:text-primary-300 p-1">
+                    <Check size={14} />
+                  </button>
+                  <button onClick={() => { setShowAdd(false); setNewTitle(''); }}
+                    className="text-gray-500 hover:text-gray-300 p-1">
+                    <X size={14} />
+                  </button>
+                </div>
+              ) : (
+                <button onClick={() => setShowAdd(true)}
+                  className="flex items-center gap-1 text-[11px] text-gray-500 hover:text-primary-400 transition-colors py-1 mt-0.5">
+                  <Plus size={10} /> إضافة خطوة
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Task Card (Samsung Reminder + Todo hybrid) ─────────────────────────────
 
 const TaskCard = memo(function TaskCard({ task, onComplete, onDelete, onEdit, onSplit, isRecommended, showTimestamp }) {
@@ -339,6 +482,9 @@ const TaskCard = memo(function TaskCard({ task, onComplete, onDelete, onEdit, on
           </button>
         </div>
       </div>
+
+      {/* Inline subtasks — visible for non-completed tasks */}
+      {!isDone && <InlineSubtasks taskId={task.id} />}
     </motion.div>
   );
 });
@@ -680,6 +826,7 @@ export default function TasksView() {
   const queryClient = useQueryClient();
   const { invalidateAll, recordAction } = useSyncStore();
 
+  // Smart view for "Today" mode
   const { data, isLoading } = useQuery({
     queryKey: ['tasks-smart-view'],
     queryFn: () => taskAPI.getSmartView(),
@@ -690,6 +837,21 @@ export default function TasksView() {
         overdue: d.overdue || [], today: d.today || [], upcoming: d.upcoming || [],
         completed: d.completed || [], recommendedTaskId: d.recommendedTaskId || null,
         scores: d.scores || {}, stats: d.stats || {},
+      };
+    },
+  });
+
+  // "All Tasks" query for All view — Phase 13.1
+  const { data: allData, isLoading: allLoading } = useQuery({
+    queryKey: ['tasks-all'],
+    queryFn: () => taskAPI.getAllTasks(),
+    refetchInterval: 60000,
+    enabled: viewMode === 'all',
+    select: (res) => {
+      const d = res?.data?.data || res?.data || {};
+      return {
+        overdue: d.overdue || [], today: d.today || [], upcoming: d.upcoming || [],
+        noDueDate: d.no_due_date || [], completed: d.completed || [], stats: d.stats || {},
       };
     },
   });
@@ -723,17 +885,17 @@ export default function TasksView() {
   const handleEdit = useCallback((task) => setEditingTask(task), []);
   const handleUpdate = useCallback((id, data) => updateMutation.mutate({ id, data }), [updateMutation]);
 
-  // Smart task split
+  // Smart task split — creates REAL subtasks (not separate tasks)
   const handleSplitTask = useCallback(async (task, subtaskTitles) => {
     try {
       for (const title of subtaskTitles) {
-        await taskAPI.createTask({ title, category: task.category, priority: task.priority, due_date: task.due_date || getTodayCairo() });
+        await taskAPI.createSubtask(task.id, { title });
       }
-      await taskAPI.completeTask(task.id);
       invalidateAll();
+      queryClient.invalidateQueries({ queryKey: ['subtasks', task.id] });
       toast.success(`تم تقسيم المهمة إلى ${subtaskTitles.length} خطوات`);
     } catch { toast.error('فشل في تقسيم المهمة'); }
-  }, [invalidateAll]);
+  }, [invalidateAll, queryClient]);
 
   const toggleSection = useCallback((key) => setCollapsedSections(prev => ({ ...prev, [key]: !prev[key] })), []);
 
@@ -973,37 +1135,111 @@ export default function TasksView() {
             )}
           </div>
 
-          {/* All completed (all mode) */}
-          {viewMode === 'all' && allCompleted.length > 0 && (
-            <div>
-              <SectionHeader icon="🏆" label="كل المكتملة" count={allCompleted.length} color="text-gray-400"
-                collapsed={collapsedSections.allDone !== false} onToggle={() => toggleSection('allDone')} />
-              {collapsedSections.allDone === false && (
-                <div className="space-y-2">
-                  {allCompleted.slice(0, 20).map(t => (
-                    <TaskCard key={t.id} task={t} isRecommended={false} showTimestamp
-                      onComplete={() => {}} onDelete={handleDelete} onEdit={handleEdit} />
-                  ))}
+          {/* ═════ ALL TASKS MODE ═════ Phase 13.1: Dedicated All Tasks View */}
+          {viewMode === 'all' && !allLoading && allData && (
+            <>
+              {/* ALL: Overdue */}
+              {allData.overdue.length > 0 && (
+                <div>
+                  <SectionHeader icon="⚠️" label="متأخرة" count={allData.overdue.length} color="text-red-400"
+                    collapsed={collapsedSections.allOverdue} onToggle={() => toggleSection('allOverdue')}
+                    badge={{ text: 'تحتاج اهتمام', color: 'text-red-400 bg-red-500/10' }} />
+                  {!collapsedSections.allOverdue && (
+                    <div className="space-y-2">
+                      <AnimatePresence mode="popLayout">
+                        {allData.overdue.map(t => (
+                          <TaskCard key={t.id} task={{ ...t, _overdue: true }} isRecommended={false}
+                            onComplete={handleComplete} onDelete={handleDelete} onEdit={handleEdit} onSplit={setSplittingTask} />
+                        ))}
+                      </AnimatePresence>
+                    </div>
+                  )}
                 </div>
               )}
-            </div>
-          )}
 
-          {/* Upcoming (all mode) */}
-          {viewMode === 'all' && upcomingTasks.length > 0 && (
-            <div>
-              <SectionHeader icon="🔜" label="قادمة" count={upcomingTasks.length} color="text-blue-400"
-                collapsed={collapsedSections.upcoming} onToggle={() => toggleSection('upcoming')} />
-              {!collapsedSections.upcoming && (
-                <div className="space-y-2">
-                  <AnimatePresence mode="popLayout">
-                    {upcomingTasks.map(t => (
-                      <TaskCard key={t.id} task={t} isRecommended={false}
-                        onComplete={handleComplete} onDelete={handleDelete} onEdit={handleEdit} onSplit={setSplittingTask} />
-                    ))}
-                  </AnimatePresence>
+              {/* ALL: Today */}
+              {allData.today.length > 0 && (
+                <div>
+                  <SectionHeader icon="📅" label="اليوم" count={allData.today.length} color="text-white"
+                    collapsed={collapsedSections.allToday} onToggle={() => toggleSection('allToday')} />
+                  {!collapsedSections.allToday && (
+                    <div className="space-y-2">
+                      <AnimatePresence mode="popLayout">
+                        {allData.today.map(t => (
+                          <TaskCard key={t.id} task={t} isRecommended={false}
+                            onComplete={handleComplete} onDelete={handleDelete} onEdit={handleEdit} onSplit={setSplittingTask} />
+                        ))}
+                      </AnimatePresence>
+                    </div>
+                  )}
                 </div>
               )}
+
+              {/* ALL: Upcoming */}
+              {allData.upcoming.length > 0 && (
+                <div>
+                  <SectionHeader icon="🔜" label="قادمة" count={allData.upcoming.length} color="text-blue-400"
+                    collapsed={collapsedSections.allUpcoming} onToggle={() => toggleSection('allUpcoming')} />
+                  {!collapsedSections.allUpcoming && (
+                    <div className="space-y-2">
+                      <AnimatePresence mode="popLayout">
+                        {allData.upcoming.map(t => (
+                          <TaskCard key={t.id} task={t} isRecommended={false}
+                            onComplete={handleComplete} onDelete={handleDelete} onEdit={handleEdit} onSplit={setSplittingTask} />
+                        ))}
+                      </AnimatePresence>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ALL: No Due Date */}
+              {allData.noDueDate.length > 0 && (
+                <div>
+                  <SectionHeader icon="📋" label="بدون تاريخ" count={allData.noDueDate.length} color="text-gray-400"
+                    collapsed={collapsedSections.allNoDueDate} onToggle={() => toggleSection('allNoDueDate')} />
+                  {!collapsedSections.allNoDueDate && (
+                    <div className="space-y-2">
+                      <AnimatePresence mode="popLayout">
+                        {allData.noDueDate.map(t => (
+                          <TaskCard key={t.id} task={t} isRecommended={false}
+                            onComplete={handleComplete} onDelete={handleDelete} onEdit={handleEdit} onSplit={setSplittingTask} />
+                        ))}
+                      </AnimatePresence>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ALL: Completed */}
+              {allData.completed.length > 0 && (
+                <div>
+                  <SectionHeader icon="🏆" label="مكتملة" count={allData.completed.length} color="text-green-500"
+                    collapsed={collapsedSections.allDone !== false} onToggle={() => toggleSection('allDone')} />
+                  {collapsedSections.allDone === false && (
+                    <div className="space-y-2">
+                      {allData.completed.slice(0, 30).map(t => (
+                        <TaskCard key={t.id} task={t} isRecommended={false} showTimestamp
+                          onComplete={() => {}} onDelete={handleDelete} onEdit={handleEdit} />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Empty state */}
+              {allData.overdue.length === 0 && allData.today.length === 0 && allData.upcoming.length === 0 && allData.noDueDate.length === 0 && (
+                <div className="text-center py-10">
+                  <div className="text-5xl mb-3">📝</div>
+                  <p className="text-sm text-gray-400 mb-1">لا توجد مهام</p>
+                  <p className="text-xs text-gray-600">أضف مهمة جديدة للبدء</p>
+                </div>
+              )}
+            </>
+          )}
+          {viewMode === 'all' && allLoading && (
+            <div className="space-y-3">
+              {[...Array(4)].map((_, i) => <div key={i} className="h-20 rounded-2xl bg-white/5 animate-pulse" />)}
             </div>
           )}
         </div>

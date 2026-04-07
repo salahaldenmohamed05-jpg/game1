@@ -202,6 +202,7 @@ export const authAPI = {
 // ─── Task API ─────────────────────────────────────────────────────────────────
 export const taskAPI = {
   getTasks: (params = {}) => api.get('/tasks', { params }),
+  getAllTasks: () => api.get('/tasks/all'),   // Phase 13.1: overdue→today→upcoming
   getGroupedTasks: (params = {}) => api.get('/tasks', { params: { ...params, grouped: true } }),
   getSmartView: () => api.get('/tasks/smart-view'),
   logSmartEvent: (event, taskId, score) => api.post('/tasks/smart-view/log', { event, taskId, score }),
@@ -212,6 +213,12 @@ export const taskAPI = {
   aiBreakdown: (data) => api.post('/tasks/ai-breakdown', data),
   aiPrioritize: () => api.post('/tasks/ai-prioritize'),
   reschedule: (id, data) => api.patch(`/tasks/${id}/reschedule`, data),
+  // Phase 13.1: Subtask API
+  getSubtasks: (taskId) => api.get(`/tasks/${taskId}/subtasks`),
+  createSubtask: (taskId, data) => api.post(`/tasks/${taskId}/subtasks`, data),
+  updateSubtask: (taskId, subtaskId, data) => api.put(`/tasks/${taskId}/subtasks/${subtaskId}`, data),
+  completeSubtask: (taskId, subtaskId) => api.patch(`/tasks/${taskId}/subtasks/${subtaskId}/complete`),
+  deleteSubtask: (taskId, subtaskId) => api.delete(`/tasks/${taskId}/subtasks/${subtaskId}`),
 };
 
 // ─── Habit API ────────────────────────────────────────────────────────────────

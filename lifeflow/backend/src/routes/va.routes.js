@@ -754,9 +754,44 @@ router.post('/whatsapp/send', async (req, res) => {
 
 /**
  * POST /va/whatsapp/webhook — Receive WhatsApp webhook (Twilio/Meta)
- * This endpoint doesn't require auth (webhooks come from Twilio/Meta)
+ * Phase 13.1: Properly handle incoming WhatsApp messages
+ * NOTE: This endpoint is behind protect middleware. For production,
+ *       register a separate unprotected webhook route in index.js.
  */
-// NOTE: This route will be registered separately without protect middleware if needed
+router.post('/whatsapp/webhook', async (req, res) => {
+  try {
+    const { From, Body, MessageSid } = req.body;
+    logger.info(`[VA] WhatsApp webhook received: from=${From} msgSid=${MessageSid} body="${(Body || '').substring(0, 50)}"`);
+
+    // Acknowledge webhook immediately
+    res.status(200).json({ success: true, message: 'Webhook received' });
+
+    // Process incoming message asynchronously
+    if (Body && From) {
+      const commEngine = getCommEngine();
+      if (commEngine) {
+        // Find user by phone number
+        const models = getModels();
+        if (models.User) {
+          const phone = From.replace('whatsapp:', '');
+          const user = await models.User.findOne({
+            where: { phone: { [require('sequelize').Op.like]: `%${phone.slice(-10)}%` } },
+            attributes: ['id'],
+          }).catch(() => null);
+
+          if (user) {
+            // Process as a VA interaction
+            commEngine.trackUserActivity(user.id);
+            logger.info(`[VA] WhatsApp message from user=${user.id}: "${Body.substring(0, 50)}"`);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    logger.error('[VA] WhatsApp webhook error:', err.message);
+    res.status(200).json({ success: true }); // Always 200 for webhooks
+  }
+});
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PHASE 5: EMAIL REPORTS

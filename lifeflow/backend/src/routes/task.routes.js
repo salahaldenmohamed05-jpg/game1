@@ -14,6 +14,7 @@ router.use(protect);
 // Smart View — AI-scored grouping with recommendation (replaces frontend computeAIScore)
 router.get('/smart-view', taskController.getSmartView);
 
+router.get('/all', taskController.getAllTasks);  // Phase 13.1: All Tasks with overdue→today→upcoming
 router.get('/', taskController.getTasks);
 router.get('/today', taskController.getTodayTasks);
 // Convenience alias: GET /tasks/grouped → same as GET /tasks?grouped=true
@@ -26,6 +27,13 @@ router.put('/:id', writeLimiter, validateUpdateTask, taskController.updateTask);
 router.patch('/:id/complete', taskController.completeTask);
 router.delete('/:id', taskController.deleteTask);
 router.post('/ai-breakdown', taskController.aiBreakdown);
+
+// Phase 13.1: Subtask endpoints
+router.get('/:id/subtasks', taskController.getSubtasks);
+router.post('/:id/subtasks', writeLimiter, taskController.createSubtask);
+router.put('/:taskId/subtasks/:subtaskId', writeLimiter, taskController.updateSubtask);
+router.patch('/:taskId/subtasks/:subtaskId/complete', taskController.completeSubtask);
+router.delete('/:taskId/subtasks/:subtaskId', taskController.deleteSubtask);
 
 // AI prioritize — smart sort of pending tasks
 router.post('/ai-prioritize', async (req, res) => {
