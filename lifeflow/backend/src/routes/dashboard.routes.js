@@ -16,6 +16,7 @@ router.use(protect);
 router.get('/', dashboardController.getDashboard);
 router.get('/stats', dashboardController.getDashboard);
 router.get('/overview', dashboardController.getDashboard);
+router.get('/quick-stats', dashboardController.getQuickStats);
 
 /**
  * GET /dashboard/today-flow

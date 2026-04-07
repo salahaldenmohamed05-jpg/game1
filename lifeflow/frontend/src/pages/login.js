@@ -1,9 +1,9 @@
 /**
- * Login / Register / Forgot Password Page
- * =========================================
- * - تسجيل بالبريد الإلكتروني أو رقم الهاتف
+ * Login / Register / Forgot Password Page — Phase 13.1
+ * =====================================================
+ * - تسجيل بالبريد الإلكتروني فقط (Issue 6: إزالة الهاتف)
  * - نسيت كلمة المرور (OTP)
- * - تأكيد البريد الإلكتروني
+ * - تأكيد البريد الإلكتروني (Issue 5: تحسين)
  */
 
 import { useState } from 'react';
@@ -18,12 +18,12 @@ const MODES = { LOGIN: 'login', REGISTER: 'register', FORGOT: 'forgot', RESET: '
 
 export default function LoginPage() {
   const [mode, setMode] = useState(MODES.LOGIN);
-  const [usePhone, setUsePhone] = useState(false);
+  // Phase 13.1 Issue 6: Phone auth removed — email only
   const [isLoading, setIsLoading] = useState(false);
 
   // Form fields
   const [form, setForm] = useState({
-    name: '', email: '', phone: '', password: '',
+    name: '', email: '', password: '',
     confirmPassword: '', otp: '', newPassword: '', confirmNewPassword: '',
   });
   const [errors, setErrors] = useState({});
@@ -41,23 +41,16 @@ export default function LoginPage() {
   };
 
   // ── Validation ────────────────────────────────────────────────────────────────
+  // Phase 13.1: Email-only validation (Issue 6)
   const validate = () => {
     const errs = {};
     if (mode === MODES.REGISTER) {
       if (!form.name.trim()) errs.name = 'الاسم مطلوب';
-      if (!usePhone) {
-        if (!form.email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) errs.email = 'بريد إلكتروني غير صحيح';
-      } else {
-        if (!form.phone.trim() || form.phone.length < 7) errs.phone = 'رقم هاتف غير صحيح';
-      }
+      if (!form.email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) errs.email = 'بريد إلكتروني غير صحيح';
       if (!form.password || form.password.length < 6) errs.password = 'كلمة المرور 6 أحرف على الأقل';
       if (form.password !== form.confirmPassword) errs.confirmPassword = 'كلمتا المرور غير متطابقتين';
     } else if (mode === MODES.LOGIN) {
-      if (!usePhone) {
-        if (!form.email.trim()) errs.email = 'البريد الإلكتروني مطلوب';
-      } else {
-        if (!form.phone.trim()) errs.phone = 'رقم الهاتف مطلوب';
-      }
+      if (!form.email.trim()) errs.email = 'البريد الإلكتروني مطلوب';
       if (!form.password) errs.password = 'كلمة المرور مطلوبة';
     } else if (mode === MODES.FORGOT) {
       if (!form.email.trim()) errs.email = 'البريد الإلكتروني مطلوب';
@@ -80,10 +73,8 @@ export default function LoginPage() {
 
     try {
       if (mode === MODES.LOGIN) {
-        const payload = usePhone
-          ? { phone: form.phone, password: form.password }
-          : { email: form.email, password: form.password };
-        const result = await login(payload.email, payload.password, payload.phone);
+        // Phase 13.1: Email-only login
+        const result = await login(form.email, form.password);
         if (result.success) {
           toast.success('أهلاً بك! 👋');
           setTimeout(() => { window.location.href = '/'; }, 500);
@@ -93,20 +84,14 @@ export default function LoginPage() {
       }
 
       else if (mode === MODES.REGISTER) {
-        const payload = {
-          name: form.name,
-          password: form.password,
-          ...(usePhone ? { phone: form.phone } : { email: form.email }),
-        };
+        // Phase 13.1: Email-only registration
+        const payload = { name: form.name, email: form.email, password: form.password };
         const result = await registerUser(payload);
         if (result.success) {
           setSandboxOtp(result._sandbox_otp || '');
-          // Always require verification for both email and phone
-          setResetEmail(usePhone ? form.phone : form.email);
+          setResetEmail(form.email);
           setMode(MODES.VERIFY);
-          toast.success(usePhone
-            ? 'تم إنشاء حسابك! أدخل رمز التحقق المرسل لرقمك 📱'
-            : 'تم إنشاء حسابك! أدخل رمز التحقق من بريدك 📧');
+          toast.success('تم إنشاء حسابك! أدخل رمز التحقق من بريدك 📧');
         } else {
           toast.error(result.message || 'فشل إنشاء الحساب');
         }
@@ -169,7 +154,7 @@ export default function LoginPage() {
     setMode(m);
     setErrors({});
     setSandboxOtp('');
-    setForm({ name: '', email: '', phone: '', password: '', confirmPassword: '', otp: '', newPassword: '', confirmNewPassword: '' });
+    setForm({ name: '', email: '', password: '', confirmPassword: '', otp: '', newPassword: '', confirmNewPassword: '' });
   };
 
   // ── Input helper ───────────────────────────────────────────────────────────────
@@ -309,21 +294,7 @@ export default function LoginPage() {
           </button>
         </div>
 
-        {/* Phone / Email toggle */}
-        <div className="flex rounded-lg bg-white/5 p-1 mb-4 text-xs">
-          <button
-            onClick={() => setUsePhone(false)}
-            className={`flex-1 py-2 rounded-md font-medium transition-colors ${!usePhone ? 'bg-white/10 text-white' : 'text-gray-400 hover:text-gray-200'}`}
-          >
-            📧 بريد إلكتروني
-          </button>
-          <button
-            onClick={() => setUsePhone(true)}
-            className={`flex-1 py-2 rounded-md font-medium transition-colors ${usePhone ? 'bg-white/10 text-white' : 'text-gray-400 hover:text-gray-200'}`}
-          >
-            📱 رقم الهاتف
-          </button>
-        </div>
+        {/* Phase 13.1 Issue 6: Phone toggle removed — email only */}
 
         <form onSubmit={handleSubmit} className="space-y-4" noValidate>
           {/* Name — register only */}
@@ -335,44 +306,8 @@ export default function LoginPage() {
             )}
           </AnimatePresence>
 
-          {/* Email or Phone */}
-          <AnimatePresence mode="wait">
-            {!usePhone ? (
-              <motion.div key="email" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-                <Field label="البريد الإلكتروني" field="email" type="email" placeholder="example@email.com" autoComplete="email" />
-              </motion.div>
-            ) : (
-              <motion.div key="phone" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-                <label className="block text-sm text-gray-400 mb-1.5">رقم الهاتف</label>
-                <div className="flex gap-0 items-stretch" dir="ltr">
-                  <div className="input-field rounded-l-none rounded-r-xl border-l-0 w-[72px] flex items-center justify-center text-gray-300 text-sm flex-shrink-0 font-mono tracking-wide"
-                    style={{ minHeight: '48px' }}>
-                    +20
-                  </div>
-                  <input
-                    value={form.phone}
-                    onChange={(e) => {
-                      const val = e.target.value.replace(/[^\d]/g, '').slice(0, 11);
-                      setForm(f => ({ ...f, phone: val }));
-                      if (errors.phone) setErrors(er => ({ ...er, phone: undefined }));
-                    }}
-                    placeholder="01XXXXXXXXX"
-                    dir="ltr"
-                    type="tel"
-                    inputMode="numeric"
-                    autoComplete="tel"
-                    maxLength={11}
-                    className={`input-field flex-1 font-mono tracking-wide rounded-r-none rounded-l-xl ${errors.phone ? 'border-red-500/50 bg-red-500/5' : ''}`}
-                    style={{ minHeight: '48px' }}
-                  />
-                </div>
-                {form.phone && form.phone.length > 0 && form.phone.length < 10 && (
-                  <p className="text-yellow-400 text-xs mt-1.5 flex items-center gap-1">⚠️ يجب أن يكون الرقم 10-11 خانة</p>
-                )}
-                {errors.phone && <p className="text-red-400 text-xs mt-1">{errors.phone}</p>}
-              </motion.div>
-            )}
-          </AnimatePresence>
+          {/* Email — Phase 13.1 Issue 6: Email only */}
+          <Field label="البريد الإلكتروني" field="email" type="email" placeholder="example@email.com" autoComplete="email" />
 
           {/* Password */}
           <Field label="كلمة المرور" field="password" type="password" placeholder="••••••••" autoComplete={mode === MODES.REGISTER ? 'new-password' : 'current-password'} />
@@ -387,7 +322,7 @@ export default function LoginPage() {
           </AnimatePresence>
 
           {/* Forgot password link */}
-          {mode === MODES.LOGIN && !usePhone && (
+          {mode === MODES.LOGIN && (
             <div className="text-left">
               <button type="button" onClick={() => switchMode(MODES.FORGOT)} className="text-xs text-primary-400 hover:text-primary-300 transition-colors">
                 نسيت كلمة المرور؟
