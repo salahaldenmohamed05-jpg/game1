@@ -224,8 +224,10 @@ exports.getSmartView = async (req, res) => {
       const dueDate = plain.due_date ? moment(plain.due_date).tz(timezone).format('YYYY-MM-DD') : null;
       const startDate = plain.start_time ? moment(plain.start_time).tz(timezone).format('YYYY-MM-DD') : null;
       const isOverdueTask = dueDate && dueDate < todayStr;
+      // Phase 15: Tasks with no date go to upcoming (not today) to avoid clutter
+      // Only tasks explicitly due today or starting today appear in today view
       const isTodayTask = dueDate === todayStr || startDate === todayStr ||
-        (!dueDate && !startDate); // no date = treat as today
+        (plain.status === 'in_progress'); // in_progress always shows in today
 
       // Compute AI score
       const taskScore = computeTaskScore(plain, nowHour, timezone);
@@ -698,6 +700,104 @@ exports.getTodayTasks = async (req, res) => {
 };
 
 /**
+ * @route   GET /api/v1/tasks/all
+ * @desc    "All Tasks" query — Overdue → Today → Upcoming with proper grouping and sorting
+ *          Within each group: sort by due_time (if present) else by priority
+ */
+exports.getAllTasks = async (req, res) => {
+  try {
+    const timezone = req.user.timezone || 'Africa/Cairo';
+    const todayStr = moment().tz(timezone).format('YYYY-MM-DD');
+    const PRIORITY_MAP = { urgent: 0, high: 1, medium: 2, low: 3 };
+
+    const tasks = await Task.findAll({
+      where: { user_id: req.user.id },
+      order: [['due_date', 'ASC'], ['createdAt', 'DESC']],
+      limit: 500,
+      raw: true,
+    });
+
+    const overdue = [];
+    const today = [];
+    const upcoming = [];
+    const completed = [];
+    const noDueDate = [];
+
+    for (const t of tasks) {
+      if (t.status === 'completed') { completed.push(t); continue; }
+
+      const dueDate = t.due_date ? moment(t.due_date).tz(timezone).format('YYYY-MM-DD') : null;
+
+      if (!dueDate) {
+        noDueDate.push(t);
+      } else if (dueDate < todayStr) {
+        overdue.push(t);
+      } else if (dueDate === todayStr) {
+        today.push(t);
+      } else {
+        upcoming.push(t);
+      }
+    }
+
+    // Sort within each group: by due_time (if present) then by priority
+    const sortByTimeAndPriority = (a, b) => {
+      const timeA = a.due_time || a.start_time ? (a.due_time || moment(a.start_time).tz(timezone).format('HH:mm')) : null;
+      const timeB = b.due_time || b.start_time ? (b.due_time || moment(b.start_time).tz(timezone).format('HH:mm')) : null;
+      if (timeA && timeB) return timeA.localeCompare(timeB);
+      if (timeA) return -1;
+      if (timeB) return 1;
+      return (PRIORITY_MAP[a.priority] || 3) - (PRIORITY_MAP[b.priority] || 3);
+    };
+
+    overdue.sort((a, b) => {
+      // Oldest overdue first, then by time/priority
+      const da = a.due_date ? new Date(a.due_date).getTime() : 0;
+      const db = b.due_date ? new Date(b.due_date).getTime() : 0;
+      if (da !== db) return da - db;
+      return sortByTimeAndPriority(a, b);
+    });
+
+    today.sort(sortByTimeAndPriority);
+    upcoming.sort((a, b) => {
+      const da = a.due_date ? new Date(a.due_date).getTime() : Infinity;
+      const db = b.due_date ? new Date(b.due_date).getTime() : Infinity;
+      if (da !== db) return da - db;
+      return sortByTimeAndPriority(a, b);
+    });
+    noDueDate.sort(sortByTimeAndPriority);
+
+    // Completed: most recent first
+    completed.sort((a, b) => {
+      const ca = a.completed_at ? new Date(a.completed_at).getTime() : 0;
+      const cb = b.completed_at ? new Date(b.completed_at).getTime() : 0;
+      return cb - ca;
+    });
+
+    res.json({
+      success: true,
+      data: {
+        overdue,
+        today,
+        upcoming,
+        no_due_date: noDueDate,
+        completed: completed.slice(0, 50),
+        stats: {
+          total: tasks.length,
+          overdue: overdue.length,
+          today: today.length,
+          upcoming: upcoming.length,
+          no_due_date: noDueDate.length,
+          completed: completed.length,
+        },
+      },
+    });
+  } catch (error) {
+    logger.error('Get all tasks error:', error);
+    res.status(500).json({ success: false, message: 'فشل في جلب المهام' });
+  }
+};
+
+/**
  * @route   POST /api/v1/tasks/ai-breakdown
  * @desc    AI task breakdown | تقسيم المهمة بالذكاء الاصطناعي
  */
@@ -708,6 +808,187 @@ exports.aiBreakdown = async (req, res) => {
     res.json({ success: true, data: subtasks });
   } catch (error) {
     res.status(500).json({ success: false, message: 'فشل في تحليل المهمة' });
+  }
+};
+
+/* ─── Subtask Methods (Phase 13.1) ────────────────────────────── */
+
+function getSubtaskModel() {
+  try { return require('../models/subtask.model'); } catch (_) { return null; }
+}
+
+/**
+ * Get subtasks for a task
+ */
+exports.getSubtasks = async (req, res) => {
+  try {
+    const Subtask = getSubtaskModel();
+    if (!Subtask) return res.json({ success: true, data: { subtasks: [] } });
+
+    const task = await Task.findOne({ where: { id: req.params.id, user_id: req.user.id } });
+    if (!task) return res.status(404).json({ success: false, message: 'المهمة غير موجودة' });
+
+    const subtasks = await Subtask.findAll({
+      where: { task_id: req.params.id, user_id: req.user.id },
+      order: [['order_index', 'ASC'], ['createdAt', 'ASC']],
+    });
+
+    const total = subtasks.length;
+    const completed = subtasks.filter(s => s.completed).length;
+    const completionPct = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+    res.json({
+      success: true,
+      data: {
+        subtasks,
+        stats: { total, completed, completion_pct: completionPct },
+      },
+    });
+  } catch (error) {
+    logger.error('Get subtasks error:', error);
+    res.status(500).json({ success: false, message: 'فشل في جلب المهام الفرعية' });
+  }
+};
+
+/**
+ * Create a subtask
+ */
+exports.createSubtask = async (req, res) => {
+  try {
+    const Subtask = getSubtaskModel();
+    if (!Subtask) return res.status(503).json({ success: false, message: 'Subtask model not available' });
+
+    const task = await Task.findOne({ where: { id: req.params.id, user_id: req.user.id } });
+    if (!task) return res.status(404).json({ success: false, message: 'المهمة غير موجودة' });
+
+    const { title, estimated_time, order_index } = req.body;
+    if (!title?.trim()) return res.status(400).json({ success: false, message: 'عنوان المهمة الفرعية مطلوب' });
+
+    // Get next order index
+    const maxOrder = await Subtask.max('order_index', { where: { task_id: task.id } }) || 0;
+
+    const subtask = await Subtask.create({
+      task_id: task.id,
+      user_id: req.user.id,
+      title: sanitizeText(title.trim()),
+      estimated_time: estimated_time || null,
+      order_index: order_index ?? (maxOrder + 1),
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'تم إضافة المهمة الفرعية',
+      data: subtask,
+    });
+  } catch (error) {
+    logger.error('Create subtask error:', error);
+    res.status(500).json({ success: false, message: 'فشل في إنشاء المهمة الفرعية' });
+  }
+};
+
+/**
+ * Update a subtask
+ */
+exports.updateSubtask = async (req, res) => {
+  try {
+    const Subtask = getSubtaskModel();
+    if (!Subtask) return res.status(503).json({ success: false, message: 'Subtask model not available' });
+
+    const subtask = await Subtask.findOne({
+      where: { id: req.params.subtaskId, task_id: req.params.taskId, user_id: req.user.id },
+    });
+    if (!subtask) return res.status(404).json({ success: false, message: 'المهمة الفرعية غير موجودة' });
+
+    const updates = {};
+    if (req.body.title) updates.title = sanitizeText(req.body.title.trim());
+    if (req.body.estimated_time !== undefined) updates.estimated_time = req.body.estimated_time;
+    if (req.body.order_index !== undefined) updates.order_index = req.body.order_index;
+
+    await subtask.update(updates);
+
+    res.json({ success: true, message: 'تم تعديل المهمة الفرعية', data: subtask });
+  } catch (error) {
+    logger.error('Update subtask error:', error);
+    res.status(500).json({ success: false, message: 'فشل في تعديل المهمة الفرعية' });
+  }
+};
+
+/**
+ * Complete a subtask — contributes to parent task completion %
+ */
+exports.completeSubtask = async (req, res) => {
+  try {
+    const Subtask = getSubtaskModel();
+    if (!Subtask) return res.status(503).json({ success: false, message: 'Subtask model not available' });
+
+    const subtask = await Subtask.findOne({
+      where: { id: req.params.subtaskId, task_id: req.params.taskId, user_id: req.user.id },
+    });
+    if (!subtask) return res.status(404).json({ success: false, message: 'المهمة الفرعية غير موجودة' });
+
+    await subtask.update({ completed: true, completed_at: new Date() });
+
+    // Calculate parent task completion %
+    const allSubtasks = await Subtask.findAll({ where: { task_id: req.params.taskId } });
+    const total = allSubtasks.length;
+    const completed = allSubtasks.filter(s => s.completed).length;
+    const completionPct = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+    // Auto-complete parent task if all subtasks done
+    if (completed === total && total > 0) {
+      const task = await Task.findOne({ where: { id: req.params.taskId, user_id: req.user.id } });
+      if (task && task.status !== 'completed') {
+        await task.update({ status: 'completed', completed_at: new Date() });
+
+        // Emit event
+        const eb = getEventBus();
+        if (eb) eb.emit(eb.EVENT_TYPES.TASK_COMPLETED, {
+          userId: req.user.id, taskId: task.id, priority: task.priority, title: task.title,
+        });
+      }
+    }
+
+    // Emit event for XP/scoring
+    const eb = getEventBus();
+    if (eb) eb.emit('SUBTASK_COMPLETED', {
+      userId: req.user.id, subtaskId: subtask.id, taskId: req.params.taskId,
+      completionPct,
+    });
+
+    res.json({
+      success: true,
+      message: completionPct === 100 ? 'أحسنت! تم إتمام المهمة بالكامل 🎉' : `تم إكمال الخطوة — ${completionPct}% مكتمل`,
+      data: {
+        subtask,
+        task_completion_pct: completionPct,
+        all_done: completed === total,
+      },
+    });
+  } catch (error) {
+    logger.error('Complete subtask error:', error);
+    res.status(500).json({ success: false, message: 'فشل في إكمال المهمة الفرعية' });
+  }
+};
+
+/**
+ * Delete a subtask
+ */
+exports.deleteSubtask = async (req, res) => {
+  try {
+    const Subtask = getSubtaskModel();
+    if (!Subtask) return res.status(503).json({ success: false, message: 'Subtask model not available' });
+
+    const subtask = await Subtask.findOne({
+      where: { id: req.params.subtaskId, task_id: req.params.taskId, user_id: req.user.id },
+    });
+    if (!subtask) return res.status(404).json({ success: false, message: 'المهمة الفرعية غير موجودة' });
+
+    await subtask.destroy();
+
+    res.json({ success: true, message: 'تم حذف المهمة الفرعية' });
+  } catch (error) {
+    logger.error('Delete subtask error:', error);
+    res.status(500).json({ success: false, message: 'فشل في حذف المهمة الفرعية' });
   }
 };
 

@@ -52,6 +52,45 @@ function getOrchestrator() {
   try { return require('../services/orchestrator.service'); } catch (_e) { logger.debug(`[CHAT_ROUTES] Module '../services/orchestrator.service' not available: ${_e.message}`); return null; }
 }
 
+function getCommandEngine() {
+  try { return require('../services/ai.command.engine'); } catch (_e) { logger.debug(`[CHAT_ROUTES] Module '../services/ai.command.engine' not available: ${_e.message}`); return null; }
+}
+
+/**
+ * Phase 15: Detect if a message is an actionable command (create task, complete, etc.)
+ * Returns true if the command engine should execute FIRST, then orchestrator generates reply.
+ */
+function isActionableCommand(message) {
+  const lower = (message || '').toLowerCase().trim();
+  const actionPatterns = [
+    // Create task
+    'اضف', 'أضف', 'ضيف', 'ضف', 'عندي مهمة', 'سجل مهمة', 'أنشئ مهمة', 'انشئ مهمة',
+    'لازم اعمل', 'لازم أعمل', 'محتاج اعمل', 'محتاج أعمل', 'اعمل مهمة',
+    'add task', 'create task', 'new task',
+    // Complete task
+    'خلصت', 'انتهيت', 'عملت', 'خلّصت', 'كمّلت', 'أنجزت', 'انجزت',
+    // Reschedule
+    'أجّل', 'أجل', 'أخّر', 'اخر', 'أأجل', 'رحّل',
+    // Delete
+    'احذف', 'حذف', 'ألغِ', 'الغي', 'شيل',
+    // Mood
+    'سجل مزاج', 'مزاجي', 'حاسس', 'حالتي', 'نفسيتي',
+    // Schedule exam
+    'امتحان', 'اختبار',
+    // Plan
+    'جدول', 'خطة يومي', 'نظم يومي', 'خطط',
+    // Habit
+    'سجل عادة', 'عادتي',
+    // Profile
+    'غير اسمي', 'عدل الملف', 'اسمي', 'تخصصي', 'دوري', 'ملفي الشخصي',
+    'عدل البروفايل', 'بروفايل',
+    // Settings
+    'غير الإعدادات', 'اللغة', 'المنطقة الزمنية', 'التذكير', 'إعدادات',
+    'عدل الإعدادات',
+  ];
+  return actionPatterns.some(p => lower.includes(p));
+}
+
 router.use(protect);
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -262,8 +301,12 @@ router.post('/message', writeLimiter, validateChatMessage, async (req, res) => {
       });
     }
 
-    // ── Get AI reply via orchestrator ─────────────────────────────────────
+    // ── Phase 15: Execute commands FIRST, then generate AI reply ────────
+    // CRITICAL FIX: When user says "اضف مهمة X", we MUST actually create the task
+    // before generating the conversational response. Previously, chat route only
+    // did conversational AI with no command execution, causing "says added but wasn't".
     const orchestrator = getOrchestrator();
+    const commandEngine = getCommandEngine();
     let reply        = 'عذراً، حدث خطأ مؤقت 🙏';
     let mode         = 'hybrid';
     let actions      = [];
@@ -273,8 +316,44 @@ router.post('/message', writeLimiter, validateChatMessage, async (req, res) => {
     let confidence   = 50;
     let explanation  = [];
     let planningTip  = null;
+    let actionResult = null;
 
-    if (orchestrator) {
+    // Step 1: If message is an actionable command, execute it via command engine
+    if (commandEngine && isActionableCommand(message.trim())) {
+      try {
+        logger.info(`[CHAT] Detected actionable command, routing through command engine: "${message.trim().substring(0, 60)}"`);
+        const cmdResult = await commandEngine.processCommand(userId, message.trim(), tz, null);
+        if (cmdResult) {
+          actionResult = cmdResult;
+          // Use command engine's reply if action succeeded
+          if (cmdResult.reply) {
+            reply = cmdResult.reply;
+          }
+          intent = cmdResult.intent || null;
+          confidence = cmdResult.confidence || 80;
+          is_fallback = !!cmdResult.is_fallback;
+          suggestions = cmdResult.suggestions || [];
+
+          // Build actions array from command result
+          if (cmdResult.action_taken) {
+            actions.push({
+              type: cmdResult.action_taken.action || 'command_executed',
+              label: cmdResult.action_taken.message || 'تم التنفيذ',
+              data: cmdResult.action_taken.data || null,
+              count: cmdResult.action_taken.count || 0,
+            });
+          }
+
+          logger.info(`[CHAT] Command executed: intent=${cmdResult.intent}, action=${cmdResult.action_taken?.action || 'none'}, success=${!!cmdResult.action_taken}`);
+        }
+      } catch (cmdErr) {
+        logger.warn('[CHAT] Command engine failed, falling back to orchestrator:', cmdErr.message);
+        actionResult = null;
+      }
+    }
+
+    // Step 2: If no command was executed (or message is conversational), use orchestrator
+    if (!actionResult && orchestrator) {
       try {
         const result = await orchestrator.companionChat(userId, message.trim(), tz, null);
         reply        = result.reply          || reply;
@@ -289,6 +368,30 @@ router.post('/message', writeLimiter, validateChatMessage, async (req, res) => {
       } catch (orchErr) {
         logger.warn('[CHAT] Orchestrator failed:', orchErr.message);
         is_fallback = true;
+      }
+    }
+    // Step 3: If command was executed but orchestrator needed for richer reply
+    else if (actionResult && orchestrator) {
+      try {
+        // Generate a contextual reply incorporating the action result
+        const orchResult = await orchestrator.orchestrate({
+          userId,
+          message: message.trim(),
+          timezone: tz,
+          actionResult: actionResult.action_taken || null,
+          actionSummary: actionResult.reply || null,
+          intentCategory: actionResult.intent || 'task_action',
+          userCtx: null,
+        });
+        if (orchResult?.reply && !orchResult.is_fallback) {
+          reply = orchResult.reply;
+          mode = orchResult.mode || mode;
+          suggestions = orchResult.suggestions || suggestions;
+          explanation = orchResult.explanation || [];
+        }
+      } catch (_orchErr) {
+        // Keep command engine reply — orchestrator enhancement is optional
+        logger.debug('[CHAT] Orchestrator enhancement failed, using command reply');
       }
     }
 
@@ -329,6 +432,7 @@ router.post('/message', writeLimiter, validateChatMessage, async (req, res) => {
         reply,
         mode,
         actions,
+        action_taken: actionResult?.action_taken || null,
         suggestions,
         explanation,
         planning_tip: planningTip,

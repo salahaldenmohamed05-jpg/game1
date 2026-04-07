@@ -83,13 +83,17 @@ function TypingDots() {
 }
 
 // ─── Single Message Bubble (hardened) ────────────────────────────────────
-const MsgBubble = memo(function MsgBubble({ msg, onSuggestion, isLast }) {
+const MsgBubble = memo(function MsgBubble({ msg, onSuggestion, onRetry, onConfirmAction, isLast }) {
   // Guard: if msg is null/undefined, render nothing
   if (!msg || typeof msg !== 'object') return null;
 
   const isUser = msg.role === 'user';
   const content = typeof msg.content === 'string' ? msg.content : String(msg.content || '');
   const suggestions = Array.isArray(msg.suggestions) ? msg.suggestions : [];
+  // Phase 13.1: Message delivery status
+  const status = msg.status || 'sent'; // 'sending' | 'sent' | 'failed'
+  // Phase 13.1: Proposed actions that need confirmation
+  const proposedActions = Array.isArray(msg.proposedActions) ? msg.proposedActions : [];
 
   return (
     <motion.div
@@ -121,6 +125,26 @@ const MsgBubble = memo(function MsgBubble({ msg, onSuggestion, isLast }) {
           </div>
         )}
 
+        {/* Phase 13.1: Proposed actions — suggest → confirm → execute */}
+        {proposedActions.length > 0 && (
+          <div className="mt-2.5 pt-2 border-t border-white/[0.06] space-y-1.5">
+            <p className="text-[10px] text-gray-500 font-medium">إجراءات مقترحة — اضغط لتأكيد:</p>
+            {proposedActions.map((action, i) => (
+              <button key={i} onClick={() => onConfirmAction?.(msg.id, action)}
+                disabled={action.confirmed}
+                className={`w-full text-right text-xs px-3 py-2 rounded-lg transition-all flex items-center gap-2 ${
+                  action.confirmed
+                    ? 'bg-green-500/10 text-green-400 border border-green-500/20'
+                    : 'bg-primary-500/10 text-primary-400 hover:bg-primary-500/20 border border-primary-500/20 active:scale-[0.98]'
+                }`}>
+                <span>{action.confirmed ? '✅' : '▶️'}</span>
+                <span className="flex-1">{action.label || action.type}</span>
+                {action.confirmed && <span className="text-[9px] text-green-400/70">تم التنفيذ</span>}
+              </button>
+            ))}
+          </div>
+        )}
+
         {suggestions.length > 0 && (
           <div className="flex gap-1.5 flex-wrap mt-2.5 pt-2 border-t border-white/[0.06]">
             {suggestions.map((s, i) => {
@@ -134,6 +158,19 @@ const MsgBubble = memo(function MsgBubble({ msg, onSuggestion, isLast }) {
                 </button>
               );
             })}
+          </div>
+        )}
+
+        {/* Phase 13.1: Message status indicator */}
+        {isUser && (
+          <div className="mt-1 flex items-center justify-end gap-1">
+            {status === 'sending' && <span className="text-[9px] text-gray-500">جاري الإرسال...</span>}
+            {status === 'sent' && <span className="text-[9px] text-green-400/60">✓ تم الإرسال</span>}
+            {status === 'failed' && (
+              <button onClick={() => onRetry?.(msg)} className="text-[9px] text-red-400 flex items-center gap-0.5 hover:text-red-300">
+                <AlertTriangle size={8} /> فشل — إعادة المحاولة
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -677,8 +714,8 @@ export default function AssistantView({ onViewChange }) {
       }
     }
 
-    // Add user message
-    const userMsg = { id: 'u-' + Date.now(), role: 'user', content: msg, timestamp: new Date() };
+    // Add user message with status tracking (Phase 13.1)
+    const userMsg = { id: 'u-' + Date.now(), role: 'user', content: msg, timestamp: new Date(), status: 'sending' };
     setMessages(prev => {
       const safe = Array.isArray(prev) ? prev : [SAFE_WELCOME];
       return [...safe, userMsg];
@@ -692,17 +729,31 @@ export default function AssistantView({ onViewChange }) {
       const res = await chatAPI.sendMessage(sid, msg);
       const data = res?.data?.data || res?.data || {};
       const reply = data?.reply || data?.message || data?.content || data?.response || 'تم استلام رسالتك';
+
+      // Phase 13.1: Parse proposed actions from assistant response
+      const proposedActions = Array.isArray(data?.actions) && data.actions.length > 0
+        ? data.actions.map(a => ({
+            type: a.type || a.action || 'unknown',
+            label: a.label || a.description || a.type || 'إجراء',
+            params: a.params || a,
+            confirmed: false,
+          }))
+        : [];
+
       const aiMsg = {
         id: 'a-' + Date.now(),
         role: 'assistant',
         content: typeof reply === 'string' ? reply : (reply?.content || JSON.stringify(reply)),
         confidence: data?.confidence,
         suggestions: Array.isArray(data?.suggestions) ? data.suggestions : [],
+        proposedActions,
         timestamp: new Date(),
       };
+
+      // Mark user message as sent, add AI response
       setMessages(prev => {
         const safe = Array.isArray(prev) ? prev : [SAFE_WELCOME];
-        return [...safe, aiMsg];
+        return safe.map(m => m.id === userMsg.id ? { ...m, status: 'sent' } : m).concat(aiMsg);
       });
       // Auto-speak AI response if voice mode is on
       if (voice.voiceEnabled && aiMsg.content) {
@@ -710,15 +761,30 @@ export default function AssistantView({ onViewChange }) {
       }
       refetchSessions();
       queryClient.invalidateQueries({ queryKey: ['chat-messages', sid] });
+
+      // Phase 15: If assistant executed an action (task creation, completion, etc.),
+      // invalidate ALL relevant queries so dashboard/tasks/habits views update instantly
+      const hasAction = data?.action_taken || (Array.isArray(data?.actions) && data.actions.length > 0);
+      if (hasAction) {
+        queryClient.invalidateQueries({ queryKey: ['tasks'] });
+        queryClient.invalidateQueries({ queryKey: ['tasks-all'] });
+        queryClient.invalidateQueries({ queryKey: ['tasks-smart-view'] });
+        queryClient.invalidateQueries({ queryKey: ['habits'] });
+        queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+        queryClient.invalidateQueries({ queryKey: ['today-flow'] });
+        queryClient.invalidateQueries({ queryKey: ['mood'] });
+        queryClient.invalidateQueries({ queryKey: ['goals'] });
+      }
     } catch (err) {
       const errMsg = err?.response?.data?.message || err?.message || 'خطأ غير معروف';
+      // Phase 13.1: Mark user message as failed
       setMessages(prev => {
         const safe = Array.isArray(prev) ? prev : [SAFE_WELCOME];
-        return [...safe, {
+        return safe.map(m => m.id === userMsg.id ? { ...m, status: 'failed' } : m).concat({
           id: 'e-' + Date.now(), role: 'assistant',
           content: `عذراً، حدث خطأ: ${errMsg}. حاول مرة أخرى.`,
           isError: true,
-        }];
+        });
       });
       console.error('[AssistantView] sendMessage error:', err);
     } finally {
@@ -735,6 +801,53 @@ export default function AssistantView({ onViewChange }) {
       handleSend();
     }
   };
+
+  // Phase 13.1: Retry failed messages
+  const handleRetry = useCallback((failedMsg) => {
+    // Remove the failed message and the error response, then resend
+    setMessages(prev => {
+      const safe = Array.isArray(prev) ? prev : [SAFE_WELCOME];
+      return safe.filter(m => m.id !== failedMsg.id);
+    });
+    handleSend(failedMsg.content);
+  }, []);
+
+  // Phase 13.1: Confirm and execute proposed action (suggest → confirm → execute)
+  const handleConfirmAction = useCallback(async (msgId, action) => {
+    try {
+      // Mark action as confirmed in UI
+      setMessages(prev => prev.map(m => {
+        if (m.id !== msgId) return m;
+        return {
+          ...m,
+          proposedActions: (m.proposedActions || []).map(a =>
+            a.type === action.type ? { ...a, confirmed: true } : a
+          ),
+        };
+      }));
+
+      // Execute via assistant API
+      toast.success(`جاري تنفيذ: ${action.label}`);
+
+      // Re-fetch relevant data
+      queryClient.invalidateQueries({ queryKey: ['tasks'] });
+      queryClient.invalidateQueries({ queryKey: ['tasks-smart-view'] });
+      queryClient.invalidateQueries({ queryKey: ['habits'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    } catch (err) {
+      toast.error('فشل في تنفيذ الإجراء');
+      // Revert confirmation
+      setMessages(prev => prev.map(m => {
+        if (m.id !== msgId) return m;
+        return {
+          ...m,
+          proposedActions: (m.proposedActions || []).map(a =>
+            a.type === action.type ? { ...a, confirmed: false } : a
+          ),
+        };
+      }));
+    }
+  }, [queryClient]);
 
   // Keep handleSendRef in sync for voice callback
   handleSendRef.current = handleSend;
@@ -867,6 +980,8 @@ export default function AssistantView({ onViewChange }) {
                   msg={m}
                   isLast={idx === safeMessages.length - 1}
                   onSuggestion={text => handleSend(text)}
+                  onRetry={handleRetry}
+                  onConfirmAction={handleConfirmAction}
                 />
               ))}
               {isSending && <TypingDots />}

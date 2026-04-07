@@ -77,6 +77,8 @@ function registerModels() {
   require('../models/execution_session.model');
   // Phase 13 — persistent decision memory (brain state survives restarts)
   require('../models/decision_memory.model');
+  // Phase 13.1 — subtask decomposition
+  require('../models/subtask.model');
 }
 
 async function connectDB() {
