@@ -68,6 +68,7 @@ const dailyFlowRoutes    = require('./routes/daily-flow.routes');  // Phase 4: D
 const phase6Routes       = require('./routes/phase6.routes');      // Phase 6: External Execution Layer
 const phase7Routes       = require('./routes/phase7.routes');      // Phase 7: Production Infrastructure
 const brainRoutes        = require('./routes/brain.routes');       // Phase 12: Real-Time Cognitive Brain
+const goalRoutes         = require('./routes/goal.routes');         // Goals CRUD
 
 // Import scheduler
 const { initScheduler } = require('./services/scheduler.service');
@@ -239,6 +240,10 @@ app.use(`${API}/daily-flow`,       writeLimiter, dailyFlowRoutes);    // Phase 4
 app.use(`${API}/phase6`,           phase6Routes);                    // Phase 6: External Execution Layer
 app.use(`${API}/phase7`,           phase7Routes);                    // Phase 7: Production Infrastructure
 app.use(`${API}/brain`,            brainRoutes);                     // Phase 12: Real-Time Cognitive Brain
+app.use(`${API}/goals`,            goalRoutes);                      // Goals CRUD
+// Aliases for legacy/alternative goal paths
+app.use(`${API}/engine/goals`,    goalRoutes);                      // Legacy alias
+app.use(`${API}/adaptive/goals`,  goalRoutes);                      // Legacy alias
 
 // ============================================
 // Health Check

@@ -107,8 +107,83 @@ async function detectIntent(userMessage, context = {}) {
     return parsed;
   } catch (e) {
     logger.warn('[CMD-ENGINE] Intent detection failed:', e.message, '| Raw:', raw?.substring(0, 200));
-    return { intent: 'chat', confidence: 0.5, entities: {}, reply: null, needs_confirmation: false };
+    // ── Keyword-based fallback when AI is unavailable ────────────────────────
+    return detectIntentByKeywords(userMessage);
   }
+}
+
+/**
+ * Keyword-based intent detection fallback (no AI required).
+ * Used when AI providers are unavailable (no API keys).
+ */
+function detectIntentByKeywords(message) {
+  const lower = message.trim().toLowerCase();
+
+  // ── mood log (check BEFORE create_task since سجل appears in both) ───────
+  if (/مزاج|مزاجي|شعور|شعوري|طاقة|طاقتي/.test(lower)) {
+    const scoreMatch = lower.match(/(\d+)/);
+    return {
+      intent: 'log_mood',
+      confidence: 0.75,
+      entities: { mood_score: scoreMatch ? parseInt(scoreMatch[1]) : null },
+      reply: null,
+      needs_confirmation: false,
+    };
+  }
+
+  // ── delete_task ────────────────────────────────────────────────────────────
+  if (/^(احذف|ألغِ|امسح|حذف)/.test(lower)) {
+    return {
+      intent: 'delete_task',
+      confidence: 0.7,
+      entities: { task_title: message.replace(/^(احذف|ألغِ|امسح|حذف)\s*/i, '').trim() },
+      reply: null,
+      needs_confirmation: true,
+    };
+  }
+
+  // ── complete_task ──────────────────────────────────────────────────────────
+  if (/^(خلص|انتهيت|عملت|أكملت|اكملت)/.test(lower)) {
+    return {
+      intent: 'complete_task',
+      confidence: 0.7,
+      entities: { task_title: message.replace(/^(خلص|انتهيت|عملت|أكملت|اكملت)\s*/i, '').trim() },
+      reply: null,
+      needs_confirmation: false,
+    };
+  }
+
+  // ── update_task ────────────────────────────────────────────────────────────
+  if (/^(عدل|غير|بدّل|تعديل|عدّل)/.test(lower)) {
+    const titleMatch = message.replace(/^(عدل|غير|بدّل|تعديل|عدّل)\s*(مهمة|المهمة)?\s*/i, '').trim();
+    return {
+      intent: 'update_task',
+      confidence: 0.65,
+      entities: { task_title: titleMatch },
+      reply: null,
+      needs_confirmation: false,
+    };
+  }
+
+  // ── create_task ────────────────────────────────────────────────────────────
+  if (/^(اضف|أضف|ضيف|ضف|أنشئ|انشئ|اعمل|لازم|محتاج|عندي|عايز)/.test(lower) ||
+      (/^سجل/.test(lower) && /مهمة|task/.test(lower))) {
+    const title = extractTitleFromMessage(message);
+    let due_date = null;
+    if (/اليوم/.test(lower)) due_date = 'today';
+    else if (/بكره|غدا|غداً/.test(lower)) due_date = 'tomorrow';
+    else if (/الأسبوع القادم/.test(lower)) due_date = 'next week';
+    return {
+      intent: 'create_task',
+      confidence: 0.75,
+      entities: { task_title: title, due_date, priority: 'medium' },
+      reply: null,
+      needs_confirmation: false,
+    };
+  }
+
+  // Default: treat as general chat with medium confidence
+  return { intent: 'chat', confidence: 0.5, entities: {}, reply: null, needs_confirmation: false };
 }
 
 // ── Title Fallback: extract task title directly from user message ─────────────
@@ -233,6 +308,36 @@ async function executeAction(intent, entities, userId, timezone = 'Africa/Cairo'
       }
       await match.update({ status: 'completed', completed_at: new Date() });
       return { success: true, action: 'complete_task', data: match };
+    }
+
+    case 'update_task': {
+      const tasks = await Task.findAll({ where: { user_id: userId } });
+      const title = (entities.task_title || '').toLowerCase().trim();
+      if (!title) {
+        const taskList = tasks.filter(t => t.status !== 'completed').slice(0,5).map(t=>`"${t.title}"`).join(', ');
+        return { success: false, action: 'update_task', message: `قولّي اسم المهمة اللي عايز تعدلها. مهامك: ${taskList || 'لا توجد مهام'}` };
+      }
+      const match = tasks.find(t => {
+        const tl = t.title.toLowerCase();
+        return tl.includes(title) || title.includes(tl.substring(0, Math.min(10, tl.length)));
+      });
+      if (!match) {
+        const taskList = tasks.filter(t => t.status !== 'completed').slice(0,5).map(t=>`"${t.title}"`).join(', ');
+        return { success: false, message: `لم أجد المهمة. مهامك الحالية: ${taskList || 'لا توجد مهام'}` };
+      }
+      const updates = {};
+      if (entities.new_title)  updates.title    = entities.new_title;
+      if (entities.priority)   updates.priority  = entities.priority;
+      if (entities.due_date)   updates.due_date  = resolveDate(entities.due_date);
+      if (entities.status)     updates.status    = entities.status;
+      if (entities.notes)      updates.notes     = entities.notes;
+      if (entities.category)   updates.category  = entities.category;
+      if (Object.keys(updates).length === 0) {
+        return { success: false, message: `أخبرني ماذا تريد تعديله في مهمة "${match.title}"، مثلاً: غير أولويتها لعالية، أو أضل موعدها لبكرة` };
+      }
+      await match.update(updates);
+      const appliedKeys = Object.keys(updates).join(', ');
+      return { success: true, action: 'update_task', data: match, message: `تم تحديث مهمة "${match.title}"` };
     }
 
     case 'reschedule_task': {
@@ -700,6 +805,7 @@ function buildActionSummary(actionResult) {
       return `✅ تم إنشاء ${a.count} مهمة لمواد: ${(a.subjects||[]).join('، ')} | أقصى حمل يومي: ${maxDayHrs.toFixed(1)} ساعة`;
     }
     case 'schedule_plan':  return `✅ تم إنشاء جدول "${a.title}" بـ ${a.count} مهمة`;
+    case 'update_task':    return `✅ ${a.message || 'تم تحديث المهمة'}`;
     case 'update_profile': return `✅ ${a.message || 'تم تحديث الملف الشخصي'}`;
     case 'update_settings': return `✅ ${a.message || 'تم تحديث الإعدادات'}`;
     case 'analyze': {
@@ -790,7 +896,7 @@ async function processCommand(userId, message, timezone = 'Africa/Cairo', pendin
 
       // Execute immediately
       let actionResult = null;
-      const actionableIntents = ['create_task','complete_task','reschedule_task','delete_task','log_mood','plan_day','schedule_exam','schedule_plan','life_summary','analyze','check_habit','update_profile','update_settings'];
+      const actionableIntents = ['create_task','complete_task','reschedule_task','delete_task','update_task','log_mood','plan_day','schedule_exam','schedule_plan','life_summary','analyze','check_habit','update_profile','update_settings'];
       if (actionableIntents.includes(intentData.intent) && intentData.confidence > 0.55) {
         actionResult = await executeAction(intentData.intent, intentData.entities, userId, timezone, message);
       }
