@@ -56,19 +56,37 @@ function getCommandEngine() {
   try { return require('../services/ai.command.engine'); } catch (_e) { logger.debug(`[CHAT_ROUTES] Module '../services/ai.command.engine' not available: ${_e.message}`); return null; }
 }
 
+// ── Per-user pending action store (mirrors assistant.routes.js behaviour) ────
+// Stores { pendingAction: {...} } keyed by userId so that confirmation messages
+// ('نعم', 'ok', etc.) can resolve a previously requested delete / bulk action.
+const chatSessions = new Map();
+
+// Words that constitute a confirmation reply — must stay in sync with command engine
+const CONFIRM_WORDS = ['نعم','أيوه','يلا','اعمل','موافق','ok','yes','أكد','تمام','كمّل','طيب','حلو','ابدأ'];
+
 /**
  * Phase 15: Detect if a message is an actionable command (create task, complete, etc.)
  * Returns true if the command engine should execute FIRST, then orchestrator generates reply.
+ * Also returns true for confirmation words when a pending action exists for this user.
  */
-function isActionableCommand(message) {
+function isActionableCommand(message, userId) {
   const lower = (message || '').toLowerCase().trim();
+
+  // If a pending action is waiting for this user, any confirmation/rejection routes through engine
+  if (userId) {
+    const session = chatSessions.get(userId) || {};
+    if (session.pendingAction && CONFIRM_WORDS.some(w => lower.includes(w))) {
+      return true;
+    }
+  }
+
   const actionPatterns = [
     // Create task
     'اضف', 'أضف', 'ضيف', 'ضف', 'عندي مهمة', 'سجل مهمة', 'أنشئ مهمة', 'انشئ مهمة',
     'لازم اعمل', 'لازم أعمل', 'محتاج اعمل', 'محتاج أعمل', 'اعمل مهمة',
     'add task', 'create task', 'new task',
-    // Complete task
-    'خلصت', 'انتهيت', 'عملت', 'خلّصت', 'كمّلت', 'أنجزت', 'انجزت',
+    // Complete task — imperative (اكمل) and past tense
+    'اكمل', 'أكمل', 'خلصت', 'انتهيت', 'عملت', 'خلّصت', 'كمّلت', 'أنجزت', 'انجزت',
     // Reschedule
     'أجّل', 'أجل', 'أخّر', 'اخر', 'أأجل', 'رحّل',
     // Delete
@@ -319,10 +337,14 @@ router.post('/message', writeLimiter, validateChatMessage, async (req, res) => {
     let actionResult = null;
 
     // Step 1: If message is an actionable command, execute it via command engine
-    if (commandEngine && isActionableCommand(message.trim())) {
+    // Retrieve any pending action stored from a previous needs_confirmation reply
+    const chatSession = chatSessions.get(userId) || {};
+    const pendingAction = chatSession.pendingAction || null;
+
+    if (commandEngine && isActionableCommand(message.trim(), userId)) {
       try {
-        logger.info(`[CHAT] Detected actionable command, routing through command engine: "${message.trim().substring(0, 60)}"`);
-        const cmdResult = await commandEngine.processCommand(userId, message.trim(), tz, null);
+        logger.info(`[CHAT] Detected actionable command, routing through command engine: "${message.trim().substring(0, 60)}" (pending=${!!pendingAction})`);
+        const cmdResult = await commandEngine.processCommand(userId, message.trim(), tz, pendingAction);
         if (cmdResult) {
           actionResult = cmdResult;
           // Use command engine's reply if action succeeded
@@ -344,11 +366,23 @@ router.post('/message', writeLimiter, validateChatMessage, async (req, res) => {
             });
           }
 
+          // ── Track pending confirmation state ──────────────────────────────────────
+          if (cmdResult.needs_confirmation && cmdResult.pending_action) {
+            // Store pending action so next message ('نعم') can confirm it
+            chatSessions.set(userId, { pendingAction: cmdResult.pending_action });
+            logger.info(`[CHAT] Stored pending action for user ${userId}: ${cmdResult.pending_action.intent}`);
+          } else {
+            // Action executed or cancelled — clear pending state
+            chatSessions.set(userId, { pendingAction: null });
+          }
+
           logger.info(`[CHAT] Command executed: intent=${cmdResult.intent}, action=${cmdResult.action_taken?.action || 'none'}, success=${!!cmdResult.action_taken}`);
         }
       } catch (cmdErr) {
         logger.warn('[CHAT] Command engine failed, falling back to orchestrator:', cmdErr.message);
         actionResult = null;
+        // Clear pending action on error
+        chatSessions.set(userId, { pendingAction: null });
       }
     }
 
@@ -370,8 +404,11 @@ router.post('/message', writeLimiter, validateChatMessage, async (req, res) => {
         is_fallback = true;
       }
     }
-    // Step 3: If command was executed but orchestrator needed for richer reply
-    else if (actionResult && orchestrator) {
+    // Step 3: If command was executed (and doesn't need confirmation, and wasn't a confirmation itself),
+    // orchestrator may enrich the reply. Skip when:
+    //  a) needs_confirmation=true — engine reply is the question to user
+    //  b) pendingAction was set (confirmation flow) — keep concise action confirmation
+    else if (actionResult && orchestrator && !actionResult.needs_confirmation && !pendingAction) {
       try {
         // Generate a contextual reply incorporating the action result
         const orchResult = await orchestrator.orchestrate({

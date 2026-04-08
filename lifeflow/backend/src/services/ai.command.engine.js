@@ -133,21 +133,30 @@ function detectIntentByKeywords(message) {
 
   // ── delete_task ────────────────────────────────────────────────────────────
   if (/^(احذف|ألغِ|امسح|حذف)/.test(lower)) {
+    const delTitle = message
+      .replace(/^(احذف|ألغِ|امسح|حذف)\s*(مهمة|المهمة)?\s*/i, '')
+      .replace(/["\'«»]/g, '')
+      .trim();
     return {
       intent: 'delete_task',
       confidence: 0.7,
-      entities: { task_title: message.replace(/^(احذف|ألغِ|امسح|حذف)\s*/i, '').trim() },
+      entities: { task_title: delTitle },
       reply: null,
       needs_confirmation: true,
     };
   }
 
   // ── complete_task ──────────────────────────────────────────────────────────
-  if (/^(خلص|انتهيت|عملت|أكملت|اكملت)/.test(lower)) {
+  // Matches imperative (اكمل/أكمل مهمة X) and past tense (خلصت / اكملت)
+  if (/^(خلص|انتهيت|عملت|أكملت|اكملت|اكمل|أكمل)/.test(lower)) {
+    const rawTitle = message
+      .replace(/^(خلص|انتهيت|عملت|أكملت|اكملت|اكمل|أكمل)\s*(مهمة|المهمة)?\s*/i, '')
+      .replace(/["'«»]/g, '')
+      .trim();
     return {
       intent: 'complete_task',
       confidence: 0.7,
-      entities: { task_title: message.replace(/^(خلص|انتهيت|عملت|أكملت|اكملت)\s*/i, '').trim() },
+      entities: { task_title: rawTitle },
       reply: null,
       needs_confirmation: false,
     };
@@ -204,6 +213,8 @@ function extractTitleFromMessage(message) {
   for (const rx of prefixes) {
     title = title.replace(rx, '');
   }
+  // Strip leading colons/punctuation left after prefix removal (e.g. "اضف مهمة: foo" → ": foo" → "foo")
+  title = title.replace(/^[:\s]+/, '');
   // Strip trailing date/time phrases
   title = title.replace(/\s*(اليوم|بكره|غداً|غدا|الأسبوع القادم|tomorrow|today|next week)\s*$/i, '');
   title = title.replace(/\s*(بأولوية|أولوية)\s*(عالية|منخفضة|متوسطة|عاجلة|urgent|high|medium|low)\s*$/i, '');
