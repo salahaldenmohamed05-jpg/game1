@@ -147,15 +147,15 @@ function detectIntentByKeywords(message) {
   }
 
   // ── complete_task ──────────────────────────────────────────────────────────
-  // Matches imperative (اكمل/أكمل مهمة X) and past tense (خلصت / اكملت)
-  if (/^(خلص|انتهيت|عملت|أكملت|اكملت|اكمل|أكمل)/.test(lower)) {
+  // Matches both imperative and past tense completion patterns
+  if (/^(خلص|انتهيت|عملت|أكملت|اكملت|اكمل|أكمل|اكتملت|أنجزت|انجزت|تمت|أتممت|كملت|أنهيت|انهيت)/.test(lower)) {
     const rawTitle = message
-      .replace(/^(خلص|انتهيت|عملت|أكملت|اكملت|اكمل|أكمل)\s*(مهمة|المهمة)?\s*/i, '')
-      .replace(/["'«»]/g, '')
+      .replace(/^(خلص|انتهيت|عملت|أكملت|اكملت|اكمل|أكمل|اكتملت|أنجزت|انجزت|تمت|أتممت|كملت|أنهيت|انهيت)\s*(مهمة|المهمة)?\s*/i, '')
+      .replace(/["'«»:]/g, '')
       .trim();
     return {
       intent: 'complete_task',
-      confidence: 0.7,
+      confidence: 0.85,
       entities: { task_title: rawTitle },
       reply: null,
       needs_confirmation: false,
@@ -309,13 +309,25 @@ async function executeAction(intent, entities, userId, timezone = 'Africa/Cairo'
       const title = (entities.task_title || '').toLowerCase().trim();
       if (!title) return { success: false, message: 'لم تحدد اسم المهمة التي أنجزتها' };
 
+      // Arabic-aware stem: strip common prefixes (ال, و, ب, ل, ك) and suffixes (ات, ين, ون, ة, ي, ها, ه)
+      const stemAr = (s) => s
+        .replace(/^(ال|وال|بال|لل|كال)/g, '')
+        .replace(/(ات|ين|ون|ة|ي|ها|ه)$/g, '');
+
+      const titleStem = stemAr(title);
+
       const match = tasks.find(t => {
         const tl = t.title.toLowerCase();
-        return tl.includes(title) || title.includes(tl.substring(0, Math.min(10, tl.length)));
+        const tlStem = stemAr(tl);
+        // Exact / substring match
+        if (tl.includes(title) || title.includes(tl.substring(0, Math.min(10, tl.length)))) return true;
+        // Stem-based match (handles التقرير ↔ التقارير, مهمة ↔ المهمة, etc.)
+        if (titleStem.length >= 3 && (tlStem.includes(titleStem) || titleStem.includes(tlStem.substring(0, Math.min(8, tlStem.length))))) return true;
+        return false;
       });
       if (!match) {
         const taskList = tasks.slice(0,5).map(t=>`"${t.title}"`).join(', ');
-        return { success: false, message: `لم أجد المهمة. مهامك الحالية: ${taskList || 'لا توجد مهام'}` };
+        return { success: false, message: `مستخدم، مش لاقيت مهمة باسم "${title}".\nجرب: "خلصت مهمة [الاسم الكامل]"\n\nمهامك الحالية: ${taskList || 'لا توجد مهام'}` };
       }
       await match.update({ status: 'completed', completed_at: new Date() });
       return { success: true, action: 'complete_task', data: match };

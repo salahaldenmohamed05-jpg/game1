@@ -82,6 +82,8 @@ function detectIntent(message) {
     // Today's tasks/goals
     'أهدافي اليوم', 'مهامي اليوم', 'إيه عندي', 'ايه عندي', 'عندي إيه',
     'مهامي', 'مهام اليوم', 'أهداف اليوم', 'شغلي النهاردة',
+    // Goals standalone (عرضلي أهدافي / أهدافي / اعرض أهدافي / ارني أهدافي)
+    'أهدافي', 'اهدافي', 'أهدافك', 'عرضلي أهدافي', 'ارني أهدافي', 'اعرض أهدافي',
     // Overdue
     'متأخر في إيه', 'متأخر في ايه', 'إيه المتأخر', 'ايه اللي متأخر',
     'المتأخر', 'متأخرة', 'overdue',
@@ -110,6 +112,10 @@ function detectIntent(message) {
     'أولوية', 'priorities', 'تحسّن', 'تحسين', 'improve', 'better',
     'أزيد', 'أقلل', 'ابدأ', 'أكيف', 'أتعامل', 'أفعل لو',
     'ما الحل', 'كيف أتعامل', 'إيه الحل', 'ايه الحل',
+    // Best time, optimal, when to start patterns
+    'أفضل وقت', 'افضل وقت', 'وقت مناسب', 'أنسب وقت', 'متى أبدأ', 'متى ابدأ',
+    'best time', 'when should', 'how can i', 'how do i', 'optimal',
+    'أحسّن', 'احسن من', 'أزوّد', 'ازود', 'أقدر أحسّن',
   ];
   if (reasoningPatterns.some(p => m.includes(p))) return 'reasoning_question';
 
@@ -148,7 +154,7 @@ function determineAiMode() {
  * @returns {{ text, source, confidence, reasoning, dataSnapshot }}
  */
 async function answerFromData(userId, intent, message, timezone = 'Africa/Cairo') {
-  const { Task, Habit, Goal, MoodEntry, User } = getModels();
+  const { Task, Habit, HabitLog, Goal, MoodEntry, User } = getModels();
   const tz = timezone || 'Africa/Cairo';
   const todayStr = moment().tz(tz).format('YYYY-MM-DD');
   const dayStart = moment().tz(tz).startOf('day').toDate();
@@ -157,11 +163,14 @@ async function answerFromData(userId, intent, message, timezone = 'Africa/Cairo'
 
   try {
     // ── Fetch real data ──────────────────────────────────────────────────────
-    const [allTasks, habits, goals, user] = await Promise.all([
+    const [allTasks, habits, goals, user, todayHabitLogs] = await Promise.all([
       Task.findAll({ where: { user_id: userId }, order: [['createdAt', 'DESC']] }),
       Habit.findAll({ where: { user_id: userId } }),
       Goal.findAll({ where: { user_id: userId } }),
       User.findByPk(userId, { attributes: ['name', 'email'] }),
+      HabitLog
+        ? HabitLog.findAll({ where: { user_id: userId, log_date: moment().tz(tz).format('YYYY-MM-DD'), completed: true }, attributes: ['habit_id'] })
+        : Promise.resolve([]),
     ]);
 
     const userName = user?.name?.split(' ')[0] || 'صديقي';
@@ -186,9 +195,10 @@ async function answerFromData(userId, intent, message, timezone = 'Africa/Cairo'
     });
     const highPriority    = pendingTasks.filter(t => t.priority === 'high');
 
-    // Habit completion today (try to check via HabitLog or completed_today field)
-    const completedHabits = habits.filter(h => h.completed_today === true);
-    const pendingHabits   = habits.filter(h => !h.completed_today);
+    // Habit completion today — use HabitLog (completed_today is NOT a DB column)
+    const completedHabitIdSet = new Set((todayHabitLogs || []).map(l => l.habit_id));
+    const completedHabits = habits.filter(h => completedHabitIdSet.has(h.id));
+    const pendingHabits   = habits.filter(h => !completedHabitIdSet.has(h.id));
 
     // Snapshot for context
     const dataSnapshot = {
@@ -408,20 +418,34 @@ async function answerFromData(userId, intent, message, timezone = 'Africa/Cairo'
  * @param {string} timezone
  * @returns {Promise<NormalizedResponse>}
  */
+// Markers indicating the commandEngine returned a generic/unhelpful response
+const COMMAND_ENGINE_GENERIC_MARKERS = [
+  'قولي إيش المهمة',
+  'قولّي إيش المهمة',
+  'حدّد المهمة بالضبط',
+  'أنا جاهز! قولي اسم المهمة',
+  'عذراً، حدث خطأ في المعالجة',
+];
+
+function isCommandEngineGeneric(reply) {
+  if (!reply) return true;
+  return COMMAND_ENGINE_GENERIC_MARKERS.some(m => reply.includes(m));
+}
+
 async function routeRequest(userId, message, intent, aiMode, timezone) {
   // ── action_request → commandEngine (always, regardless of AI) ────────────
   if (intent === 'action_request') {
     try {
       const commandEngine = require('./ai.command.engine');
       const result = await commandEngine.processCommand(userId, message, timezone, null);
-      if (result && result.reply) {
+      if (result && result.reply && !isCommandEngineGeneric(result.reply)) {
         return normalize(result.reply, 'local', result.confidence || 90, 'command_engine', null, result.action_taken);
       }
     } catch (err) {
-      logger.warn('[ORCHESTRATOR] commandEngine failed, falling back to data:', err.message);
+      logger.warn('[ORCHESTRATOR] commandEngine failed, trying inline complete:', err.message);
     }
-    // Fallback for action: data answer
-    return answerFromData(userId, intent, message, timezone);
+    // Inline complete/add when commandEngine fails or returns generic response
+    return handleActionInline(userId, message, timezone);
   }
 
   // ── data_question → LOCAL ONLY (brainState + DB, no AI needed) ───────────
@@ -429,73 +453,65 @@ async function routeRequest(userId, message, intent, aiMode, timezone) {
     return answerFromData(userId, intent, message, timezone);
   }
 
-  // ── If AI is not available for reasoning/emotional → fall back to data ────
-  if (aiMode === 'data_only' || aiMode === 'offline') {
-    const dataResp = await answerFromData(userId, intent, message, timezone);
-    // Prepend honest disclosure
-    return normalize(
-      `واضح إن النظام الذكي مش متاح حالياً\nلكن أقدر أساعدك بناءً على بياناتك الحالية 👇\n\n${dataResp.text}`,
-      'local',
-      dataResp.confidence,
-      'data_only_fallback',
-      dataResp.dataSnapshot
-    );
-  }
-
-  // ── reasoning_question → Gemini ───────────────────────────────────────────
-  if (intent === 'reasoning_question') {
-    try {
-      const client = getAIClient();
-      if (client) {
-        const status = getAIStatus();
-        const geminiOk = status?.gemini === true || status?.gemini?.available === true;
-        if (geminiOk) {
-          // Build context-aware prompt
-          const contextPrompt = await buildContextPrompt(userId, message, timezone);
-          const aiResp = await client.chat(contextPrompt.system, contextPrompt.user, {
-            provider: 'gemini',
-            temperature: 0.6,
-            maxTokens: 600,
-          });
-          if (aiResp && aiResp.reply && !isGenericReply(aiResp.reply)) {
-            return normalize(aiResp.reply, 'gemini', 85, 'gemini_reasoning', null);
-          }
-        }
-      }
-    } catch (err) {
-      logger.warn('[ORCHESTRATOR] Gemini reasoning failed:', err.message);
-    }
-    // Fallback to local data
-    return answerFromData(userId, intent, message, timezone);
-  }
-
-  // ── emotional_support → Grok ──────────────────────────────────────────────
+  // ── emotional_support: always use empathetic response first (AI if available, else local) ──
   if (intent === 'emotional_support') {
-    try {
-      const client = getAIClient();
-      if (client) {
-        const status = getAIStatus();
-        const groqOk = status?.groq === true || status?.groq?.available === true;
-        if (groqOk) {
-          const contextPrompt = await buildContextPrompt(userId, message, timezone);
-          const aiResp = await client.chat(contextPrompt.system, contextPrompt.user, {
-            provider: 'groq',
-            temperature: 0.8,
-            maxTokens: 400,
-          });
-          if (aiResp && aiResp.reply && !isGenericReply(aiResp.reply)) {
-            return normalize(aiResp.reply, 'grok', 80, 'grok_emotional', null);
+    // Try Grok first (when available)
+    if (aiMode === 'full_ai' || aiMode === 'hybrid') {
+      try {
+        const client = getAIClient();
+        if (client) {
+          const status = getAIStatus();
+          const groqOk = status?.groq === true || status?.groq?.available === true;
+          if (groqOk) {
+            const contextPrompt = await buildContextPrompt(userId, message, timezone);
+            const aiResp = await client.chat(contextPrompt.system, contextPrompt.user, {
+              provider: 'groq',
+              temperature: 0.8,
+              maxTokens: 400,
+            });
+            if (aiResp && aiResp.reply && !isGenericReply(aiResp.reply)) {
+              return normalize(aiResp.reply, 'grok', 80, 'grok_emotional', null);
+            }
           }
         }
+      } catch (err) {
+        logger.warn('[ORCHESTRATOR] Grok emotional failed:', err.message);
       }
-    } catch (err) {
-      logger.warn('[ORCHESTRATOR] Grok emotional failed:', err.message);
     }
-    // Fallback to empathetic data-based response
+    // Always fallback to empathetic local response (NOT the data summary)
     return buildEmpatheticResponse(userId, message, timezone);
   }
 
-  // ── casual_chat: if AI available use it, otherwise give useful data summary ─
+  // ── reasoning_question → Gemini (when available) ─────────────────────────
+  if (intent === 'reasoning_question') {
+    if (aiMode === 'full_ai' || aiMode === 'hybrid') {
+      try {
+        const client = getAIClient();
+        if (client) {
+          const status = getAIStatus();
+          const geminiOk = status?.gemini === true || status?.gemini?.available === true;
+          if (geminiOk) {
+            const contextPrompt = await buildContextPrompt(userId, message, timezone);
+            const aiResp = await client.chat(contextPrompt.system, contextPrompt.user, {
+              provider: 'gemini',
+              temperature: 0.6,
+              maxTokens: 600,
+            });
+            if (aiResp && aiResp.reply && !isGenericReply(aiResp.reply)) {
+              return normalize(aiResp.reply, 'gemini', 85, 'gemini_reasoning', null);
+            }
+          }
+        }
+      } catch (err) {
+        logger.warn('[ORCHESTRATOR] Gemini reasoning failed:', err.message);
+      }
+    }
+    // AI not available → honest disclosure + local data-based advice
+    return buildLocalReasoningResponse(userId, message, timezone);
+  }
+
+  // ── casual_chat (greetings, small talk) ──────────────────────────────────
+  // Try AI if available
   if (aiMode === 'full_ai' || aiMode === 'hybrid') {
     try {
       const client = getAIClient();
@@ -514,30 +530,264 @@ async function routeRequest(userId, message, intent, aiMode, timezone) {
     }
   }
 
-  // Final fallback: always useful data summary
-  return answerFromData(userId, 'casual_chat', message, timezone);
+  // casual_chat with no AI → warm greeting + data summary
+  return buildCasualResponse(userId, message, timezone);
+}
+
+// ─── Handle Action Inline (when commandEngine fails or is too generic) ────────
+async function handleActionInline(userId, message, timezone) {
+  const { Task, User } = getModels();
+  const Op = require('sequelize').Op;
+  try {
+    const user = await User.findByPk(userId, { attributes: ['name'] });
+    const name = user?.name?.split(' ')[0] || 'صديقي';
+    const m = message.toLowerCase();
+
+    // ── Complete/Done patterns ────────────────────────────────────────────────
+    const completePatterns = ['اكتملت', 'أنجزت', 'انجزت', 'خلصت', 'خلصت مهمة', 'تمت', 'أتممت', 'كملت'];
+    const isComplete = completePatterns.some(p => m.includes(p));
+
+    if (isComplete) {
+      // Extract task name after the keyword
+      let taskName = message
+        .replace(/اكتملت|أنجزت|انجزت|خلصت|تمت|أتممت|كملت/g, '')
+        .replace(/مهمة|مهام|task/gi, '')
+        .replace(/:/g, '')
+        .trim();
+
+      if (taskName.length > 1) {
+        // Find matching task by title similarity
+        const tasks = await Task.findAll({
+          where: { user_id: userId, status: { [Op.ne]: 'completed' } },
+        });
+        // Arabic-aware stem: strip common prefixes/suffixes
+        const stemAr = (s) => s
+          .replace(/^(ال|وال|بال|لل|كال)/g, '')
+          .replace(/(ات|ين|ون|ة|ي|ها|ه)$/g, '');
+        const taskNameLower = taskName.toLowerCase();
+        const taskNameStem  = stemAr(taskNameLower);
+
+        const match = tasks.find(t => {
+          if (!t.title) return false;
+          const tl = t.title.toLowerCase();
+          // Exact / substring check
+          if (tl.includes(taskNameLower) || taskNameLower.includes(tl)) return true;
+          // Word-level stem check (handles broken Arabic plurals)
+          return tl.split(/\s+/).some(w => {
+            const ws = stemAr(w);
+            if (ws.length < 3 || taskNameStem.length < 3) return false;
+            return ws.includes(taskNameStem) || taskNameStem.includes(ws) ||
+              (ws.substring(0,3) === taskNameStem.substring(0,3) && ws.length >= 4 && taskNameStem.length >= 4);
+          });
+        });
+        if (match) {
+          await match.update({ status: 'completed' });
+          return normalize(
+            `✅ "${match.title}" — تم تسجيلها كمكتملة! 🎉\n\nكمّل كده يا ${name}، إنت بتعمل حاجات كويسة.`,
+            'local', 100, 'task_completed_inline', {}
+          );
+        }
+        const taskList = tasks.slice(0,5).map(t => `"${t.title}"`).join('، ');
+        return normalize(
+          `${name}، مش لاقيت مهمة باسم "${taskName}".\nجرب: "خلصت مهمة [الاسم الكامل]"\n\nمهامك الحالية: ${taskList || 'لا توجد مهام معلّقة'}`,
+          'local', 70, 'task_not_found', {}
+        );
+      }
+    }
+
+    // ── Add task patterns ─────────────────────────────────────────────────────
+    const addPatterns = ['أضف مهمة', 'اضف مهمة', 'أنشئ مهمة', 'انشئ مهمة', 'مهمة جديدة', 'add task'];
+    const isAdd = addPatterns.some(p => m.includes(p));
+    if (isAdd) {
+      const titleRaw = message
+        .replace(/أضف مهمة|اضف مهمة|أنشئ مهمة|انشئ مهمة|مهمة جديدة|add task/gi, '')
+        .replace(/:/g, '')
+        .trim();
+      if (titleRaw.length > 0) {
+        const newTask = await Task.create({
+          user_id: userId,
+          title: titleRaw,
+          status: 'pending',
+          priority: 'medium',
+        });
+        return normalize(
+          `✅ تمت إضافة المهمة: "${newTask.title}"\n\nيلا ${name}، إنت عارف تبدأ متى. 💪`,
+          'local', 100, 'task_added_inline', {}
+        );
+      }
+    }
+
+    // Generic action prompt
+    return normalize(
+      `${name}، قولي المهمة اللي عايز تضيفها أو تخليها مكتملة.\nمثال: "خلصت مهمة مراجعة الكود" أو "أضف مهمة: التقرير الأسبوعي"`,
+      'local', 70, 'action_clarification', {}
+    );
+  } catch (e) {
+    logger.error('[ORCHESTRATOR] handleActionInline error:', e.message);
+    return normalize(
+      'مش قدرت أنفّذ الإجراء دلوقتي. جرب من شاشة المهام مباشرة.',
+      'local', 0, 'action_error', {}
+    );
+  }
+}
+
+// ─── Build Local Reasoning Response (reasoning fallback without AI) ───────────
+async function buildLocalReasoningResponse(userId, message, timezone) {
+  const { Task, Habit, HabitLog, Goal, User } = getModels();
+  const Op = require('sequelize').Op;
+  const safeTimezone = timezone || 'Africa/Cairo';
+  try {
+    const user = await User.findByPk(userId, { attributes: ['name'] });
+    const name = user?.name?.split(' ')[0] || 'صديقي';
+    const todayStrLocal = moment().tz(safeTimezone).format('YYYY-MM-DD');
+    const [tasks, habits, goals, habitLogsToday] = await Promise.all([
+      Task.findAll({ where: { user_id: userId, status: { [Op.ne]: 'completed' } }, limit: 5, order: [['priority','DESC']] }),
+      Habit.findAll({ where: { user_id: userId }, limit: 5 }),
+      Goal.findAll({ where: { user_id: userId }, limit: 3 }),
+      HabitLog
+        ? HabitLog.findAll({ where: { user_id: userId, log_date: todayStrLocal, completed: true }, attributes: ['habit_id'] })
+        : Promise.resolve([]),
+    ]);
+    const overdue = tasks.filter(t => t.due_date && new Date(t.due_date) < new Date());
+    const completedHabitIds = new Set((habitLogsToday || []).map(l => l.habit_id));
+
+    let text = `واضح إن النظام الذكي مش متاح حالياً — لكن بناءً على بياناتك:\n\n`;
+
+    if (overdue.length > 0) {
+      text += `⚠️ الأهم دلوقتي: إنهاء "${overdue[0].title}" اللي بتتأخر.\n`;
+    } else if (tasks.length > 0) {
+      text += `🎯 ركّز على: "${tasks[0].title}" — ده أعلى أولوية.\n`;
+    }
+
+    const incompleteHabits = habits.filter(h => !completedHabitIds.has(h.id));
+    if (incompleteHabits.length > 0) {
+      text += `📌 عندك ${incompleteHabits.length} عادة لسه ما سجّلتهاش النهارده.\n`;
+    }
+
+    if (goals.length > 0) {
+      const avgProgress = Math.round(goals.reduce((s, g) => s + (g.progress || 0), 0) / goals.length);
+      text += `🏆 أهدافك: ${goals.length} هدف — متوسط التقدم ${avgProgress}%.\n`;
+    }
+
+    text += `\nلما تتاح مفاتيح الذكاء الاصطناعي، هيقدر يعطيك تحليل أعمق. 💡`;
+    return normalize(text, 'local', 80, 'local_reasoning', {});
+  } catch (e) {
+    return normalize(
+      'واضح إن النظام الذكي مش متاح حالياً.\nجرب تسأل عن مهامك أو عاداتك وهرد من البيانات الحقيقية.',
+      'local', 60, 'reasoning_error', {}
+    );
+  }
+}
+
+// ─── Build Casual Response (greetings & small talk without AI) ────────────────
+async function buildCasualResponse(userId, message, timezone) {
+  const { Task, Habit, HabitLog, User } = getModels();
+  const Op = require('sequelize').Op;
+  const safeTimezone = timezone || 'Africa/Cairo';
+  try {
+    const user = await User.findByPk(userId, { attributes: ['name'] });
+    const name = user?.name?.split(' ')[0] || 'صديقي';
+    const todayStrCasual = moment().tz(safeTimezone).format('YYYY-MM-DD');
+
+    const [pending, habits, todayLogsC] = await Promise.all([
+      Task.count({ where: { user_id: userId, status: { [Op.ne]: 'completed' } } }),
+      Habit.findAll({ where: { user_id: userId }, attributes: ['id', 'name', 'name_ar'], limit: 20 }),
+      HabitLog
+        ? HabitLog.findAll({ where: { user_id: userId, log_date: todayStrCasual, completed: true }, attributes: ['habit_id'] })
+        : Promise.resolve([]),
+    ]);
+
+    const completedHabitIdsC = new Set((todayLogsC || []).map(l => l.habit_id));
+    const completedHabits = habits.filter(h => completedHabitIdsC.has(h.id)).length;
+    const pendingHabits   = habits.length - completedHabits;
+
+    // Warm greeting with quick useful snapshot
+    let greeting = '';
+    const hour = moment().tz(safeTimezone).hour();
+    if (hour < 12)       greeting = `صباح الخير يا ${name}! ☀️`;
+    else if (hour < 17)  greeting = `أهلاً يا ${name}! 👋`;
+    else if (hour < 21)  greeting = `مساء الخير يا ${name}! 🌆`;
+    else                 greeting = `أهلاً يا ${name}! 🌙`;
+
+    let text = `${greeting}\n\n`;
+    if (pending === 0 && pendingHabits === 0 && habits.length > 0) {
+      text += `ما شاء الله — كل حاجة تمام النهارده! ما تستاهل تاخد راحة. 🎉`;
+    } else {
+      text += `📋 عندك ${pending} مهمة معلّقة`;
+      text += pendingHabits > 0 ? ` و${pendingHabits} عادة لسه.\n` : '.\n';
+      text += `\nقولّي: "أهدافي اليوم" أو "أعمل إيه دلوقتي" — وهفيدك من بياناتك الحقيقية.`;
+    }
+    return normalize(text, 'local', 90, 'casual_greeting', {});
+  } catch (e) {
+    logger.warn('[ORCHESTRATOR] buildCasualResponse error:', e.message);
+    // Minimal fallback — still uses user name if possible
+    try {
+      const { User: U2 } = getModels();
+      const user2 = await U2.findByPk(userId, { attributes: ['name'] });
+      const name2 = user2?.name?.split(' ')[0] || 'صديقي';
+      const hour2 = moment().tz(safeTimezone).hour();
+      const g2 = hour2 < 12 ? `صباح الخير يا ${name2}! ☀️` : hour2 < 17 ? `أهلاً يا ${name2}! 👋` : hour2 < 21 ? `مساء الخير يا ${name2}! 🌆` : `أهلاً يا ${name2}! 🌙`;
+      return normalize(`${g2}\n\nقولّي إيه اللي تحتاجه — مهام، عادات، تقرير اليوم، أو نصيحة.`, 'local', 80, 'casual_greeting_simple', {});
+    } catch (_) {
+      return normalize(
+        'أهلاً! قولّي إيه اللي تحتاجه — مهام، عادات، تقرير اليوم، أو نصيحة.',
+        'local', 80, 'casual_static', {}
+      );
+    }
+  }
 }
 
 // ─── Build Empathetic Response (emotional_support fallback without AI) ─────────
 async function buildEmpatheticResponse(userId, message, timezone) {
+  const Op = require('sequelize').Op;
   try {
-    const { Task } = getModels();
-    const { User } = getModels();
+    const { Task, User } = getModels();
     const user = await User.findByPk(userId, { attributes: ['name'] });
     const name = user?.name?.split(' ')[0] || 'صديقي';
+
+    // Analyse the emotion type from message
+    const m = message.toLowerCase();
+    const isTired    = m.includes('تعب') || m.includes('مرهق') || m.includes('إرهاق');
+    const isStressed = m.includes('ضغط') || m.includes('توتر') || m.includes('مضغوط');
+    const isSad      = m.includes('حزين') || m.includes('زهقت') || m.includes('مكتئب');
+    const isCantCont = m.includes('مش قادر') || m.includes('مش عارف') || m.includes('يأس');
+
+    // Fetch the lightest pending task as an actionable suggestion
     const pendingTasks = await Task.findAll({
-      where: { user_id: userId, status: { [require('sequelize').Op.ne]: 'completed' } },
-      limit: 3,
-      order: [['priority', 'DESC']],
+      where: { user_id: userId, status: { [Op.ne]: 'completed' } },
+      limit: 5,
+      order: [['priority', 'ASC']], // lowest priority = easiest to start
     });
+    const easiest = pendingTasks.length > 0 ? pendingTasks[pendingTasks.length - 1] : null;
+    const overdue  = pendingTasks.filter(t => t.due_date && new Date(t.due_date) < new Date());
 
-    let text = `${name}، عادي تحس كده — إنت بتبذل مجهود كبير.\n\n`;
-    text += `خد نفس عميق. الضغط مش بيحل بالإسراع — بيحل بخطوة واحدة صح.\n\n`;
+    // Build empathetic, personalised reply
+    let text = '';
 
-    if (pendingTasks.length > 0) {
-      text += `أسهل خطوة دلوقتي: "${pendingTasks[pendingTasks.length - 1].title}" — ابدأ بيها بس.\n`;
+    if (isTired) {
+      text += `${name}، طبيعي تحس بتعب — ده مش ضعف، ده علامة إنك شتغلت.\n\n`;
+      text += `💡 الجسم لما يتعب بيطلب راحة — خد 10 دقايق بعيد عن الشاشة.\n`;
+    } else if (isStressed) {
+      text += `${name}، الضغط ده حقيقي ومفهوم.\n\n`;
+      text += `💡 الضغط مش بيخف بالتفكير فيه — بيخف بخطوة واحدة صغيرة.\n`;
+    } else if (isSad) {
+      text += `${name}، إنت مش لازم تكون كويس طول الوقت.\n\n`;
+      text += `💙 أحياناً الشعور ده بيجي وبيروح. إنت مش وحدك.\n`;
+    } else if (isCantCont) {
+      text += `${name}، اللي بتحس بيه ده صعب — وإنت مش ضعيف عشان حسيت بيه.\n\n`;
+      text += `💪 أول خطوة دايماً هي الأصعب. ابدأ بأسهل حاجة ممكنة.\n`;
     } else {
-      text += `مفيش مهام ضاغطة دلوقتي — هاتك دقيقتين راحة حقيقية. 💙\n`;
+      text += `${name}، عادي تحس كده — إنت بتبذل مجهود كبير.\n\n`;
+      text += `خد نفس عميق. الضغط مش بيحل بالإسراع — بيحل بخطوة واحدة صح.\n`;
+    }
+
+    // Add context-aware actionable tip
+    if (overdue.length > 0) {
+      text += `\n⚠️ عندك ${overdue.length} مهمة متأخرة — لكن مش لازم تحلها كلها دلوقتي. ابدأ بواحدة بس.`;
+    } else if (easiest) {
+      text += `\n→ لو حاسس إنك عايز تعمل حاجة: "${easiest.title}" — ده أسهل حاجة دلوقتي.`;
+    } else {
+      text += `\nمفيش مهام ضاغطة دلوقتي — ده فرصة تاخد راحة حقيقية. 💙`;
     }
 
     return normalize(text, 'local', 85, 'empathetic_local', {});
@@ -552,26 +802,33 @@ async function buildEmpatheticResponse(userId, message, timezone) {
 // ─── Build Context Prompt for AI calls ────────────────────────────────────────
 async function buildContextPrompt(userId, message, timezone) {
   try {
-    const { Task, Habit, Goal, User } = getModels();
-    const [tasks, habits, goals, user] = await Promise.all([
+    const { Task, Habit, HabitLog, Goal, User } = getModels();
+    const safeTimezone = timezone || 'Africa/Cairo';
+    const todayStrCtx = moment().tz(safeTimezone).format('YYYY-MM-DD');
+    const [tasks, habits, goals, user, habitLogsTodayCtx] = await Promise.all([
       Task.findAll({ where: { user_id: userId }, limit: 10, order: [['priority', 'DESC']] }),
       Habit.findAll({ where: { user_id: userId }, limit: 10 }),
       Goal.findAll({ where: { user_id: userId }, limit: 5 }),
       User.findByPk(userId, { attributes: ['name', 'email'] }),
+      HabitLog
+        ? HabitLog.findAll({ where: { user_id: userId, log_date: todayStrCtx, completed: true }, attributes: ['habit_id'] })
+        : Promise.resolve([]),
     ]);
 
     const pending = tasks.filter(t => t.status !== 'completed');
     const overdue = pending.filter(t => t.due_date && new Date(t.due_date) < new Date());
-    const todayStr = moment().tz(timezone).format('YYYY-MM-DD ddd');
+    const completedHabitIdsCtx = new Set((habitLogsTodayCtx || []).map(l => l.habit_id));
+    const completedHabitsCtxCount = habits.filter(h => completedHabitIdsCtx.has(h.id)).length;
+    const todayStrFormatted = moment().tz(safeTimezone).format('YYYY-MM-DD ddd');
 
     const system = `أنت مساعد LifeFlow الذكي. تحدث بالعربية المصرية.
 لا تقل: "أنا هنا لمساعدتك" أو "يسعدني مساعدتك" — ابدأ مباشرة بالإجابة أو النصيحة.
 
 سياق المستخدم (${user?.name || 'مستخدم'}):
 - المهام المعلّقة: ${pending.length} (${overdue.length} متأخرة)
-- العادات: ${habits.length} (${habits.filter(h => h.completed_today).length} مكتملة اليوم)
+- العادات: ${habits.length} (${completedHabitsCtxCount} مكتملة اليوم)
 - الأهداف: ${goals.length}
-- اليوم: ${todayStr}
+- اليوم: ${todayStrFormatted}
 
 أهم مهمة: "${pending[0]?.title || 'لا يوجد'}"`;
 
