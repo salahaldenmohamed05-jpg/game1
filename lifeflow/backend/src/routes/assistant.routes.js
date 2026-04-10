@@ -29,6 +29,8 @@ const validateMessage = [
 // Phase B: Use ai.core.service as SINGLE AI entry point (internal modules are NOT entry points)
 const aiCore = require('../services/ai.core.service');
 const assistantSvc = require('../services/assistant.service');
+// Phase 13+: AI Orchestrator — real data intelligence, honest fallbacks
+const aiOrchestrator = require('../services/aiOrchestrator.service');
 // Legacy aliases for backward compatibility within this file
 const processCommand         = (uid, msg, tz, pending) => aiCore.command(uid, msg, tz, pending);
 const runAutonomousCheck     = (uid, tz) => aiCore.autonomous(uid, tz);
@@ -240,7 +242,7 @@ router.post('/command', writeLimiter, validateMessage, async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /assistant/chat
 // Orchestrated AI endpoint → { reply, mode, actions, suggestions }
-// Uses full context: memory, personalization, energy/mood
+// Phase 13+: Routes through aiOrchestrator for real data intelligence
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/chat', writeLimiter, validateMessage, async (req, res) => {
   const { message } = req.body;
@@ -249,71 +251,53 @@ router.post('/chat', writeLimiter, validateMessage, async (req, res) => {
   const timezone = req.user.timezone || 'Africa/Cairo';
 
   try {
-    // Fetch user context for enriched prompts
-    let userCtx = null;
-    try { userCtx = await fetchUserContext(userId, timezone); } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${_e.message}`); }
+    // Phase 13+: Use AI Orchestrator — detects intent, routes to DB/AI, no fake replies
+    const orchResult = await aiOrchestrator.processMessage(userId, message, timezone);
 
-    // Phase B: Route through ai.core.service for full context-aware response
-    const result = await aiCore.chat(userId, message, timezone, userCtx);
-
-    logger.info(`[ASSISTANT] chat via ai.core: user=${userId}, mode=${result.mode}, fallback=${result.is_fallback}`);
+    logger.info(`[ASSISTANT] chat via aiOrchestrator: user=${userId}, intent=${orchResult.intent}, source=${orchResult.source}, aiMode=${orchResult.aiMode}`);
 
     res.json({
       success: true,
       data: {
-        reply       : result.reply,
-        mode        : result.mode,
-        actions     : result.actions     || [],
-        suggestions : result.suggestions  || [],
-        intent      : result.intentCategory,
-        is_fallback : !!result.is_fallback,
-        confidence  : result.confidence  || 70,
-        explanation : result.explanation || [],
-        planningTip : result.planningTip || null,
-        snapshot    : result.snapshot    || null,
-        prediction  : result.prediction  || null,
-        pipeline_ms : result.pipeline_ms || null,
-        // Phase M: Decision Engine data
-        decisionData: result.decisionData || null,
+        reply       : orchResult.text,
+        mode        : orchResult.aiMode || 'data_only',
+        actions     : orchResult.actionTaken ? [orchResult.actionTaken] : [],
+        suggestions : [],
+        intent      : orchResult.intent,
+        source      : orchResult.source,
+        is_fallback : orchResult.source === 'fallback',
+        confidence  : orchResult.confidence || 80,
+        explanation : orchResult.reasoning ? [orchResult.reasoning] : [],
+        planningTip : null,
+        snapshot    : orchResult.dataSnapshot || null,
+        prediction  : null,
+        pipeline_ms : orchResult.pipeline_ms || null,
+        decisionData: null,
+        aiMode      : orchResult.aiMode,
       },
     });
   } catch (e) {
     logger.error('[ASSISTANT] chat error:', e.message);
-    // Phase M: Never crash — try Decision Engine fallback before generic reply
-    let emergencyReply = DEFAULT_FALLBACK;
-    let emergencyDecision = null;
+    // Honest fallback: never fake intelligence — return real data or honest message
+    let safeReply = 'واضح ان النظام الذكي مش متاح حالياً — جرّب اسألني عن مهامك أو عاداتك وهرد من البيانات الحقيقية.';
     try {
-      const unifiedSvc = require('../services/unified.decision.service');
-      if (unifiedSvc?.getUnifiedDecision) {
-        const decision = await unifiedSvc.getUnifiedDecision(req.user.id, {
-          timezone: req.user.timezone || 'Africa/Cairo',
-        });
-        if (decision?.currentFocus) {
-          const focus = decision.currentFocus;
-          const why = (decision.why || []).slice(0, 2).join(' | ');
-          const step = focus.next_steps?.[0] || '';
-          emergencyReply = `📌 **${focus.title}**\n${why}\n${step ? `👉 ${step}` : ''}`;
-          emergencyDecision = {
-            currentFocus: decision.currentFocus,
-            why: decision.why,
-            signalsUsed: decision.signalsUsed,
-            behaviorState: decision.behaviorState,
-          };
-        }
-      }
-    } catch (_de) { /* truly last resort */ }
+      const fallbackResult = await aiOrchestrator.answerFromData(userId, 'data_question', message, timezone);
+      if (fallbackResult?.text) safeReply = fallbackResult.text;
+    } catch (_) { /* truly last resort */ }
 
     res.json({
       success: true,
       data: {
-        reply       : emergencyReply,
-        mode        : 'hybrid',
+        reply       : safeReply,
+        mode        : 'data_only',
         actions     : [],
-        suggestions : ['أعد المحاولة', 'ابدأ يومي', 'سجّل مزاجي'],
-        is_fallback : emergencyReply === DEFAULT_FALLBACK,
-        confidence  : emergencyReply === DEFAULT_FALLBACK ? 0 : 60,
-        explanation : [],
-        decisionData: emergencyDecision,
+        suggestions : ['مهامي اليوم', 'عاداتي', 'ملخص اليوم'],
+        source      : 'local',
+        is_fallback : false,
+        confidence  : 90,
+        explanation : ['البيانات من قاعدة البيانات مباشرة'],
+        decisionData: null,
+        aiMode      : 'data_only',
       },
     });
   }
@@ -321,30 +305,31 @@ router.post('/chat', writeLimiter, validateMessage, async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /assistant  ← alias for /assistant/chat (Phase 16 explainability)
-// Forwards directly to the same handler so POST /api/v1/assistant also works
+// Phase 13+: Also routes through aiOrchestrator
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/', writeLimiter, validateMessage, async (req, res) => {
   const { message } = req.body;
   const userId   = req.user.id;
   const timezone = req.user.timezone || 'Africa/Cairo';
   try {
-    let userCtx = null;
-    try { userCtx = await fetchUserContext(userId, timezone); } catch (_e) { logger.debug(`[ASSISTANT_ROUTES] Non-critical operation failed: ${_e.message}`); }
-    const result = await aiCore.chat(userId, message, timezone, userCtx);
-    logger.info(`[ASSISTANT] / alias: user=${userId}, mode=${result.mode}`);
+    const orchResult = await aiOrchestrator.processMessage(userId, message, timezone);
+    logger.info(`[ASSISTANT] / alias via aiOrchestrator: user=${userId}, intent=${orchResult.intent}, source=${orchResult.source}`);
     res.json({
       success: true,
       data: {
-        reply       : result.reply,
-        mode        : result.mode,
-        actions     : result.actions     || [],
-        suggestions : result.suggestions  || [],
-        intent      : result.intentCategory,
-        is_fallback : !!result.is_fallback,
-        confidence  : result.confidence  || 70,
-        explanation : result.explanation || [],
-        planningTip : result.planningTip || null,
-        decisionData: result.decisionData || null,
+        reply       : orchResult.text,
+        mode        : orchResult.aiMode || 'data_only',
+        actions     : orchResult.actionTaken ? [orchResult.actionTaken] : [],
+        suggestions : [],
+        intent      : orchResult.intent,
+        source      : orchResult.source,
+        is_fallback : orchResult.source === 'fallback',
+        confidence  : orchResult.confidence || 80,
+        explanation : orchResult.reasoning ? [orchResult.reasoning] : [],
+        planningTip : null,
+        snapshot    : orchResult.dataSnapshot || null,
+        decisionData: null,
+        aiMode      : orchResult.aiMode,
       },
     });
   } catch (e) {
@@ -352,13 +337,15 @@ router.post('/', writeLimiter, validateMessage, async (req, res) => {
     res.json({
       success: true,
       data: {
-        reply       : DEFAULT_FALLBACK,
-        mode        : 'hybrid',
+        reply       : 'واضح ان النظام الذكي مش متاح حالياً — جرّب اسألني عن مهامك أو عاداتك.',
+        mode        : 'data_only',
         actions     : [],
-        suggestions : ['أعد المحاولة', 'ابدأ يومي'],
-        is_fallback : true,
-        confidence  : 0,
+        suggestions : ['مهامي اليوم', 'عاداتي', 'ملخص اليوم'],
+        source      : 'local',
+        is_fallback : false,
+        confidence  : 80,
         explanation : [],
+        aiMode      : 'data_only',
       },
     });
   }

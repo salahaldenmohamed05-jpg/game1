@@ -676,7 +676,7 @@ exports.getSmartSuggestions = async (req, res) => {
 
       suggestions.push({
         habit_id: habit.id,
-        name: habit.name_ar || habit.name,
+        name: habit.name_ar || habit.name || habit.title || 'عادة يومية',
         icon: habit.icon || '⭐',
         color: habit.color || '#6C63FF',
         category: habit.category,

@@ -666,5 +666,6 @@ function buildFallbackState() {
     decisionMemory: { totalDecisions: 0, recentAcceptanceRate: 0, blockedTasks: [] },
     triggerEvent: 'FALLBACK_TIMEOUT',
     lastUpdatedAt: new Date().toISOString(),
+    aiMode: 'offline',
   };
 }

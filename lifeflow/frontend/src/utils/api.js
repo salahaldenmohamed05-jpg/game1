@@ -522,9 +522,11 @@ export const logsAPI = {
 
 // ─── Profile API (Personalization Hub) ────────────────────────────────────────
 export const profileAPI = {
-  getProfile:    ()     => api.get('/profile-settings/profile'),
-  updateProfile: (data) => api.put('/profile-settings/profile', data),
-  getAISnapshot: ()     => api.get('/profile-settings/profile/ai-snapshot'),
+  getProfile:         ()     => api.get('/profile-settings/profile'),
+  updateProfile:      (data) => api.put('/profile-settings/profile', data),
+  getAISnapshot:      ()     => api.get('/profile-settings/profile/ai-snapshot'),
+  getOnboardingStatus:()     => api.get('/profile-settings/onboarding-status'),
+  completeOnboarding: (data) => api.post('/profile-settings/complete-onboarding', data || {}),
 };
 
 // ─── Settings API (Control Center) ────────────────────────────────────────────

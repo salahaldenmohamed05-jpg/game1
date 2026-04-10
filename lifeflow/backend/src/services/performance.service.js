@@ -187,15 +187,25 @@ async function computeDailyScore(userId, dateStr = null, timezone = 'Africa/Cair
         deep_work_sessions: deepWorkSessions,
       },
     };
-    let scoreRecord = await ProductivityScore.findOne({
-      where: { user_id: userId, score_date: today }
-    });
+    // SQLite schema has UNIQUE on user_id only — always find by user_id first,
+    // then update score_date + data (one record per user, refreshed daily).
+    let scoreRecord = await ProductivityScore.findOne({ where: { user_id: userId } });
     if (scoreRecord) {
-      await scoreRecord.update(scoreData);
+      await scoreRecord.update({ score_date: today, ...scoreData });
     } else {
-      scoreRecord = await ProductivityScore.create({
-        user_id: userId, score_date: today, ...scoreData
-      });
+      try {
+        scoreRecord = await ProductivityScore.create({
+          user_id: userId, score_date: today, ...scoreData
+        });
+      } catch (createErr) {
+        // Race condition: record was just inserted — fetch and update
+        scoreRecord = await ProductivityScore.findOne({ where: { user_id: userId } });
+        if (scoreRecord) {
+          await scoreRecord.update({ score_date: today, ...scoreData });
+        } else {
+          throw createErr;
+        }
+      }
     }
 
     // ── 8. Update Energy Profile ──────────────────────────────────────────────

@@ -92,7 +92,7 @@ function HabitCard({ habit, onCheckIn, onLogValue, onDelete, isChecking }) {
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
               <p className={`text-sm font-bold leading-snug ${isDone ? 'line-through text-gray-500' : 'text-white'}`}>
-                {habit.name_ar || habit.name}
+                {habit.name_ar || habit.name || 'عادة يومية'}
               </p>
               <div className="flex items-center gap-2 mt-1 flex-wrap">
                 <span className="text-xs text-gray-500 bg-white/5 px-2 py-0.5 rounded-md">{scheduleInfo}</span>

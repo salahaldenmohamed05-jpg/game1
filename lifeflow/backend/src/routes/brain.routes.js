@@ -40,8 +40,26 @@ router.get('/state', async (req, res) => {
     }
 
     const state = await brain.getBrainState(req.user.id);
+
+    // Phase 13+: Inject aiMode into brain state so UI can display it
+    let aiMode = 'data_only';
+    try {
+      const orchestrator = require('../services/aiOrchestrator.service');
+      const orchStatus   = orchestrator.getOrchestratorStatus();
+      aiMode = orchStatus.aiMode || 'data_only';
+      if (state && typeof state === 'object') {
+        state.aiMode = aiMode;
+        state.aiStatus = {
+          mode:     aiMode,
+          gemini:   orchStatus.gemini,
+          groq:     orchStatus.groq,
+          local:    true,
+        };
+      }
+    } catch (_oe) { /* orchestrator optional */ }
+
     const elapsed = Date.now() - startMs;
-    logger.info(`[Brain Route] GET /state completed in ${elapsed}ms. Decision: "${state?.currentDecision?.taskTitle || state?.currentDecision?.type || 'null'}"`);
+    logger.info(`[Brain Route] GET /state completed in ${elapsed}ms aiMode=${aiMode}. Decision: "${state?.currentDecision?.taskTitle || state?.currentDecision?.type || 'null'}"`);
     res.json({ success: true, data: state });
   } catch (err) {
     logger.error(`[Brain Route] /state error (${Date.now() - startMs}ms): ${err.message}`);

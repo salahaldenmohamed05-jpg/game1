@@ -1003,7 +1003,7 @@ function BehaviorIntelligenceCard({ habits, onLogHabit, onViewChange }) {
         const parts = targetTime.split(':').map(Number);
         const hh = parts[0] || 0;
         if (Math.abs(currentHour - hh) <= 1) {
-          n.push({ habit: h, message: `⏰ الآن وقت ${h.name}`, type: 'time_match', priority: 0 });
+          n.push({ habit: h, message: `⏰ الآن وقت ${h.name || h.name_ar || 'العادة'}`, type: 'time_match', priority: 0 });
         }
       }
 
@@ -1014,7 +1014,7 @@ function BehaviorIntelligenceCard({ habits, onLogHabit, onViewChange }) {
 
       // Habit drop risk: had a streak > 3 but it's now 0 (recently broken)
       if ((h.longest_streak || 0) > 3 && (h.current_streak || 0) === 0 && !h.completed_today && isTimeRelevant) {
-        n.push({ habit: h, message: `⚠️ "${h.name}" — السلسلة انكسرت. ابدأ من جديد اليوم!`, type: 'habit_drop', priority: 2 });
+        n.push({ habit: h, message: `⚠️ "${h.name || h.name_ar || 'العادة'}" — السلسلة انكسرت. ابدأ من جديد اليوم!`, type: 'habit_drop', priority: 2 });
       }
     });
     // Sort by priority (time_match first, then streak_risk, then habit_drop)
@@ -1094,7 +1094,7 @@ function BehaviorIntelligenceCard({ habits, onLogHabit, onViewChange }) {
             transition={{ delay: idx * 0.03 }}
             onClick={() => !habit.completed_today && onLogHabit(habit.id)}
             role="button" tabIndex={0}
-            aria-label={`${habit.name} ${habit.completed_today ? '- مكتملة' : '- اضغط للتسجيل'}`}
+            aria-label={`${habit.name || habit.name_ar || 'عادة'} ${habit.completed_today ? '- مكتملة' : '- اضغط للتسجيل'}`}
             className={`p-2 rounded-xl text-center cursor-pointer transition-all select-none active:scale-95 ${
               habit.completed_today
                 ? 'bg-gradient-to-br from-primary-500/25 to-green-500/15 border border-primary-500/30'
@@ -1102,7 +1102,7 @@ function BehaviorIntelligenceCard({ habits, onLogHabit, onViewChange }) {
             }`}
           >
             <div className="text-lg mb-0.5">{habit.icon || '⭐'}</div>
-            <div className="text-[9px] text-gray-300 truncate">{habit.name}</div>
+            <div className="text-[9px] text-gray-300 truncate">{habit.name || habit.name_ar || 'عادة'}</div>
             {(habit.current_streak || 0) > 0 && (
               <div className="text-[8px] text-orange-400">{habit.current_streak}🔥</div>
             )}

@@ -921,7 +921,7 @@ export default function ExecutionScreen({ onViewChange }) {
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/15 text-xs text-amber-300 font-medium hover:bg-amber-500/20 transition-all"
               >
                 <RotateCcw size={10} />
-                أكمل &ldquo;{resumePrompt.title}&rdquo; {resumePrompt.active_minutes > 0 ? `(${resumePrompt.active_minutes} د)` : ''}
+                أكمل &ldquo;{resumePrompt.title || resumePrompt.name || 'المهمة'}&rdquo; {resumePrompt.active_minutes > 0 ? `(${resumePrompt.active_minutes} د)` : ''}
               </button>
             </motion.div>
           )}

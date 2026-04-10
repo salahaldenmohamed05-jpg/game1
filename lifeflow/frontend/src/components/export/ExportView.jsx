@@ -149,7 +149,7 @@ export default function ExportView() {
             ${summary.recent_completed.map(t => {
               const priorityClass = t.priority === 'high' ? 'badge-high' : t.priority === 'medium' ? 'badge-medium' : 'badge-low';
               const priorityLabel = t.priority === 'high' ? 'عالي' : t.priority === 'medium' ? 'متوسط' : 'منخفض';
-              return `<tr><td>${t.title}</td><td><span class="badge ${priorityClass}">${priorityLabel}</span></td></tr>`;
+              return `<tr><td>${t.title || t.name || 'مهمة'}</td><td><span class="badge ${priorityClass}">${priorityLabel}</span></td></tr>`;
             }).join('')}
           </tbody>
         </table>` : ''}

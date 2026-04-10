@@ -122,7 +122,7 @@ function NotifCard({ notif, onAction, onMarkRead, index }) {
             </div>
 
             <p className={`font-semibold text-sm leading-snug mt-1 ${!notif.is_read ? 'text-white' : 'text-gray-400'}`}>
-              {notif.title}
+              {notif.title || notif.message || 'إشعار'}
             </p>
 
             {notif.body && (

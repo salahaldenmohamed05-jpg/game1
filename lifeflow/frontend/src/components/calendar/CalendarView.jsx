@@ -160,7 +160,7 @@ export default function CalendarView() {
                 />
                 <div className="flex-1">
                   <p className={`text-sm font-medium ${task.status === 'completed' ? 'text-gray-400 line-through' : 'text-white'}`}>
-                    {task.title}
+                    {task.title || task.name || 'مهمة'}
                   </p>
                   {task.due_time && (
                     <p className="text-xs text-gray-500 flex items-center gap-1 mt-0.5">
