@@ -602,8 +602,20 @@ async function handleActionInline(userId, message, timezone) {
       const titleRaw = message
         .replace(/أضف مهمة|اضف مهمة|أنشئ مهمة|انشئ مهمة|مهمة جديدة|add task/gi, '')
         .replace(/:/g, '')
+        .trim()  // trim first so the next regex anchors correctly
+        // Strip "اسمها/اسمه/اسمي" naming particles — e.g. "اضف مهمة اسمها X" → "X"
+        .replace(/^(اسمها|اسمه|اسمي|اسمك|بعنوان|عنوانها|عنوانه|يسمى|تسمى)\s*/i, '')
         .trim();
       if (titleRaw.length > 0) {
+        // Check for duplicate before creating
+        const existing = await Task.findOne({ where: { user_id: userId, title: titleRaw } });
+        if (existing) {
+          const statusLabel = existing.status === 'completed' ? 'مكتملة بالفعل' : 'موجودة بالفعل';
+          return normalize(
+            `ℹ️ مهمة "${titleRaw}" ${statusLabel} — مش هنضيفها تاني.`,
+            'local', 100, 'task_duplicate_inline', {}
+          );
+        }
         const newTask = await Task.create({
           user_id: userId,
           title: titleRaw,

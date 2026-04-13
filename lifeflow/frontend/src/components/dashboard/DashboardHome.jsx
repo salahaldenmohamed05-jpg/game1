@@ -1456,14 +1456,15 @@ export default function DashboardHome({ dashboardData, isLoading, isError, onVie
       setBrainTimedOut(false);
       return;
     }
-    // 2 seconds — shorter than brainStore's 3s, because we want the dashboard
-    // to render SOMETHING even if the brain store failsafe hasn't fired yet
+    // 6 seconds — sandbox environments route API through HTTPS proxy adding latency
+    // brainStore's own failsafe fires at 3s setting a fallback; we wait 6s so the
+    // real data has time to arrive before we show the error card.
     const timer = setTimeout(() => {
       if (!useBrainStore.getState().brainState) {
-        console.warn('[DashboardHome] Phase 12.8: Brain state not available after 2s — rendering without it');
+        console.warn('[DashboardHome] Phase 12.8: Brain state not available after 6s — rendering without it');
         setBrainTimedOut(true);
       }
-    }, 2000);
+    }, 6000);
     return () => clearTimeout(timer);
   }, [brainState]);
 

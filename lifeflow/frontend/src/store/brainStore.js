@@ -148,7 +148,7 @@ export const useBrainStore = create((set, get) => ({
     set({ isLoading: true, error: null, _loadStartedAt: Date.now(), _requestId: myRequestId });
     console.log(`${tag} isLoading=true, requestId=${myRequestId}`);
 
-    // ── FAILSAFE: 3-second HARD timeout — UNCONDITIONAL ─────────────────
+    // ── FAILSAFE: 8-second HARD timeout — accounts for sandbox HTTPS proxy latency ─
     // This ALWAYS fires. No matter what happens with REST or socket.
     if (_failsafeTimer) clearTimeout(_failsafeTimer);
     _failsafeTimer = setTimeout(() => {
@@ -157,7 +157,7 @@ export const useBrainStore = create((set, get) => ({
       if (current._requestId !== myRequestId) return;
 
       if (!current.brainState) {
-        console.warn(`${tag} FAILSAFE [${myRequestId}]: 3s elapsed, no brainState. Setting fallback NOW.`);
+        console.warn(`${tag} FAILSAFE [${myRequestId}]: 8s elapsed, no brainState. Setting fallback NOW.`);
         set({
           brainState: buildFallbackState(),
           isLoading: false,
@@ -165,11 +165,11 @@ export const useBrainStore = create((set, get) => ({
           lastFetchedAt: Date.now(),
         });
       } else if (current.isLoading) {
-        console.warn(`${tag} FAILSAFE [${myRequestId}]: 3s elapsed, brainState exists but isLoading=true. Forcing false.`);
+        console.warn(`${tag} FAILSAFE [${myRequestId}]: 8s elapsed, brainState exists but isLoading=true. Forcing false.`);
         set({ isLoading: false });
       }
       _failsafeTimer = null;
-    }, 3000);
+    }, 8000);
 
     // ── PRIMARY: REST fetch (most reliable) ──────────────────────────────
     try {
@@ -177,7 +177,7 @@ export const useBrainStore = create((set, get) => ({
       const fetchStart = Date.now();
 
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('REST timeout (3s)')), 3000)
+        setTimeout(() => reject(new Error('REST timeout (7s)')), 7000)
       );
       const fetchPromise = brainAPI.getState();
       const res = await Promise.race([fetchPromise, timeoutPromise]);
@@ -381,18 +381,18 @@ export const useBrainStore = create((set, get) => ({
 
     set({ isLoading: true });
 
-    // Phase 12.8: fetchBrainState has its OWN 3s safety net
+    // Phase 12.8: fetchBrainState has its OWN 8s safety net (sandbox proxy latency)
     const fetchSafetyTimer = setTimeout(() => {
       const current = get();
       if (current.isLoading) {
-        console.warn(`${tag} fetchBrainState: 3s safety net — forcing isLoading=false`);
+        console.warn(`${tag} fetchBrainState: 8s safety net — forcing isLoading=false`);
         set({ isLoading: false });
       }
-    }, 3000);
+    }, 8000);
 
     try {
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('REST timeout (3s)')), 3000)
+        setTimeout(() => reject(new Error('REST timeout (7s)')), 7000)
       );
       const fetchPromise = brainAPI.getState();
       const res = await Promise.race([fetchPromise, timeoutPromise]);

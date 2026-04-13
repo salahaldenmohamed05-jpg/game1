@@ -522,6 +522,13 @@ function getDecisionMemory(userId) {
   if (!entry.decisionMemory) {
     entry.decisionMemory = { history: [], taskStats: new Map() };
   }
+  // Phase 13: Ensure taskStats is always a proper Map (DB restore returns plain object)
+  if (!entry.decisionMemory.taskStats || !(entry.decisionMemory.taskStats instanceof Map)) {
+    entry.decisionMemory.taskStats = new Map();
+  }
+  if (!Array.isArray(entry.decisionMemory.history)) {
+    entry.decisionMemory.history = [];
+  }
   return entry.decisionMemory;
 }
 
@@ -1342,7 +1349,7 @@ async function recompute(userId, triggerEvent = {}) {
 
     // ── Get or initialize adaptive signals ──────────────────────────────
     const cached = brainCache.get(userId) || {};
-    const signals = cached.signals || {
+    const signals = {
       rejectionStreak: 0,
       completionStreak: 0,
       inactivityMinutes: 0,
@@ -1351,7 +1358,11 @@ async function recompute(userId, triggerEvent = {}) {
       lastCompletionTs: null,
       totalSkips: 0,
       totalCompletions: 0,
+      ...(cached.signals || {}),
     };
+    // Phase 13: Ensure array/object fields are never undefined after merge
+    if (!Array.isArray(signals.skipHistory)) signals.skipHistory = [];
+    if (!signals.skipTypes || typeof signals.skipTypes !== 'object') signals.skipTypes = {};
 
     // ── Apply trigger event to signals ──────────────────────────────────
     applyEventToSignals(signals, triggerEvent);
@@ -1364,6 +1375,7 @@ async function recompute(userId, triggerEvent = {}) {
     const inactivityImpact = getInactivityImpact(signals.inactivityMinutes);
 
     // ── TASK 4: Compute continuous difficulty modifier ───────────────────
+    if (!signals.skipHistory) signals.skipHistory = [];  // Phase 13: guard against missing field
     const recentSkipCount = signals.skipHistory.filter(s => Date.now() - s.ts < 30 * 60 * 1000).length;
     const recentAttempts = Math.max(1, recentSkipCount + signals.completionStreak);
     const skipRate = recentSkipCount / recentAttempts;
@@ -1659,7 +1671,9 @@ async function recompute(userId, triggerEvent = {}) {
     return filteredState;
 
   } catch (err) {
-    logger.error(`[Brain] recompute error userId=${userId}:`, err.message);
+    const errMsg = err instanceof Error ? err.message : String(err);
+    const errStack = err instanceof Error ? (err.stack || '').split('\n').slice(0,4).join(' | ') : '';
+    logger.error(`[Brain] recompute error userId=${userId}: ${errMsg} ${errStack}`);
     return buildFallbackState(userId, triggerEvent);
   }
 }

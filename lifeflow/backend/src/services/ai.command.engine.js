@@ -213,6 +213,9 @@ function extractTitleFromMessage(message) {
   for (const rx of prefixes) {
     title = title.replace(rx, '');
   }
+  // Strip "اسمها / اسمه / اسمي / اسمك / بعنوان / عنوانها" naming particles
+  // e.g. "اضف مهمة اسمها اختبار النظام" → "اختبار النظام"
+  title = title.replace(/^(اسمها|اسمه|اسمي|اسمك|بعنوان|عنوانها|عنوانه|يسمى|تسمى|اسمها هو|اسمه هو)\s*/i, '');
   // Strip leading colons/punctuation left after prefix removal (e.g. "اضف مهمة: foo" → ": foo" → "foo")
   title = title.replace(/^[:\s]+/, '');
   // Strip trailing date/time phrases
@@ -244,6 +247,10 @@ async function executeAction(intent, entities, userId, timezone = 'Africa/Cairo'
     case 'create_task': {
       // Fallback: if AI garbled the title, extract it from the original message
       let aiTitle = entities.task_title;
+      // Strip "اسمها/اسمه" naming particles from AI-returned title too
+      if (aiTitle) {
+        aiTitle = aiTitle.replace(/^(اسمها|اسمه|اسمي|اسمك|بعنوان|عنوانها|عنوانه|يسمى|تسمى)\s*/i, '').trim();
+      }
       if (originalMessage && (!aiTitle || aiTitle.length < 2)) {
         aiTitle = extractTitleFromMessage(originalMessage);
         logger.info(`[CMD-ENGINE] Title fallback from message: "${aiTitle}"`);
@@ -253,6 +260,11 @@ async function executeAction(intent, entities, userId, timezone = 'Africa/Cairo'
       let items;
       if (entities.items_to_create?.length > 0) {
         items = entities.items_to_create;
+        // Strip "اسمها/اسمه" particles from all AI-returned item titles
+        items = items.map(item => ({
+          ...item,
+          title: item.title ? item.title.replace(/^(اسمها|اسمه|اسمي|اسمك|بعنوان|عنوانها|عنوانه|يسمى|تسمى)\s*/i, '').trim() : item.title
+        }));
         // For single-item creates, cross-check with message-extracted title  
         if (items.length === 1 && originalMessage) {
           const msgTitle = extractTitleFromMessage(originalMessage);
