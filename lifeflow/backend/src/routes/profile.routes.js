@@ -475,4 +475,66 @@ router.post('/settings/export-data', async (req, res) => {
   }
 });
 
+// ── Onboarding Status (DB-backed, not localStorage) ─────────────────────────
+// GET /profile/onboarding-status
+router.get('/onboarding-status', async (req, res) => {
+  try {
+    const User = require('../models/user.model');
+    const user = await User.findByPk(req.user.id, {
+      attributes: ['id', 'onboarding_completed', 'onboarding_step'],
+    });
+    if (!user) return res.status(404).json({ success: false, message: 'المستخدم غير موجود' });
+    res.json({
+      success: true,
+      data: {
+        onboarding_completed: user.onboarding_completed || false,
+        onboarding_step:      user.onboarding_step      || 0,
+      },
+    });
+  } catch (e) {
+    logger.error('[PROFILE] onboarding-status error:', e.message);
+    res.status(500).json({ success: false, message: 'فشل في جلب حالة الإعداد' });
+  }
+});
+
+// POST /profile/complete-onboarding
+router.post('/complete-onboarding', async (req, res) => {
+  try {
+    const { role, focus_areas } = req.body;
+
+    // Allowed values enforced by UserProfile model's isIn validator
+    const ALLOWED_ROLES = ['student', 'employee', 'freelancer', 'entrepreneur', 'parent', 'retired', 'other'];
+
+    // Mark onboarding_completed = true in the User table (always, regardless of profile data)
+    await User.update(
+      { onboarding_completed: true, onboarding_step: 99 },
+      { where: { id: req.user.id } }
+    );
+
+    // Save role/focus_areas to UserProfile if provided (silently skip invalid values)
+    const safeRole        = role && ALLOWED_ROLES.includes(role) ? role : null;
+    const safeFocusAreas  = Array.isArray(focus_areas) && focus_areas.length > 0 ? focus_areas : null;
+
+    if (safeRole || safeFocusAreas) {
+      const [profile] = await UserProfile.findOrCreate({
+        where: { user_id: req.user.id },
+        defaults: { user_id: req.user.id },
+      });
+      const profileUpdate = {};
+      if (safeRole)        profileUpdate.role         = safeRole;
+      if (safeFocusAreas)  profileUpdate.focus_areas  = safeFocusAreas;
+      await profile.update(profileUpdate);
+    }
+
+    res.json({
+      success: true,
+      message: 'تم إكمال الإعداد الأولي بنجاح.',
+      data: { onboarding_completed: true },
+    });
+  } catch (e) {
+    logger.error('[PROFILE] complete-onboarding error:', e.message);
+    res.status(500).json({ success: false, message: 'فشل في حفظ حالة الإعداد' });
+  }
+});
+
 module.exports = router;

@@ -134,30 +134,69 @@ export default function HomePage() {
 }
 
 // ── Dashboard with Onboarding Wrapper ────────────────────────────────────
+// Phase 13+: Onboarding state stored in DB (not localStorage) to prevent
+//            repeat onboarding across sessions and devices.
 function DashboardWithOnboarding() {
   const { user } = useAuthStore();
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [checked, setChecked] = useState(false);
 
   useEffect(() => {
-    const onboardingDone = localStorage.getItem('lifeflow_onboarding_done');
-    if (!onboardingDone) {
-      setShowOnboarding(true);
+    let cancelled = false;
+
+    async function checkOnboardingStatus() {
+      // Fast path: if the auth store already has onboarding_completed = true, skip
+      const authUser = useAuthStore.getState().user;
+      if (authUser?.onboarding_completed === true) {
+        if (!cancelled) { setShowOnboarding(false); setChecked(true); }
+        return;
+      }
+
+      // Also check localStorage as a fast cache (set when we call the API)
+      const localFlag = localStorage.getItem('lifeflow_onboarding_done');
+      if (localFlag === 'true') {
+        if (!cancelled) { setShowOnboarding(false); setChecked(true); }
+        return;
+      }
+
+      // Check DB — the definitive source of truth
+      try {
+        const res = await profileAPI.getOnboardingStatus();
+        const done = res?.data?.data?.onboarding_completed === true;
+        if (done) {
+          // Cache result locally for fast subsequent loads
+          localStorage.setItem('lifeflow_onboarding_done', 'true');
+        }
+        if (!cancelled) {
+          setShowOnboarding(!done);
+          setChecked(true);
+        }
+      } catch {
+        // If API fails (network error, etc.) fall back to localStorage only
+        if (!cancelled) {
+          setShowOnboarding(false); // Don't block the user if check fails
+          setChecked(true);
+        }
+      }
     }
-    setChecked(true);
+
+    checkOnboardingStatus();
+    return () => { cancelled = true; };
   }, []);
 
   const handleOnboardingComplete = useCallback(async (data) => {
-    localStorage.setItem('lifeflow_onboarding_done', 'true');
     setShowOnboarding(false);
+    // Persist to DB (primary) and localStorage (cache)
     try {
-      if (data.role || (data.focus_areas && data.focus_areas.length > 0)) {
-        await profileAPI.updateProfile({
-          role: data.role || undefined,
-          focus_areas: data.focus_areas || undefined,
-        });
-      }
-    } catch {}
+      await profileAPI.completeOnboarding({
+        role:        data?.role        || undefined,
+        focus_areas: data?.focus_areas || undefined,
+      });
+      localStorage.setItem('lifeflow_onboarding_done', 'true');
+    } catch {
+      // Even if DB save fails, don't re-show onboarding — mark locally
+      localStorage.setItem('lifeflow_onboarding_done', 'true');
+    }
   }, []);
 
   if (!checked) return null;

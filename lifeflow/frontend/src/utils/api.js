@@ -236,10 +236,12 @@ export const habitAPI = {
 
 // ─── Goals API ───────────────────────────────────────────────────────────────
 export const goalsAPI = {
-  getGoals: () => api.get('/engine/goals'),
-  createGoal: (data) => api.post('/engine/goals', data),
-  updateGoal: (id, data) => api.put(`/engine/goals/${id}`, data),
-  deleteGoal: (id) => api.delete(`/engine/goals/${id}`),
+  getGoals:    ()          => api.get('/goals'),
+  createGoal:  (data)      => api.post('/goals', data),
+  updateGoal:  (id, data)  => api.put(`/goals/${id}`, data),
+  deleteGoal:  (id)        => api.delete(`/goals/${id}`),
+  getGoal:     (id)        => api.get(`/goals/${id}`),
+  updateProgress: (id, data) => api.patch(`/goals/${id}/progress`, data),
 };
 
 // ─── Mood API ─────────────────────────────────────────────────────────────────
@@ -356,7 +358,7 @@ export const engineAPI = {
   getSession:    () => api.get('/engine/session'),
   // Behavior Engine
   onboarding:    (data) => api.post('/engine/onboarding', data),
-  getGoals:      () => api.get('/engine/goals'),
+  getGoals:      () => api.get('/goals'),
   adaptBehavior: (data) => api.post('/engine/adapt-behavior', data),
 };
 
@@ -411,8 +413,8 @@ export const adaptiveAPI = {
   getConversationHistory: () => api.get('/adaptive/copilot/history'),
 
   // Phase 12 — Life Optimization
-  getGoals: () => api.get('/adaptive/goals'),
-  createGoal: (data) => api.post('/adaptive/goals', data),
+  getGoals: () => api.get('/goals'),
+  createGoal: (data) => api.post('/goals', data),
   getLifeOptimizer: () => api.get('/adaptive/life-optimizer'),
   getScheduleAdjust: () => api.get('/adaptive/schedule-adjustment'),
 
@@ -520,9 +522,11 @@ export const logsAPI = {
 
 // ─── Profile API (Personalization Hub) ────────────────────────────────────────
 export const profileAPI = {
-  getProfile:    ()     => api.get('/profile-settings/profile'),
-  updateProfile: (data) => api.put('/profile-settings/profile', data),
-  getAISnapshot: ()     => api.get('/profile-settings/profile/ai-snapshot'),
+  getProfile:         ()     => api.get('/profile-settings/profile'),
+  updateProfile:      (data) => api.put('/profile-settings/profile', data),
+  getAISnapshot:      ()     => api.get('/profile-settings/profile/ai-snapshot'),
+  getOnboardingStatus:()     => api.get('/profile-settings/onboarding-status'),
+  completeOnboarding: (data) => api.post('/profile-settings/complete-onboarding', data || {}),
 };
 
 // ─── Settings API (Control Center) ────────────────────────────────────────────

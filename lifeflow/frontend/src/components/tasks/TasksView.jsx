@@ -400,7 +400,7 @@ const TaskCard = memo(function TaskCard({ task, onComplete, onDelete, onEdit, on
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-2">
             <p className={`text-sm font-semibold leading-snug ${isDone ? 'line-through text-gray-500' : 'text-white'}`}>
-              {task.title}
+              {task.title || task.name || 'مهمة'}
             </p>
             {/* AI badge */}
             {isRecommended && !isDone && (
@@ -549,10 +549,11 @@ function SmartSplitModal({ isOpen, onClose, task, onSplit }) {
 
   useEffect(() => {
     if (isOpen && task) {
+      const t = task.title || task.name || 'المهمة';
       setSubtasks([
-        `تحضير وتجهيز: ${task.title}`,
-        `تنفيذ: ${task.title}`,
-        `مراجعة وإنهاء: ${task.title}`,
+        `تحضير وتجهيز: ${t}`,
+        `تنفيذ: ${t}`,
+        `مراجعة وإنهاء: ${t}`,
       ]);
     }
   }, [isOpen, task]);

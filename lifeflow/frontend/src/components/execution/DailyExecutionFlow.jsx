@@ -241,7 +241,7 @@ function DailyPlanTimeline({ plan, currentBlock, progress, onSelectBlock, onEndD
               {/* Block info */}
               <div className="flex-1 min-w-0">
                 <p className={`text-sm font-medium truncate ${isDone ? 'text-green-400 line-through' : isCurrent ? 'text-white' : 'text-gray-300'}`}>
-                  {block.title}
+                  {block.title || block.name || 'نشاط'}
                 </p>
                 <div className="flex items-center gap-2 mt-0.5">
                   <span className="text-xs text-gray-500">{block.duration}د</span>

@@ -119,9 +119,25 @@ const MsgBubble = memo(function MsgBubble({ msg, onSuggestion, onRetry, onConfir
       }`}>
         <div className="whitespace-pre-wrap text-sm leading-relaxed">{content}</div>
 
-        {msg.confidence != null && !isNaN(Number(msg.confidence)) && (
-          <div className="mt-1.5 text-[11px] text-gray-400/80 flex items-center gap-1">
-            <Sparkles size={9} /> ثقة: {Number(msg.confidence) > 1 ? Math.round(Number(msg.confidence)) : Math.round(Number(msg.confidence) * 100)}%
+        {/* Source + confidence badge — never show for user messages */}
+        {!isUser && (msg.source || msg.confidence != null) && (
+          <div className="mt-1.5 text-[10px] text-gray-500/70 flex items-center gap-2 flex-wrap">
+            {msg.source && (
+              <span className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded-md font-medium ${
+                msg.source === 'gemini' ? 'bg-blue-500/10 text-blue-400/80' :
+                msg.source === 'grok'   ? 'bg-purple-500/10 text-purple-400/80' :
+                                          'bg-green-500/10 text-green-400/70'
+              }`}>
+                {msg.source === 'gemini' ? '🤖 Gemini' :
+                 msg.source === 'grok'   ? '🟣 Grok' :
+                                          '📊 بيانات حقيقية'}
+              </span>
+            )}
+            {msg.confidence != null && !isNaN(Number(msg.confidence)) && (
+              <span className="flex items-center gap-0.5">
+                <Sparkles size={8} /> {Number(msg.confidence) > 1 ? Math.round(Number(msg.confidence)) : Math.round(Number(msg.confidence) * 100)}%
+              </span>
+            )}
           </div>
         )}
 
@@ -745,6 +761,8 @@ export default function AssistantView({ onViewChange }) {
         role: 'assistant',
         content: typeof reply === 'string' ? reply : (reply?.content || JSON.stringify(reply)),
         confidence: data?.confidence,
+        source: data?.source || null,        // 'local' | 'gemini' | 'grok'
+        aiMode: data?.aiMode   || null,       // 'full_ai' | 'hybrid' | 'data_only' | 'offline'
         suggestions: Array.isArray(data?.suggestions) ? data.suggestions : [],
         proposedActions,
         timestamp: new Date(),
@@ -901,6 +919,22 @@ export default function AssistantView({ onViewChange }) {
               <h2 className="text-base sm:text-lg font-black text-white flex items-center gap-2">
                 <Sparkles size={16} className="text-primary-400" />
                 {language === 'en' ? 'Smart Assistant' : 'المساعد الذكي'}
+                {/* AI Mode Badge — sourced from brainState */}
+                {brainState?.aiMode && (() => {
+                  const mode = brainState.aiMode;
+                  const cfg = {
+                    full_ai:   { label: 'AI كامل',    cls: 'bg-blue-500/15 text-blue-400 border-blue-500/20' },
+                    hybrid:    { label: 'هجين',       cls: 'bg-purple-500/15 text-purple-400 border-purple-500/20' },
+                    data_only: { label: 'بيانات فقط', cls: 'bg-green-500/15 text-green-400 border-green-500/20' },
+                    offline:   { label: 'غير متصل',   cls: 'bg-gray-500/15 text-gray-400 border-gray-500/20' },
+                  }[mode];
+                  if (!cfg) return null;
+                  return (
+                    <span className={`text-[9px] px-1.5 py-0.5 rounded-md border font-medium ${cfg.cls}`}>
+                      {cfg.label}
+                    </span>
+                  );
+                })()}
               </h2>
               <div className="flex items-center gap-1.5">
                 {/* Language Toggle */}

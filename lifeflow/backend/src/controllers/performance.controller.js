@@ -216,34 +216,32 @@ const getBehaviorNudge = async (req, res) => {
 
 /** GET /api/v1/performance/dashboard */
 const getPerformanceDashboard = async (req, res) => {
-  try {
-    const userId   = req.user.id;
-    const timezone = req.user.timezone || 'Africa/Cairo';
+  const userId   = req.user.id;
+  const timezone = req.user.timezone || 'Africa/Cairo';
 
-    const [todayScore, history7d, flags, energyInsights, latestAudit, coaching] = await Promise.all([
-      performanceService.computeDailyScore(userId, null, timezone),
-      performanceService.getScoreHistory(userId, 7),
-      procrastinationService.getActiveFlags(userId, 10),
-      energyService.getEnergyInsights(userId),
-      weeklyAuditService.getLatestAudit(userId),
-      coachingService.getDailyCoaching(userId, timezone),
-    ]);
+  // Resilient: each sub-call is independent; failures return null rather than crashing
+  const safe = (fn) => fn().catch(err => { logger.warn('Dashboard sub-call failed:', err.message); return null; });
 
-    res.json({
-      success: true,
-      data: {
-        today_score:    todayScore,
-        history_7d:     history7d,
-        active_flags:   flags,
-        energy_profile: energyInsights,
-        weekly_audit:   latestAudit,
-        coaching,
-      },
-    });
-  } catch (error) {
-    logger.error('getPerformanceDashboard error:', error.message);
-    res.status(500).json({ success: false, message: 'خطأ في استرداد لوحة الأداء' });
-  }
+  const [todayScore, history7d, flags, energyInsights, latestAudit, coaching] = await Promise.all([
+    safe(() => performanceService.computeDailyScore(userId, null, timezone)),
+    safe(() => performanceService.getScoreHistory(userId, 7)),
+    safe(() => procrastinationService.getActiveFlags(userId, 10)),
+    safe(() => energyService.getEnergyInsights(userId)),
+    safe(() => weeklyAuditService.getLatestAudit(userId)),
+    safe(() => coachingService.getDailyCoaching(userId, timezone)),
+  ]);
+
+  res.json({
+    success: true,
+    data: {
+      today_score:    todayScore,
+      history_7d:     history7d    || [],
+      active_flags:   flags        || [],
+      energy_profile: energyInsights || null,
+      weekly_audit:   latestAudit  || null,
+      coaching:       coaching     || null,
+    },
+  });
 };
 
 
