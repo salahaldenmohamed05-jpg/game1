@@ -1,11 +1,13 @@
 /**
- * Login / Register / Forgot Password Page — Phase 13.2
+ * Login / Register / Forgot Password Page — Phase 13.3
  * Fixes: demo as primary CTA, semantic HTML, tab clarity,
  *        contrast, forgot-password visibility, value prop,
  *        removed feature icons noise.
+ *        Phase 13.3: Fixed redirect loop — use router.push + auth guard.
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useRouter } from 'next/router';
 import { motion, AnimatePresence } from 'framer-motion';
 import toast from 'react-hot-toast';
 import useAuthStore from '../store/authStore';
@@ -14,6 +16,7 @@ import { authAPI } from '../utils/api';
 const MODES = { LOGIN: 'login', REGISTER: 'register', FORGOT: 'forgot', RESET: 'reset', VERIFY: 'verify' };
 
 export default function LoginPage() {
+  const router = useRouter();
   const [mode, setMode] = useState(MODES.LOGIN);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -25,7 +28,15 @@ export default function LoginPage() {
   const [resetEmail, setResetEmail] = useState('');
   const [sandboxOtp, setSandboxOtp] = useState('');
 
-  const { login, register: registerUser, demoLogin } = useAuthStore();
+  const { login, register: registerUser, demoLogin, isAuthenticated } = useAuthStore();
+
+  // Phase 13.3: Auth guard — if already authenticated, go to dashboard immediately
+  // This prevents /login from being accessible to logged-in users (causes loop)
+  useEffect(() => {
+    if (isAuthenticated) {
+      router.replace('/');
+    }
+  }, [isAuthenticated, router]);
 
   const set = (field) => (e) => {
     setForm((f) => ({ ...f, [field]: e.target.value }));
@@ -64,7 +75,7 @@ export default function LoginPage() {
         const result = await login(form.email, form.password);
         if (result.success) {
           toast.success('أهلاً بك! 👋');
-          setTimeout(() => { window.location.href = '/'; }, 500);
+          router.push('/');
         } else {
           toast.error(result.message || 'بيانات الدخول غير صحيحة');
         }
@@ -99,7 +110,7 @@ export default function LoginPage() {
         const res = await authAPI.verifyEmail(resetEmail, form.otp);
         if (res?.data?.success) {
           toast.success('تم تفعيل حسابك بنجاح! 🎉');
-          setTimeout(() => { window.location.href = '/'; }, 600);
+          router.push('/');
         } else {
           toast.error(res?.data?.message || 'الرمز غير صحيح');
         }
@@ -118,7 +129,7 @@ export default function LoginPage() {
       const result = await demoLogin();
       if (result.success) {
         toast.success('أهلاً بك في الحساب التجريبي! 🎯');
-        setTimeout(() => { window.location.href = '/'; }, 500);
+        router.push('/');
       } else {
         toast.error(result.message || 'فشل الدخول التجريبي');
       }
