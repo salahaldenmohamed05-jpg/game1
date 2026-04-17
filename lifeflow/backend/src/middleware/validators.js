@@ -44,7 +44,9 @@ const validateCreateTask = [
   body('title')
     .trim()
     .notEmpty().withMessage('عنوان المهمة مطلوب')
-    .isLength({ max: 500 }).withMessage('العنوان طويل جداً (الحد الأقصى 500 حرف)'),
+    .isLength({ min: 2, max: 500 }).withMessage('العنوان يجب أن يكون بين 2 و 500 حرف')
+    .not().matches(/('|--|;|DROP\s+TABLE|DELETE\s+FROM|INSERT\s+INTO|UNION\s+SELECT|1\s*=\s*1)/i)
+    .withMessage('العنوان يحتوي على محتوى غير مسموح'),
   body('description')
     .optional()
     .trim()

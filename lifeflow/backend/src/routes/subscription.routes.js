@@ -26,6 +26,9 @@ router.post('/paymob/callback', ctrl.handlePaymobCallback);
 // ── Protected ─────────────────────────────────────────────────────────────
 router.use(protect);
 
+// P2-11 FIX: GET /subscription (root) was returning 404
+// Now aliases to /status for frontend compatibility
+router.get('/', ctrl.getStatus);
 router.get('/status',              ctrl.getStatus);
 router.post('/trial',              ctrl.startTrial);
 router.post('/create',             ctrl.createSubscription);
