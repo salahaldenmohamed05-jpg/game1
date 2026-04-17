@@ -82,49 +82,97 @@ router.post('/command', writeLimiter, validateMessage, async (req, res) => {
   const pending  = pending_action || session.pendingAction || null;
 
   try {
-    // Step 5: Retry logic with structured error handling
-    let result = null;
-    let lastError = null;
-    const MAX_RETRIES = 2;
+    // ── P0-1 FIX: Route based on intent ──────────────────────────────────────
+    // Detect intent FIRST using the orchestrator's accurate detector.
+    // Only send action_requests to the legacy commandEngine.
+    // All data/emotional/reasoning/casual queries go directly to aiOrchestrator
+    // which reads from DB and never returns generic greetings.
+    const detectedIntent = aiOrchestrator.detectIntent(message);
+    logger.info(`[ASSISTANT] /command intent=${detectedIntent} msg="${message.substring(0, 60)}"`);
 
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    let result = null;
+
+    // DATA / EMOTIONAL / REASONING / CASUAL → aiOrchestrator (real DB answers)
+    if (detectedIntent !== 'action_request') {
       try {
-        result = await processCommand(userId, message, timezone, pending);
-        break; // Success — exit retry loop
-      } catch (err) {
-        lastError = err;
-        logger.warn(`[ASSISTANT] command attempt ${attempt + 1} failed: ${err.message}`);
-        if (attempt < MAX_RETRIES) {
-          // Wait before retry (200ms, 500ms)
-          await new Promise(r => setTimeout(r, (attempt + 1) * 250));
-        }
+        const orchResult = await aiOrchestrator.processMessage(userId, message, timezone);
+        result = {
+          reply             : orchResult.text,
+          action_taken      : orchResult.actionTaken || null,
+          actions           : orchResult.actionTaken ? [orchResult.actionTaken] : [],
+          needs_confirmation: false,
+          pending_action    : null,
+          intent            : orchResult.intent,
+          suggestions       : ['مهامي اليوم', 'عاداتي', 'ملخص اليوم'],
+          is_fallback       : orchResult.source === 'fallback',
+          confidence        : orchResult.confidence || 90,
+          mode              : orchResult.aiMode || 'data_only',
+          explanation       : orchResult.reasoning ? [orchResult.reasoning] : [],
+          source            : orchResult.source,
+        };
+        logger.info(`[ASSISTANT] aiOrchestrator answered: source=${orchResult.source} conf=${orchResult.confidence}`);
+      } catch (orchErr) {
+        logger.warn(`[ASSISTANT] aiOrchestrator failed for non-action: ${orchErr.message}`);
+        // Hard fallback from DB directly
+        try {
+          const fbResult = await aiOrchestrator.answerFromData(userId, 'data_question', message, timezone);
+          result = {
+            reply: fbResult.text,
+            action_taken: null, actions: [], needs_confirmation: false, pending_action: null,
+            intent: 'data_question', suggestions: ['مهامي', 'عاداتي', 'أهدافي'],
+            is_fallback: false, confidence: 90, mode: 'data_only',
+          };
+        } catch (_) { /* fall to action engine below */ }
       }
     }
 
-    // If all retries failed, build a meaningful fallback
+    // ACTION REQUEST → legacy command engine (handles add/complete/delete/schedule)
     if (!result) {
-      const errorType = lastError?.message?.includes('RATE_LIMIT') ? 'rate_limit'
-        : lastError?.message?.includes('timeout') ? 'timeout'
-        : 'internal';
+      let lastError = null;
+      const MAX_RETRIES = 2;
 
-      const fallbackMessages = {
-        rate_limit: 'نعالج عدد كبير من الطلبات الآن. يرجى المحاولة بعد دقيقة.',
-        timeout: 'استغرق الرد وقتاً أطول من المتوقع. حاول مرة أخرى.',
-        internal: 'حدث خطأ مؤقت. جرّب إعادة صياغة رسالتك أو المحاولة لاحقاً.',
-      };
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          result = await processCommand(userId, message, timezone, pending);
+          break;
+        } catch (err) {
+          lastError = err;
+          logger.warn(`[ASSISTANT] command attempt ${attempt + 1} failed: ${err.message}`);
+          if (attempt < MAX_RETRIES) {
+            await new Promise(r => setTimeout(r, (attempt + 1) * 250));
+          }
+        }
+      }
 
-      result = {
-        reply: fallbackMessages[errorType],
-        action_taken: null,
-        needs_confirmation: false,
-        pending_action: null,
-        intent: 'error_fallback',
-        suggestions: ['ابدأ يومي', 'عاداتي', 'مهامي'],
-        is_fallback: true,
-        confidence: 0,
-        error_type: errorType,
-      };
-      logger.error(`[ASSISTANT] All retries failed: ${lastError?.message}`);
+      // If command engine also failed, fallback to orchestrator inline action handler
+      if (!result) {
+        try {
+          const inlineResult = await aiOrchestrator.routeRequest(userId, message, 'action_request', 'data_only', timezone);
+          result = {
+            reply: inlineResult.text,
+            action_taken: inlineResult.actionTaken || null,
+            actions: inlineResult.actionTaken ? [inlineResult.actionTaken] : [],
+            needs_confirmation: false, pending_action: null,
+            intent: 'action_request', suggestions: ['مهامي', 'عاداتي'],
+            is_fallback: true, confidence: 60, mode: 'data_only',
+          };
+        } catch (_) {
+          const errorType = lastError?.message?.includes('RATE_LIMIT') ? 'rate_limit'
+            : lastError?.message?.includes('timeout') ? 'timeout' : 'internal';
+          const fallbackMessages = {
+            rate_limit: 'نعالج عدد كبير من الطلبات الآن. يرجى المحاولة بعد دقيقة.',
+            timeout: 'استغرق الرد وقتاً أطول من المتوقع. حاول مرة أخرى.',
+            internal: 'حدث خطأ مؤقت. جرّب إعادة صياغة رسالتك أو المحاولة لاحقاً.',
+          };
+          result = {
+            reply: fallbackMessages[errorType],
+            action_taken: null, needs_confirmation: false, pending_action: null,
+            intent: 'error_fallback', suggestions: ['ابدأ يومي', 'عاداتي', 'مهامي'],
+            is_fallback: true, confidence: 0, error_type: errorType,
+          };
+          logger.error(`[ASSISTANT] All paths failed: ${lastError?.message}`);
+        }
+      }
     }
 
     // Update in-memory session

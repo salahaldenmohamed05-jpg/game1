@@ -77,29 +77,46 @@ function detectIntent(message) {
   ];
   if (emotionalPatterns.some(p => m.includes(p))) return 'emotional_support';
 
-  // ── Data questions: what do I have? what is overdue? what did I do? ────────
+  // ── Data questions — COMPREHENSIVE patterns covering all Arabic question forms ──
+  // Rule: ANY question asking about what the user HAS or STATUS OF their data
   const dataPatterns = [
-    // Today's tasks/goals
-    'أهدافي اليوم', 'مهامي اليوم', 'إيه عندي', 'ايه عندي', 'عندي إيه',
-    'مهامي', 'مهام اليوم', 'أهداف اليوم', 'شغلي النهاردة',
-    // Goals standalone (عرضلي أهدافي / أهدافي / اعرض أهدافي / ارني أهدافي)
-    'أهدافي', 'اهدافي', 'أهدافك', 'عرضلي أهدافي', 'ارني أهدافي', 'اعرض أهدافي',
-    // Overdue
-    'متأخر في إيه', 'متأخر في ايه', 'إيه المتأخر', 'ايه اللي متأخر',
-    'المتأخر', 'متأخرة', 'overdue',
-    // Done today
-    'عملت إيه', 'عملت ايه', 'أنجزت إيه', 'اللي خلصته', 'اليوم عملت',
-    'ملخص يومي', 'تقرير اليوم', 'ماذا أنجزت',
-    // Habits
-    'عاداتي', 'سجلت عاداتي', 'العادات اللي خلصتها',
-    // What next / next action (data-driven, not reasoning)
-    'أعمل إيه دلوقتي', 'اعمل ايه دلوقتي', 'أعمل إيه الآن',
-    'الخطوة الجاية', 'المهمة الجاية', 'next task', 'what now',
-    // Status / progress
-    'وضعي', 'تقدمي', 'نسبتي', 'كم أنجزت', 'how am i doing',
-    // English
-    "what are my tasks", "my goals today", "what's overdue", "what did i do",
-    "my progress", "summary",
+    // ── Count / How many ────────────────────────────────────────────────────
+    'كم عدد', 'كم مهمة', 'كم مهام', 'كم هابت', 'كم عادة', 'كم هدف',
+    'كم ليا', 'كم باقي', 'كم اتخلص', 'عدد مهام', 'عدد العادات', 'عدد الأهداف',
+    'how many', 'count',
+    // ── Do I have / Is there ───────────────────────────────────────────────
+    'هل عندي', 'هل لدي', 'هل في', 'هل عندك', 'في عندي', 'عندي كام',
+    'عندي إيه', 'ايه عندي', 'إيه عندي', 'عندي حاجة', 'معايا إيه',
+    'do i have', 'is there',
+    // ── What are my (listing) ─────────────────────────────────────────────
+    'ما هي', 'ما هو', 'ما هم', 'ايه هي', 'إيه هي', 'اعرض', 'ورّيني', 'ارني', 'عرضلي',
+    'قائمة', 'اسرد', 'ليست', 'list my',
+    // ── My tasks / goals / habits (any form) ──────────────────────────────
+    'مهامي', 'مهامك', 'المهام', 'مهام اليوم', 'أهدافي', 'اهدافي', 'الأهداف',
+    'أهداف اليوم', 'عاداتي', 'العادات', 'شغلي', 'شغلي النهاردة', 'شغلنا',
+    'my tasks', 'my goals', 'my habits',
+    // ── Overdue / Late ────────────────────────────────────────────────────
+    'متأخر', 'تأخرت', 'المتأخر', 'متأخرة', 'overdue', 'late tasks',
+    'فاضل إيه', 'اللي مش خلصت', 'مش خلصته', 'اللي باقي',
+    // ── Done today / completed ─────────────────────────────────────────────
+    'عملت إيه', 'عملت ايه', 'أنجزت إيه', 'خلصت إيه', 'اللي خلصته',
+    'اليوم عملت', 'ملخص يومي', 'تقرير اليوم', 'ماذا أنجزت', 'ماذا عملت',
+    'what did i do', 'what have i done',
+    // ── Status / Progress ─────────────────────────────────────────────────
+    'وضعي', 'تقدمي', 'نسبتي', 'تقدم', 'وضع', 'أدائي', 'أداء',
+    'تقييم', 'ملخص', 'إحصائيات', 'إحصاء', 'احصاء',
+    'كم أنجزت', 'كم خلصت', 'كم اكتمل',
+    'progress', 'summary', 'how am i doing', 'stats',
+    // ── Explain / Summarize (data-driven, not reasoning) ──────────────────
+    'اشرح لي', 'اشرح', 'وضّح', 'فسّر', 'ايه اللي', 'إيه اللي',
+    'ملخص الأسبوع', 'ملخص الشهر', 'تقرير الأسبوع', 'تقرير الشهر',
+    // ── Next action ───────────────────────────────────────────────────────
+    'أعمل إيه', 'اعمل ايه', 'أعمل إيه الآن', 'أعمل إيه دلوقتي',
+    'الخطوة الجاية', 'المهمة الجاية', 'الأهم دلوقتي', 'ابدأ بإيه',
+    'next task', 'what now', 'what should i do',
+    // ── English ───────────────────────────────────────────────────────────
+    "what are my tasks", "my goals today", "what's overdue", "what's pending",
+    "my progress", "show me", "list", "what do i have",
   ];
   if (dataPatterns.some(p => m.includes(p))) return 'data_question';
 
@@ -118,6 +135,12 @@ function detectIntent(message) {
     'أحسّن', 'احسن من', 'أزوّد', 'ازود', 'أقدر أحسّن',
   ];
   if (reasoningPatterns.some(p => m.includes(p))) return 'reasoning_question';
+
+  // ── Final fallback: if message contains a question mark, treat as data_question ──
+  // This catches: "عاداتي؟" "أهدافي؟" "مهامي؟" that slip through keyword matching
+  if (m.includes('?') || m.includes('؟')) {
+    return 'data_question';
+  }
 
   return 'casual_chat';
 }

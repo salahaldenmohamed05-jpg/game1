@@ -64,9 +64,9 @@ exports.getDashboard = async (req, res) => {
       return dueStr < today;
     });
 
-    // Today's tasks: tasks due today (any status) + in_progress tasks
+    // Today's tasks: tasks due today ONLY (P1-8 fix: removed in_progress-always-today logic)
+    // in_progress without a due_date belong in the backlog, not today
     const todayTasks = allTasks.filter(t => {
-      if (t.status === 'in_progress') return true;
       const dueStr = t.due_date ? (typeof t.due_date === 'string' ? t.due_date.split('T')[0].split(' ')[0] : moment(t.due_date).tz(timezone).format('YYYY-MM-DD')) : null;
       return dueStr === today;
     });
@@ -111,13 +111,22 @@ exports.getDashboard = async (req, res) => {
       logger.warn('Smart suggestion failed:', aiErr.message);
     }
 
-    // ── TODAY-only summary ─────────────────────────────────────────────
+    // ── HONEST summary — shows REAL counts across ALL tasks ────────────
+    // P0-2 FIX: Dashboard was only showing today's tasks (total=2 while DB had 27).
+    // Now surfaces allTasks totals so users see the complete picture.
+    const allPendingTasks = allTasks.filter(t => t.status !== 'completed');
     const taskSummary = {
-      total: todayTotal,
-      completed: todayCompleted,
+      // TODAY context (for daily progress widget)
+      total_today: todayTotal,
       completed_today: todayCompleted,
-      pending: todayPending.length,
+      pending_today: todayPending.length,
+      // ALL TASKS (honest overall picture)
+      total: allTasks.length,
+      pending: allPendingTasks.length,
+      completed: allTasks.filter(t => t.status === 'completed').length,
       overdue: overdueTasks.length,
+      // Backlog (no due_date) — never hidden again
+      no_due_date: allPendingTasks.filter(t => !t.due_date).length,
     };
 
     const habitSummary = {
@@ -237,10 +246,10 @@ exports.getQuickStats = async (req, res) => {
       MoodEntry.findOne({ where: { user_id: req.user.id, entry_date: today } }),
     ]);
 
-    // TODAY-only
+    // TODAY-only (P1-8 fix: no longer treat all in_progress as today)
     const todayTasks = tasks.filter(t => {
       const dueStr = t.due_date ? (typeof t.due_date === 'string' ? t.due_date.split('T')[0].split(' ')[0] : moment(t.due_date).tz(timezone).format('YYYY-MM-DD')) : null;
-      return dueStr === today || t.status === 'in_progress';
+      return dueStr === today;
     });
     const overdueTasks = tasks.filter(t => {
       if (t.status === 'completed' || !t.due_date) return false;

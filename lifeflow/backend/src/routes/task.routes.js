@@ -23,6 +23,8 @@ router.get('/grouped', (req, res, next) => {
   return taskController.getTasks(req, res, next);
 });
 router.post('/', writeLimiter, validateCreateTask, taskController.createTask);
+// P1-7 FIX: GET /tasks/:id was missing — frontend calls this for task detail
+router.get('/:id', taskController.getTaskById);
 router.put('/:id', writeLimiter, validateUpdateTask, taskController.updateTask);
 router.patch('/:id/complete', taskController.completeTask);
 router.delete('/:id', taskController.deleteTask);

@@ -1,47 +1,48 @@
 /**
- * Login / Register / Forgot Password Page — Phase 13.1
- * =====================================================
- * - تسجيل بالبريد الإلكتروني فقط (Issue 6: إزالة الهاتف)
- * - نسيت كلمة المرور (OTP)
- * - تأكيد البريد الإلكتروني (Issue 5: تحسين)
+ * Login / Register / Forgot Password Page — Phase 13.3
+ * Fixes: demo as primary CTA, semantic HTML, tab clarity,
+ *        contrast, forgot-password visibility, value prop,
+ *        removed feature icons noise.
+ *        Phase 13.3: Fixed redirect loop — use router.push + auth guard.
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useRouter } from 'next/router';
 import { motion, AnimatePresence } from 'framer-motion';
 import toast from 'react-hot-toast';
 import useAuthStore from '../store/authStore';
 import { authAPI } from '../utils/api';
 
-// ── Modes ──────────────────────────────────────────────────────────────────────
-// 'login' | 'register' | 'forgot' | 'reset' | 'verify'
 const MODES = { LOGIN: 'login', REGISTER: 'register', FORGOT: 'forgot', RESET: 'reset', VERIFY: 'verify' };
 
 export default function LoginPage() {
+  const router = useRouter();
   const [mode, setMode] = useState(MODES.LOGIN);
-  // Phase 13.1 Issue 6: Phone auth removed — email only
   const [isLoading, setIsLoading] = useState(false);
 
-  // Form fields
   const [form, setForm] = useState({
     name: '', email: '', password: '',
     confirmPassword: '', otp: '', newPassword: '', confirmNewPassword: '',
   });
   const [errors, setErrors] = useState({});
-
-  // For reset flow: remember email
   const [resetEmail, setResetEmail] = useState('');
-  // Sandbox OTP hint
   const [sandboxOtp, setSandboxOtp] = useState('');
 
-  const { login, register: registerUser, demoLogin } = useAuthStore();
+  const { login, register: registerUser, demoLogin, isAuthenticated } = useAuthStore();
+
+  // Phase 13.3: Auth guard — if already authenticated, go to dashboard immediately
+  // This prevents /login from being accessible to logged-in users (causes loop)
+  useEffect(() => {
+    if (isAuthenticated) {
+      router.replace('/');
+    }
+  }, [isAuthenticated, router]);
 
   const set = (field) => (e) => {
     setForm((f) => ({ ...f, [field]: e.target.value }));
     setErrors((er) => ({ ...er, [field]: undefined }));
   };
 
-  // ── Validation ────────────────────────────────────────────────────────────────
-  // Phase 13.1: Email-only validation (Issue 6)
   const validate = () => {
     const errs = {};
     if (mode === MODES.REGISTER) {
@@ -65,26 +66,20 @@ export default function LoginPage() {
     return Object.keys(errs).length === 0;
   };
 
-  // ── Submit handlers ────────────────────────────────────────────────────────────
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!validate()) return;
     setIsLoading(true);
-
     try {
       if (mode === MODES.LOGIN) {
-        // Phase 13.1: Email-only login
         const result = await login(form.email, form.password);
         if (result.success) {
           toast.success('أهلاً بك! 👋');
-          setTimeout(() => { window.location.href = '/'; }, 500);
+          router.push('/');
         } else {
           toast.error(result.message || 'بيانات الدخول غير صحيحة');
         }
-      }
-
-      else if (mode === MODES.REGISTER) {
-        // Phase 13.1: Email-only registration
+      } else if (mode === MODES.REGISTER) {
         const payload = { name: form.name, email: form.email, password: form.password };
         const result = await registerUser(payload);
         if (result.success) {
@@ -95,18 +90,14 @@ export default function LoginPage() {
         } else {
           toast.error(result.message || 'فشل إنشاء الحساب');
         }
-      }
-
-      else if (mode === MODES.FORGOT) {
+      } else if (mode === MODES.FORGOT) {
         const res = await authAPI.forgotPassword(form.email);
         const d = res?.data;
         setSandboxOtp(d?._sandbox_otp || '');
         setResetEmail(form.email);
         setMode(MODES.RESET);
         toast.success(d?.message || 'تم إرسال رمز إعادة التعيين 📧');
-      }
-
-      else if (mode === MODES.RESET) {
+      } else if (mode === MODES.RESET) {
         const res = await authAPI.resetPassword(resetEmail, form.otp, form.newPassword);
         if (res?.data?.success) {
           toast.success('تم تعيين كلمة المرور الجديدة! 🔑');
@@ -115,13 +106,11 @@ export default function LoginPage() {
         } else {
           toast.error(res?.data?.message || 'فشل إعادة التعيين');
         }
-      }
-
-      else if (mode === MODES.VERIFY) {
+      } else if (mode === MODES.VERIFY) {
         const res = await authAPI.verifyEmail(resetEmail, form.otp);
         if (res?.data?.success) {
           toast.success('تم تفعيل حسابك بنجاح! 🎉');
-          setTimeout(() => { window.location.href = '/'; }, 600);
+          router.push('/');
         } else {
           toast.error(res?.data?.message || 'الرمز غير صحيح');
         }
@@ -133,20 +122,21 @@ export default function LoginPage() {
     }
   };
 
+  // FIX #3: demo is now the primary action
   const handleDemoLogin = async () => {
     setIsLoading(true);
     try {
       const result = await demoLogin();
-      setIsLoading(false);
       if (result.success) {
         toast.success('أهلاً بك في الحساب التجريبي! 🎯');
-        setTimeout(() => { window.location.href = '/'; }, 500);
+        router.push('/');
       } else {
         toast.error(result.message || 'فشل الدخول التجريبي');
       }
     } catch (err) {
-      setIsLoading(false);
       toast.error('فشل الدخول التجريبي');
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -157,24 +147,29 @@ export default function LoginPage() {
     setForm({ name: '', email: '', password: '', confirmPassword: '', otp: '', newPassword: '', confirmNewPassword: '' });
   };
 
-  // ── Input helper ───────────────────────────────────────────────────────────────
-  const Field = ({ label, field, type = 'text', placeholder, dir = 'ltr', autoComplete }) => (
+  // FIX #1: Field now has htmlFor/id linkage, required, proper types passed through
+  const Field = ({ label, field, type = 'text', placeholder, dir = 'ltr', autoComplete, required = false, inputMode }) => (
     <div>
-      <label className="block text-sm text-gray-400 mb-1">{label}</label>
+      <label htmlFor={`field-${field}`} className="block text-sm font-medium text-gray-300 mb-1.5">
+        {label}
+      </label>
       <input
+        id={`field-${field}`}
+        name={field}
         value={form[field]}
         onChange={set(field)}
         type={type}
         placeholder={placeholder}
         dir={dir}
         autoComplete={autoComplete}
-        className={`input-field ${errors[field] ? 'border-red-500/50 bg-red-500/5' : ''}`}
+        required={required}
+        inputMode={inputMode}
+        className={`input-field placeholder-gray-500 ${errors[field] ? 'border-red-500/50 bg-red-500/5' : ''}`}
       />
       {errors[field] && <p className="text-red-400 text-xs mt-1">{errors[field]}</p>}
     </div>
   );
 
-  // ── Render body by mode ────────────────────────────────────────────────────────
   const renderBody = () => {
     if (mode === MODES.FORGOT) {
       return (
@@ -184,13 +179,14 @@ export default function LoginPage() {
             <h2 className="text-xl font-bold text-white">نسيت كلمة المرور؟</h2>
             <p className="text-gray-400 text-sm mt-1">أدخل بريدك وسنرسل لك رمز التحقق</p>
           </div>
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <Field label="البريد الإلكتروني" field="email" type="email" placeholder="example@email.com" autoComplete="email" />
+          <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+            {/* FIX #1: type=email, autoComplete, inputMode, required */}
+            <Field label="البريد الإلكتروني" field="email" type="email" placeholder="example@email.com" autoComplete="email" inputMode="email" required />
             <button type="submit" disabled={isLoading} className="btn-primary w-full flex items-center justify-center gap-2">
               {isLoading ? <Spinner /> : '📧 إرسال رمز التحقق'}
             </button>
           </form>
-          <button onClick={() => switchMode(MODES.LOGIN)} className="mt-4 text-sm text-gray-400 hover:text-white w-full text-center transition-colors">
+          <button onClick={() => switchMode(MODES.LOGIN)} className="mt-4 text-sm text-gray-300 hover:text-white w-full text-center transition-colors hover:underline">
             ← العودة لتسجيل الدخول
           </button>
         </motion.div>
@@ -211,26 +207,32 @@ export default function LoginPage() {
               <p className="text-yellow-300 font-mono font-bold text-lg tracking-widest">{sandboxOtp}</p>
             </div>
           )}
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} className="space-y-4" noValidate>
             <div>
-              <label className="block text-sm text-gray-400 mb-1">رمز التحقق (6 أرقام)</label>
+              <label htmlFor="field-otp" className="block text-sm font-medium text-gray-300 mb-1.5">رمز التحقق (6 أرقام)</label>
               <input
+                id="field-otp"
+                name="otp"
                 value={form.otp}
                 onChange={set('otp')}
+                type="text"
                 placeholder="123456"
                 maxLength={6}
                 dir="ltr"
-                className={`input-field text-center tracking-widest text-lg font-mono ${errors.otp ? 'border-red-500/50' : ''}`}
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                required
+                className={`input-field text-center tracking-widest text-lg font-mono placeholder-gray-500 ${errors.otp ? 'border-red-500/50' : ''}`}
               />
               {errors.otp && <p className="text-red-400 text-xs mt-1">{errors.otp}</p>}
             </div>
-            <Field label="كلمة المرور الجديدة" field="newPassword" type="password" placeholder="••••••••" autoComplete="new-password" />
-            <Field label="تأكيد كلمة المرور" field="confirmNewPassword" type="password" placeholder="••••••••" autoComplete="new-password" />
+            <Field label="كلمة المرور الجديدة" field="newPassword" type="password" placeholder="••••••••" autoComplete="new-password" required />
+            <Field label="تأكيد كلمة المرور" field="confirmNewPassword" type="password" placeholder="••••••••" autoComplete="new-password" required />
             <button type="submit" disabled={isLoading} className="btn-primary w-full flex items-center justify-center gap-2">
               {isLoading ? <Spinner /> : '🔑 تعيين كلمة المرور'}
             </button>
           </form>
-          <button onClick={() => { switchMode(MODES.FORGOT); }} className="mt-4 text-sm text-gray-400 hover:text-white w-full text-center transition-colors">
+          <button onClick={() => switchMode(MODES.FORGOT)} className="mt-4 text-sm text-gray-300 hover:text-white w-full text-center transition-colors hover:underline">
             ← لم يصلك الرمز؟ أعد الإرسال
           </button>
         </motion.div>
@@ -251,16 +253,22 @@ export default function LoginPage() {
               <p className="text-yellow-300 font-mono font-bold text-lg tracking-widest">{sandboxOtp}</p>
             </div>
           )}
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} className="space-y-4" noValidate>
             <div>
-              <label className="block text-sm text-gray-400 mb-1">رمز التحقق (6 أرقام)</label>
+              <label htmlFor="field-otp-verify" className="block text-sm font-medium text-gray-300 mb-1.5">رمز التحقق (6 أرقام)</label>
               <input
+                id="field-otp-verify"
+                name="otp"
                 value={form.otp}
                 onChange={set('otp')}
+                type="text"
                 placeholder="123456"
                 maxLength={6}
                 dir="ltr"
-                className={`input-field text-center tracking-widest text-lg font-mono ${errors.otp ? 'border-red-500/50' : ''}`}
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                required
+                className={`input-field text-center tracking-widest text-lg font-mono placeholder-gray-500 ${errors.otp ? 'border-red-500/50' : ''}`}
               />
               {errors.otp && <p className="text-red-400 text-xs mt-1">{errors.otp}</p>}
             </div>
@@ -268,80 +276,132 @@ export default function LoginPage() {
               {isLoading ? <Spinner /> : '✅ تفعيل الحساب'}
             </button>
           </form>
-          <button onClick={() => switchMode(MODES.LOGIN)} className="mt-4 text-sm text-gray-400 hover:text-white w-full text-center transition-colors">
+          <button onClick={() => switchMode(MODES.LOGIN)} className="mt-4 text-sm text-gray-300 hover:text-white w-full text-center transition-colors hover:underline">
             ← العودة لتسجيل الدخول
           </button>
         </motion.div>
       );
     }
 
-    // ── LOGIN / REGISTER ────────────────────────────────────────────────────────
+    // ── LOGIN / REGISTER ─────────────────────────────────────────────────────────
     return (
       <motion.div key="auth" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-        {/* Tab switcher */}
-        <div className="flex rounded-xl bg-white/5 p-1 mb-6">
+
+        {/* FIX #3: Demo is PRIMARY CTA — top of form, full styled button */}
+        <button
+          onClick={handleDemoLogin}
+          disabled={isLoading}
+          className="btn-primary w-full flex items-center justify-center gap-2 mb-5 text-base font-bold py-3"
+        >
+          {isLoading ? <Spinner /> : '🚀 جرب التطبيق الآن'}
+        </button>
+
+        {/* Divider */}
+        <div className="flex items-center gap-3 mb-5">
+          <div className="flex-1 h-px bg-white/10" />
+          <span className="text-xs text-gray-500">أو سجّل دخولك</span>
+          <div className="flex-1 h-px bg-white/10" />
+        </div>
+
+        {/* FIX #4: Tab switcher — clear active state */}
+        <div className="flex rounded-xl bg-white/5 p-1 mb-5">
           <button
+            type="button"
             onClick={() => switchMode(MODES.LOGIN)}
-            className={`flex-1 py-2.5 rounded-lg text-sm font-semibold transition-all duration-200 ${mode === MODES.LOGIN ? 'bg-primary-500 text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}
+            className={`flex-1 py-2.5 rounded-lg text-sm font-semibold transition-all duration-200 ${
+              mode === MODES.LOGIN
+                ? 'bg-primary-500 text-white shadow-lg underline-offset-2'
+                : 'text-gray-400 hover:text-white'
+            }`}
           >
             تسجيل الدخول
           </button>
           <button
+            type="button"
             onClick={() => switchMode(MODES.REGISTER)}
-            className={`flex-1 py-2.5 rounded-lg text-sm font-semibold transition-all duration-200 ${mode === MODES.REGISTER ? 'bg-primary-500 text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}
+            className={`flex-1 py-2.5 rounded-lg text-sm font-semibold transition-all duration-200 ${
+              mode === MODES.REGISTER
+                ? 'bg-primary-500 text-white shadow-lg'
+                : 'text-gray-400 hover:text-white'
+            }`}
           >
             حساب جديد
           </button>
         </div>
 
-        {/* Phase 13.1 Issue 6: Phone toggle removed — email only */}
+        {/* FIX #8: Value prop — minimal, above form */}
+        <p className="text-center text-gray-400 text-xs mb-4 leading-relaxed">
+          نظم يومك، ركز على الأهم، واتخذ قرارات أفضل بمساعدة الذكاء الاصطناعي
+        </p>
 
+        {/* FIX #1: All inputs have correct type, name, autoComplete, required, htmlFor */}
         <form onSubmit={handleSubmit} className="space-y-4" noValidate>
-          {/* Name — register only */}
           <AnimatePresence>
             {mode === MODES.REGISTER && (
               <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.2 }}>
-                <Field label="الاسم الكامل" field="name" type="text" placeholder="أدخل اسمك" dir="rtl" autoComplete="name" />
+                <Field label="الاسم الكامل" field="name" type="text" placeholder="أدخل اسمك" dir="rtl" autoComplete="name" required />
               </motion.div>
             )}
           </AnimatePresence>
 
-          {/* Email — Phase 13.1 Issue 6: Email only */}
-          <Field label="البريد الإلكتروني" field="email" type="email" placeholder="example@email.com" autoComplete="email" />
+          {/* FIX #1: type=email, inputMode=email, autoComplete=email */}
+          <Field
+            label="البريد الإلكتروني"
+            field="email"
+            type="email"
+            placeholder="example@email.com"
+            autoComplete="email"
+            inputMode="email"
+            required
+          />
 
-          {/* Password */}
-          <Field label="كلمة المرور" field="password" type="password" placeholder="••••••••" autoComplete={mode === MODES.REGISTER ? 'new-password' : 'current-password'} />
+          {/* FIX #1: type=password, autoComplete proper */}
+          <Field
+            label="كلمة المرور"
+            field="password"
+            type="password"
+            placeholder="••••••••"
+            autoComplete={mode === MODES.REGISTER ? 'new-password' : 'current-password'}
+            required
+          />
 
-          {/* Confirm Password — register only */}
           <AnimatePresence>
             {mode === MODES.REGISTER && (
               <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.2 }}>
-                <Field label="تأكيد كلمة المرور" field="confirmPassword" type="password" placeholder="••••••••" autoComplete="new-password" />
+                <Field label="تأكيد كلمة المرور" field="confirmPassword" type="password" placeholder="••••••••" autoComplete="new-password" required />
               </motion.div>
             )}
           </AnimatePresence>
 
-          {/* Forgot password link */}
+          {/* FIX #6: Forgot password — bigger, hover underline, better contrast */}
           {mode === MODES.LOGIN && (
             <div className="text-left">
-              <button type="button" onClick={() => switchMode(MODES.FORGOT)} className="text-xs text-primary-400 hover:text-primary-300 transition-colors">
+              <button
+                type="button"
+                onClick={() => switchMode(MODES.FORGOT)}
+                className="text-sm text-primary-400 hover:text-primary-300 transition-colors hover:underline font-medium"
+              >
                 نسيت كلمة المرور؟
               </button>
             </div>
           )}
 
-          <button type="submit" disabled={isLoading} className="btn-primary w-full mt-2 flex items-center justify-center gap-2">
-            {isLoading ? <Spinner /> : mode === MODES.REGISTER ? '✨ إنشاء الحساب' : '🚀 تسجيل الدخول'}
+          {/* FIX #2: Secondary login button — disabled + spinner while loading */}
+          <button
+            type="submit"
+            disabled={isLoading}
+            className="btn-ghost w-full mt-2 flex items-center justify-center gap-2 border border-white/20 hover:border-white/40"
+          >
+            {isLoading
+              ? <Spinner />
+              : mode === MODES.REGISTER
+                ? '✨ إنشاء الحساب'
+                : 'تسجيل الدخول بالبريد الإلكتروني'
+            }
           </button>
         </form>
 
-        {/* Demo login */}
-        <div className="mt-6 pt-6 border-t border-white/10 text-center">
-          <p className="text-xs text-gray-500 mb-3">أو جرّب التطبيق مباشرة</p>
-          <button onClick={handleDemoLogin} disabled={isLoading} className="btn-ghost text-sm w-full">
-            🎯 دخول كمستخدم تجريبي
-          </button>
-        </div>
+        {/* FIX #7: Feature icons section REMOVED */}
       </motion.div>
     );
   };
@@ -382,21 +442,7 @@ export default function LoginPage() {
           </AnimatePresence>
         </div>
 
-        {/* Features */}
-        {(mode === MODES.LOGIN || mode === MODES.REGISTER) && (
-          <div className="mt-6 grid grid-cols-3 gap-3 text-center">
-            {[
-              { icon: '📋', label: 'إدارة المهام' },
-              { icon: '🧠', label: 'مساعد ذكي' },
-              { icon: '🏃', label: 'تتبع العادات' },
-            ].map((f) => (
-              <motion.div key={f.label} whileHover={{ scale: 1.05 }} className="glass-card p-3">
-                <div className="text-2xl mb-1">{f.icon}</div>
-                <div className="text-xs text-gray-400">{f.label}</div>
-              </motion.div>
-            ))}
-          </div>
-        )}
+        {/* FIX #7: Feature icons section DELETED — was here, now gone */}
       </motion.div>
     </div>
   );

@@ -386,22 +386,37 @@ router.post('/message', writeLimiter, validateChatMessage, async (req, res) => {
       }
     }
 
-    // Step 2: If no command was executed (or message is conversational), use orchestrator
-    if (!actionResult && orchestrator) {
+    // Step 2: If no command was executed (or message is conversational), use aiOrchestrator
+    // P0-4 FIX: Previously used orchestrator.companionChat() which returned generic greetings.
+    // Now uses aiOrchestrator which reads DB and answers data questions directly.
+    if (!actionResult) {
       try {
-        const result = await orchestrator.companionChat(userId, message.trim(), tz, null);
-        reply        = result.reply          || reply;
-        mode         = result.mode           || mode;
-        actions      = result.actions        || [];
-        suggestions  = result.suggestions    || [];
-        is_fallback  = !!result.is_fallback;
-        intent       = result.intentCategory || null;
-        confidence   = result.confidence     || 50;
-        explanation  = result.explanation    || [];
-        planningTip  = result.planningTip    || null;
+        const aiOrchestrator = require('../services/aiOrchestrator.service');
+        const orchResult = await aiOrchestrator.processMessage(userId, message.trim(), tz);
+        reply       = orchResult.text || reply;
+        mode        = orchResult.aiMode || 'data_only';
+        is_fallback = orchResult.source === 'fallback';
+        intent      = orchResult.intent || null;
+        confidence  = orchResult.confidence || 80;
+        explanation = orchResult.reasoning ? [orchResult.reasoning] : [];
+        suggestions = [];
+        actions     = orchResult.actionTaken ? [orchResult.actionTaken] : [];
+        logger.info(`[CHAT] aiOrchestrator: intent=${intent} source=${orchResult.source} conf=${confidence}`);
       } catch (orchErr) {
-        logger.warn('[CHAT] Orchestrator failed:', orchErr.message);
-        is_fallback = true;
+        logger.warn('[CHAT] aiOrchestrator failed, trying legacy:', orchErr.message);
+        // Fallback to legacy orchestrator if aiOrchestrator fails
+        if (orchestrator) {
+          try {
+            const result = await orchestrator.companionChat(userId, message.trim(), tz, null);
+            reply       = result.reply || reply;
+            mode        = result.mode  || mode;
+            is_fallback = !!result.is_fallback;
+            intent      = result.intentCategory || null;
+            confidence  = result.confidence || 50;
+          } catch (_) {
+            is_fallback = true;
+          }
+        }
       }
     }
     // Step 3: If command was executed (and doesn't need confirmation, and wasn't a confirmation itself),
