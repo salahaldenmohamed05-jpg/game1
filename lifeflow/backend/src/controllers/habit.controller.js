@@ -771,12 +771,6 @@ async function updateHabitStreak(habit) {
     const today = moment().tz(timezone).format('YYYY-MM-DD');
     const yesterday = moment().tz(timezone).subtract(1, 'day').format('YYYY-MM-DD');
 
-    // GUARD: If already updated today, skip (idempotent)
-    const lastCompleted = habit.last_completed ? String(habit.last_completed).split('T')[0] : null;
-    if (lastCompleted === today) {
-      return; // Already counted today
-    }
-
     const yesterdayLog = await HabitLog.findOne({
       where: { habit_id: habit.id, log_date: yesterday, completed: true },
     });
@@ -784,13 +778,14 @@ async function updateHabitStreak(habit) {
     const newStreak = yesterdayLog ? (habit.current_streak || 0) + 1 : 1;
     const longestStreak = Math.max(newStreak, habit.longest_streak || 0);
 
-    await habit.update({
+    // Only update fields that actually exist in the habits table
+    const updateData = {
       current_streak: newStreak,
       longest_streak: longestStreak,
-      best_streak: Math.max(newStreak, habit.best_streak || 0),
       total_completions: (habit.total_completions || 0) + 1,
-      last_completed: today,
-    });
+    };
+
+    await habit.update(updateData);
   } catch (err) {
     logger.error('Update streak error:', err);
   }

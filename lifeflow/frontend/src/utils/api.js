@@ -169,7 +169,12 @@ api.interceptors.response.use(
         if (typeof window !== 'undefined') {
           localStorage.removeItem('lifeflow_token');
           localStorage.removeItem('lifeflow_refresh_token');
-          window.location.href = '/login';
+          // Phase 13.3: Redirect to '/' (not '/login') — index.js renders
+          // the login page when unauthenticated. Redirecting to '/login' caused
+          // a loop because the store wasn't hydrated yet on hard reload.
+          if (!window.location.pathname.includes('/login') && window.location.pathname !== '/') {
+            window.location.href = '/';
+          }
         }
       }
     }

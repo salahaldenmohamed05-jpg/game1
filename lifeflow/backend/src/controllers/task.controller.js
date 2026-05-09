@@ -14,11 +14,16 @@ const moment = require('moment-timezone');
 const { getNow, toUTC, todayString } = require('../utils/time.util');
 
 // ── Input sanitization ─────────────────────────────────────────────────────
+// P1-5 FIX: Strip SQL injection patterns and dangerous characters
+const SQL_INJECTION_PATTERN = /('|--|;|\/\*|\*\/|xp_|exec\s|execute\s|insert\s|update\s|delete\s|drop\s|create\s|alter\s|union\s|select\s|from\s|where\s|or\s+1\s*=\s*1|and\s+1\s*=\s*1|\d+\s*=\s*\d+)/gi;
+
 function sanitizeText(str) {
   if (typeof str !== 'string') return str;
   return str
     .replace(/<[^>]*>/g, '')           // Strip HTML tags
-    .replace(/[<>"'`;]/g, '')          // Remove dangerous chars
+    .replace(/[<>"'`;]/g, '')          // Remove dangerous chars (includes single quotes)
+    .replace(SQL_INJECTION_PATTERN, '') // Strip SQL injection patterns
+    .replace(/\0/g, '')                // Strip null bytes
     .trim()
     .slice(0, 1000);                   // Max 1000 chars
 }
@@ -224,10 +229,11 @@ exports.getSmartView = async (req, res) => {
       const dueDate = plain.due_date ? moment(plain.due_date).tz(timezone).format('YYYY-MM-DD') : null;
       const startDate = plain.start_time ? moment(plain.start_time).tz(timezone).format('YYYY-MM-DD') : null;
       const isOverdueTask = dueDate && dueDate < todayStr;
-      // Phase 15: Tasks with no date go to upcoming (not today) to avoid clutter
-      // Only tasks explicitly due today or starting today appear in today view
+      // P1-8 FIX: in_progress tasks without a due_date were incorrectly shown in
+      // "today" view. Now ONLY tasks explicitly due today (or starting today) are
+      // shown in today. in_progress without a date → upcoming (backlog).
       const isTodayTask = dueDate === todayStr || startDate === todayStr ||
-        (plain.status === 'in_progress'); // in_progress always shows in today
+        (plain.status === 'in_progress' && (dueDate === todayStr || startDate === todayStr));
 
       // Compute AI score
       const taskScore = computeTaskScore(plain, nowHour, timezone);
@@ -500,6 +506,30 @@ exports.createTask = async (req, res) => {
   } catch (error) {
     logger.error('Create task error:', error);
     res.status(500).json({ success: false, message: 'فشل في إنشاء المهمة' });
+  }
+};
+
+/**
+ * @route   GET /api/v1/tasks/:id
+ * @desc    Get single task by ID | جلب مهمة بالمعرّف
+ * P1-7 FIX: This endpoint was missing — brain state and frontend need it.
+ */
+exports.getTaskById = async (req, res) => {
+  try {
+    const task = await Task.findOne({
+      where: { id: req.params.id, user_id: req.user.id },
+    });
+    if (!task) {
+      return res.status(404).json({
+        success: false,
+        errorCode: 'NOT_FOUND',
+        message: 'المهمة غير موجودة',
+      });
+    }
+    res.json({ success: true, data: task });
+  } catch (error) {
+    logger.error('Get task by ID error:', error);
+    res.status(500).json({ success: false, message: 'فشل في جلب المهمة' });
   }
 };
 

@@ -70,7 +70,9 @@ function LoadingScreen({ message, onSkip }) {
 }
 
 export default function HomePage() {
-  const { isAuthenticated } = useAuthStore();
+  // Phase 13.3: Subscribe to isAuthenticated reactively so the UI updates
+  // immediately after demoLogin/login writes to the store (no router.push loop).
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const [hydrated, setHydrated] = useState(false);
   const mountRef = useRef(false);
 
@@ -78,43 +80,39 @@ export default function HomePage() {
     if (mountRef.current) return;
     mountRef.current = true;
 
-    // Quick check: if store already hydrated, proceed
+    // Quick check: if store already hydrated, proceed immediately
     if (useAuthStore.getState()._hasHydrated) {
       setHydrated(true);
       return;
     }
 
-    // Also check localStorage directly — if token exists, hydration will catch up
+    // Also check localStorage directly — if token exists, don't wait
     try {
       const stored = localStorage.getItem('lifeflow-auth');
       if (stored) {
         const parsed = JSON.parse(stored);
-        if (parsed?.state?.isAuthenticated) {
-          // Token exists — proceed immediately, store will sync
+        // Token exists → proceed; the reactive subscription will re-render when
+        // Zustand finishes hydrating the real isAuthenticated value
+        if (parsed?.state?.isAuthenticated || !parsed?.state?.isAuthenticated) {
           setHydrated(true);
           return;
         }
-      }
-    } catch (_) {}
-
-    // No auth — also proceed immediately (will show login page)
-    try {
-      const stored = localStorage.getItem('lifeflow-auth');
-      if (!stored) {
+      } else {
+        // No stored auth at all → proceed immediately (no auth = show login)
         setHydrated(true);
         return;
       }
     } catch (_) {}
 
-    // Wait for persist middleware signal
+    // Wait for persist middleware hydration signal
     useAuthStore.waitForHydration().then(() => setHydrated(true));
 
-    // Phase 13: HARD CAP reduced to 800ms (from 2s) — never block app for 2s
-    const hardTimeout = setTimeout(() => setHydrated(true), 800);
+    // Hard cap: never block more than 600ms
+    const hardTimeout = setTimeout(() => setHydrated(true), 600);
     return () => clearTimeout(hardTimeout);
   }, []);
 
-  // Background health check (never blocks)
+  // Background health check (never blocks rendering)
   useEffect(() => {
     if (!hydrated) return;
     if (useAuthStore.getState().isAuthenticated) {

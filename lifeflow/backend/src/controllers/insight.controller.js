@@ -2,6 +2,7 @@
  * Insight Controller
  * ====================
  * يولد رؤى يومية وأسبوعية وتقارير سلوكية
+ * Phase 2-9 Fix: All endpoints work without AI (local fallbacks provided)
  */
 
 const { Op } = require('sequelize');
@@ -9,9 +10,82 @@ const { Insight } = require('../models/insight.model');
 const Task = require('../models/task.model');
 const { Habit, HabitLog } = require('../models/habit.model');
 const MoodEntry = require('../models/mood.model');
-const { aiService } = require('../ai/ai.service');
 const logger = require('../utils/logger');
 const moment = require('moment-timezone');
+
+// Lazy-load AI service so insights still work without valid API keys
+function getAiService() {
+  try { return require('../ai/ai.service').aiService; } catch (_) { return null; }
+}
+
+// ── Local fallback summary generators (no AI required) ─────────────────────
+
+function buildLocalDailySummary({ tasks, habits, mood, score, userName, today }) {
+  const completed = tasks.completed;
+  const total = tasks.total;
+  const habitsDone = habits.completed;
+  const habitsTotal = habits.total;
+  const pending = total - completed;
+  const moodText = mood ? ` مزاجك اليوم ${mood}/10.` : '';
+
+  let opening = '';
+  if (score >= 80) opening = '🌟 يوم رائع!';
+  else if (score >= 50) opening = '💪 تقدم جيد اليوم.';
+  else if (completed > 0) opening = '✅ بدأت بخطوات صحيحة.';
+  else opening = '🌅 كل يوم فرصة جديدة.';
+
+  const taskText = total === 0
+    ? 'لا توجد مهام مجدولة اليوم.'
+    : `أتممت ${completed} من ${total} مهمة${pending > 0 ? `، تبقى ${pending} مهمة` : ''}.`;
+  const habitText = habitsTotal === 0
+    ? ''
+    : ` وأكملت ${habitsDone} من ${habitsTotal} عادة.`;
+
+  const summary = `${opening} ${taskText}${habitText}${moodText} نسبة إنتاجيتك ${score}%.`;
+
+  const recs = [];
+  if (pending > 0) recs.push(`لديك ${pending} مهمة معلقة — حاول إنجازها قبل نهاية اليوم.`);
+  if (habitsDone < habitsTotal) recs.push('حاول إكمال عاداتك اليومية للحفاظ على مسارك.');
+  if (!mood) recs.push('سجّل مزاجك اليوم لتحسين تتبع إنتاجيتك.');
+  if (recs.length === 0) recs.push('استمر في هذا الأداء الممتاز! 🎯');
+
+  return { summary, recommendations: recs };
+}
+
+function buildLocalWeeklyReport(weeklyData) {
+  const { tasks, habits, mood } = weeklyData;
+  const rate = parseFloat(tasks.completion_rate) || 0;
+  const habitRate = parseFloat(habits.consistency_rate) || 0;
+
+  const report = `📊 تقرير الأسبوع: أنجزت ${tasks.completed} من ${tasks.total} مهمة (${rate}%). ` +
+    `معدل الالتزام بالعادات ${habitRate}%.` +
+    (mood.average ? ` متوسط مزاجك ${mood.average}/10.` : '');
+
+  const recs = [];
+  if (rate < 50) recs.push('حاول تقليل عدد المهام الأسبوعية لتحسين معدل الإنجاز.');
+  if (habitRate < 60) recs.push('ركّز على الحفاظ على عاداتك الأساسية أولاً.');
+  if (mood.entries === 0) recs.push('سجّل مزاجك يومياً للحصول على رؤى أدق.');
+  if (recs.length === 0) recs.push('أسبوع ممتاز! واصل هذا المستوى. 🌟');
+
+  return { report, recommendations: recs };
+}
+
+function buildLocalBehaviorAnalysis(behaviorData) {
+  return {
+    summary: `معدل إنجاز المهام: ${behaviorData.task_completion_rate}%، ` +
+      `حالات التسويف: ${behaviorData.procrastination_patterns}.`,
+    insight: 'استمر في تتبع مهامك وعاداتك للحصول على تحليل أعمق.',
+  };
+}
+
+function buildLocalProductivityTips(user) {
+  return [
+    { tip: 'ابدأ يومك بأصعب مهمة (أكل الضفدع) لتوفير طاقتك لبقية اليوم.', priority: 'high' },
+    { tip: 'خصّص كتل زمنية (Timeblocking) بدلاً من قوائم مهام مفتوحة.', priority: 'high' },
+    { tip: 'احتفل بإنجازاتك الصغيرة لتعزيز الدافعية.', priority: 'medium' },
+    { tip: 'راجع مهامك كل مساء للتخطيط الجيد لليوم التالي.', priority: 'medium' },
+  ];
+}
 
 /**
  * @route   GET /api/v1/insights/daily
@@ -54,27 +128,41 @@ exports.getDailySummary = async (req, res) => {
       const insightMood = analyticsData?.mood ?? (moodEntry?.mood_score || null);
       const insightScore = analyticsData?.productivity_score ?? calculateProductivityScore(tasks, habitLogs, moodEntry);
 
-      // Generate AI summary
-      const aiSummary = await aiService.generateDailySummary({
-        user: req.user,
-        date: today,
-        tasks: insightTasks,
-        habits: insightHabits,
-        mood: moodEntry,
-      });
+      // Generate AI summary — fall back to local if AI unavailable
+      let summaryContent, summaryRecs;
+      try {
+        const aiService = getAiService();
+        if (!aiService) throw new Error('AI service not available');
+        const aiSummary = await aiService.generateDailySummary({
+          user: req.user, date: today,
+          tasks: insightTasks, habits: insightHabits, mood: moodEntry,
+        });
+        summaryContent = aiSummary.summary;
+        summaryRecs    = aiSummary.recommendations;
+      } catch (_aiErr) {
+        // P2-9 Fix: Local fallback — no AI required
+        const local = buildLocalDailySummary({
+          tasks: insightTasks, habits: insightHabits,
+          mood: insightMood, score: insightScore,
+          userName: req.user.name, today,
+        });
+        summaryContent = local.summary;
+        summaryRecs    = local.recommendations;
+        logger.info('[Insights] Daily summary generated locally (AI unavailable)');
+      }
 
       insight = await Insight.create({
         user_id: req.user.id,
         type: 'daily_summary',
-        title: `ملخص يوم ${moment(today).format('dddd، D MMMM YYYY')}`,
-        content: aiSummary.summary,
+        title: `ملخص يوم ${moment(today).locale('ar').format('dddd، D MMMM YYYY')}`,
+        content: summaryContent,
         data: {
           tasks: insightTasks,
           habits: insightHabits,
           mood: insightMood,
           productivity_score: insightScore,
         },
-        recommendations: aiSummary.recommendations,
+        recommendations: summaryRecs,
         period_start: today,
         period_end: today,
       });
@@ -117,15 +205,28 @@ exports.getWeeklyReport = async (req, res) => {
       ]);
 
       const weeklyData = buildWeeklyData(tasks, habitLogs, moodEntries, weekStart, weekEnd);
-      const aiReport = await aiService.generateWeeklyReport({ user: req.user, ...weeklyData });
+
+      let reportContent, reportRecs;
+      try {
+        const aiService = getAiService();
+        if (!aiService) throw new Error('AI service not available');
+        const aiReport = await aiService.generateWeeklyReport({ user: req.user, ...weeklyData });
+        reportContent = aiReport.report;
+        reportRecs    = aiReport.recommendations;
+      } catch (_aiErr) {
+        const local = buildLocalWeeklyReport(weeklyData);
+        reportContent = local.report;
+        reportRecs    = local.recommendations;
+        logger.info('[Insights] Weekly report generated locally (AI unavailable)');
+      }
 
       report = await Insight.create({
         user_id: req.user.id,
         type: 'weekly_report',
         title: `تقرير الأسبوع: ${moment(weekStart).format('D MMM')} - ${moment(weekEnd).format('D MMM YYYY')}`,
-        content: aiReport.report,
+        content: reportContent,
         data: weeklyData,
-        recommendations: aiReport.recommendations,
+        recommendations: reportRecs,
         period_start: weekStart,
         period_end: weekEnd,
         priority: 'high',
@@ -173,8 +274,15 @@ exports.getBehaviorAnalysis = async (req, res) => {
       procrastination_patterns: findProcrastination(tasks),
     };
 
-    const aiAnalysis = await aiService.analyzeBehavior(behaviorData, req.user);
-    behaviorData.ai_analysis = aiAnalysis;
+    try {
+      const aiService = getAiService();
+      if (!aiService) throw new Error('AI service not available');
+      const aiAnalysis = await aiService.analyzeBehavior(behaviorData, req.user);
+      behaviorData.ai_analysis = aiAnalysis;
+    } catch (_aiErr) {
+      behaviorData.ai_analysis = buildLocalBehaviorAnalysis(behaviorData);
+      logger.info('[Insights] Behavior analysis generated locally (AI unavailable)');
+    }
 
     res.json({ success: true, data: behaviorData });
   } catch (error) {
@@ -189,7 +297,17 @@ exports.getBehaviorAnalysis = async (req, res) => {
  */
 exports.getProductivityTips = async (req, res) => {
   try {
-    const tips = await aiService.getProductivityTips(req.user);
+    let tips;
+    try {
+      const aiService = getAiService();
+      if (!aiService) throw new Error('AI service not available');
+      const result = await aiService.getProductivityTips(req.user);
+      // Normalize: AI may return { tips: [...] } or directly an array
+      tips = Array.isArray(result) ? result : (result?.tips || buildLocalProductivityTips(req.user));
+    } catch (_aiErr) {
+      tips = buildLocalProductivityTips(req.user);
+      logger.info('[Insights] Productivity tips generated locally (AI unavailable)');
+    }
     res.json({ success: true, data: tips });
   } catch (error) {
     res.status(500).json({ success: false, message: 'فشل في جلب نصائح الإنتاجية' });

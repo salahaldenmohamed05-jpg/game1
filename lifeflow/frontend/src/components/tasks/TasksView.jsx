@@ -138,13 +138,22 @@ function sortTasksByTime(tasks) {
 
 // ─── Circular Progress Ring (Samsung Reminder Style) ────────────────────────
 
-function CircularProgress({ completed, total, overdue }) {
+function CircularProgress({ completed, total, overdue, backlog = 0 }) {
   const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
   const radius = 40;
   const circumference = 2 * Math.PI * radius;
   const strokeDashoffset = circumference - (pct / 100) * circumference;
   const color = pct >= 80 ? '#22C55E' : pct >= 50 ? '#6C63FF' : pct >= 20 ? '#EAB308' : '#6B7280';
   const remaining = total - completed;
+
+  // P-circular fix: when today tasks are done but backlog exists, show backlog hint not false celebration
+  const statusText = () => {
+    if (remaining > 0) return `${remaining} متبقية اليوم`;
+    if (total === 0) return 'لا توجد مهام اليوم';
+    // All today tasks done — but check backlog first
+    if (backlog > 0) return `مهام اليوم مكتملة ✅`;
+    return 'مهام اليوم مكتملة ✅';
+  };
 
   return (
     <div className="bg-white/5 border border-white/5 rounded-2xl p-4 flex items-center gap-4">
@@ -171,11 +180,17 @@ function CircularProgress({ completed, total, overdue }) {
           {completed} / {total}
         </p>
         <p className="text-xs text-gray-500 mt-0.5">
-          {remaining > 0 ? `${remaining} متبقية` : 'تم إنجاز الكل! 🎉'}
+          {statusText()}
         </p>
         {overdue > 0 && (
           <p className="text-xs text-red-400 font-bold mt-0.5">
             ⚠️ {overdue} متأخرة
+          </p>
+        )}
+        {/* P-circular fix: show backlog warning when today is clear but backlog exists */}
+        {remaining === 0 && total > 0 && backlog > 0 && (
+          <p className="text-xs text-amber-400/80 font-medium mt-0.5">
+            📋 {backlog} مهمة في البكلوج
           </p>
         )}
         {/* Mini progress bar */}
@@ -1009,6 +1024,7 @@ export default function TasksView() {
           completed={actualCompletedToday} 
           total={totalTodayTasks + overdueTasks.length} 
           overdue={overdueTasks.length}
+          backlog={upcomingTasks.length}
         />
       )}
 
@@ -1106,6 +1122,26 @@ export default function TasksView() {
               </div>
             )}
           </div>
+
+          {/* P0-3 FIX: Backlog callout — never hide tasks without due_date ──── */}
+          {/* Show count of upcoming/backlog tasks so users know they exist */}
+          {viewMode === 'today' && upcomingTasks.length > 0 && (
+            <button
+              onClick={() => setViewMode('all')}
+              className="w-full flex items-center justify-between gap-3 px-4 py-3 bg-white/[0.03] border border-white/[0.06] rounded-xl hover:bg-white/[0.06] transition-colors group"
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-base">📋</span>
+                <div className="text-right">
+                  <p className="text-sm text-gray-300 font-medium">
+                    {upcomingTasks.length} مهمة في البكلوج
+                  </p>
+                  <p className="text-xs text-gray-500">مهام بدون تاريخ محدد — اضغط لعرضها</p>
+                </div>
+              </div>
+              <ArrowRight size={16} className="text-gray-500 group-hover:text-gray-300 transition-colors" />
+            </button>
+          )}
 
           {/* SECTION 3: Completed Today — ALWAYS VISIBLE, NEVER DISAPPEAR */}
           {/* This section renders even if todayCompleted is empty to show "no completions yet" */}
